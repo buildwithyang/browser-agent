@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Bridge",
+  "version": "0.1.0",
+  "description": "Send the current webpage context to a local Python gateway.",
+  "permissions": ["contextMenus", "activeTab", "scripting", "notifications"],
+  "host_permissions": ["http://127.0.0.1:17321/*"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

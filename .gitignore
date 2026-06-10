@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Secrets / local config (keep .env.example)
+.env
+*.env
+!.env.example
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Local task data
+gateway/data/
+
+# OS
+.DS_Store
