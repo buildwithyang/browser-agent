@@ -5,9 +5,9 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# "simple" is the built-in OpenAI-backed agent. The others are reserved for
-# future external adapters and are not implemented in the MVP.
-AgentName = Literal["simple", "claude-code", "codex", "openclaw"]
+# Built-in OpenAI-backed agents. "claude-code"/"codex" are reserved for future
+# external adapters and are not implemented yet.
+AgentName = Literal["summary_page", "job_match", "claude-code", "codex", "openclaw"]
 
 
 class TaskCreate(BaseModel):
@@ -24,8 +24,8 @@ class TaskCreate(BaseModel):
     title: str = ""
     selected_text: str = Field("", alias="selectedText")
     page_text: str = Field("", alias="pageText")
-    intent: str = "Analyze this page and propose next steps."
-    agent: AgentName = "simple"
+    intent: str = "Summarize this page."
+    agent: AgentName = "summary_page"
 
 
 class TaskRecord(BaseModel):
@@ -35,4 +35,8 @@ class TaskRecord(BaseModel):
     request: TaskCreate
     prompt: str
     result: str = ""
+    result_html: str = ""
     error: str = ""
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: int | None = None

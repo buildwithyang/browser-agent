@@ -1,14 +1,28 @@
 import logging
+import time
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agents.simple import SimpleAgent
+from app.agents.job_match import JobMatchAgent
+from app.agents.summary_page import SummaryPageAgent
 from app.config import settings
 from app.models import TaskCreate, TaskRecord
+from app.render import render_markdown
 from app.storage.tasks import JsonlTaskStore
 
+# Configure our own logger so task activity prints to the terminal regardless of
+# uvicorn's logging setup.
 logger = logging.getLogger("agent_bridge")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s [agent-bridge] %(levelname)s %(message)s")
+    )
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 app = FastAPI(title="Agent Bridge Gateway")
 
@@ -22,12 +36,14 @@ app.add_middleware(
 )
 
 store = JsonlTaskStore()
+_agent_opts = dict(
+    api_key=settings.openai_api_key or None,
+    base_url=settings.openai_base_url or None,
+    model=settings.model,
+)
 agents = {
-    "simple": SimpleAgent(
-        api_key=settings.openai_api_key or None,
-        base_url=settings.openai_base_url or None,
-        model=settings.model,
-    ),
+    "summary_page": SummaryPageAgent(**_agent_opts),
+    "job_match": JobMatchAgent(**_agent_opts),
 }
 
 
@@ -42,13 +58,45 @@ def create_task(task: TaskCreate) -> TaskRecord:
     if agent is None:
         raise HTTPException(status_code=400, detail=f"Unsupported agent: {task.agent}")
 
-    prompt = agent.build_prompt(task)
+    logger.info(
+        "task received agent=%s model=%s url=%s", task.agent, settings.model, task.url
+    )
+
+    started_at = datetime.now(timezone.utc)
+    t0 = time.perf_counter()
+    prompt = ""
     try:
+        prompt = agent.build_prompt(task)
         result = agent.run(task)
-        record = TaskRecord(status="completed", request=task, prompt=prompt, result=result)
+        duration_ms = int((time.perf_counter() - t0) * 1000)
+        record = TaskRecord(
+            status="completed",
+            request=task,
+            prompt=prompt,
+            result=result,
+            result_html=render_markdown(result),
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            duration_ms=duration_ms,
+        )
+        logger.info(
+            "task completed agent=%s duration_ms=%d chars=%d",
+            task.agent,
+            duration_ms,
+            len(result),
+        )
     except Exception as exc:  # surface failures to the browser instead of a 500
-        logger.exception("Agent run failed")
-        record = TaskRecord(status="failed", request=task, prompt=prompt, error=str(exc))
+        duration_ms = int((time.perf_counter() - t0) * 1000)
+        record = TaskRecord(
+            status="failed",
+            request=task,
+            prompt=prompt,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            duration_ms=duration_ms,
+            error=str(exc),
+        )
+        logger.exception("task failed agent=%s duration_ms=%d", task.agent, duration_ms)
 
     store.append(record)
     if record.status == "failed":

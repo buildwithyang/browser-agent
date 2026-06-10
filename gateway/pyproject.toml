@@ -9,6 +9,9 @@ dependencies = [
   "uvicorn>=0.30.0",
   "openai>=1.40.0",
   "python-dotenv>=1.0.0",
+  "markdown>=3.6",
+  "nh3>=0.2.18",
+  "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]
