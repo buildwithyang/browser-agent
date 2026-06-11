@@ -360,7 +360,7 @@ function renderPanel(payload) {
     const rail = el("div", "rail");
     rail.innerHTML = '<span class="pulse"></span>';
     const label = el("div", "loading-label");
-    label.innerHTML = '正在阅读页面并生成摘要<span class="blink">…</span>';
+    label.innerHTML = 'Reading and analyzing the information<span class="blink">…</span>';
     const skel = el("div", "skel");
     skel.innerHTML =
       '<span class="sk lede-sk"></span><span class="sk s1"></span>' +
