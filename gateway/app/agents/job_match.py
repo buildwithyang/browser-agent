@@ -8,7 +8,7 @@ from app.models import TaskCreate
 
 SYSTEM_PROMPT = (
     "你是 Agent Bridge 的求职匹配助手。用户会给你两部分材料:(1) 他的简历,"
-    "(2) 他当前正在浏览的招聘职位页面。请用中文、用 Markdown 分析该职位与简历的匹配程度:\n"
+    "(2) 他当前正在浏览的招聘职位页面。请用 Markdown 分析该职位与简历的匹配程度:\n"
     "- 先用一句话给出总体结论,并给出一个匹配评分(0-100),单独成段。\n"
     "- **匹配优势**:列出简历中契合职位要求的点。\n"
     "- **欠缺/风险**:列出职位要求但简历未体现或较弱的点。\n"
@@ -65,5 +65,7 @@ class JobMatchAgent(OpenAIChatAgent):
                 task.selected_text.strip() or "(无)",
                 "页面内容:",
                 task.page_text.strip() or "(无)",
+                "图片线索(alt/说明):",
+                task.image_text.strip() or "(无)",
             ]
         )

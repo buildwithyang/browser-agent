@@ -1,6 +1,7 @@
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,10 +37,12 @@ app.add_middleware(
 )
 
 store = JsonlTaskStore()
-_agent_opts = dict(
+_agent_opts: dict[str, Any] = dict(
     api_key=settings.openai_api_key or None,
     base_url=settings.openai_base_url or None,
     model=settings.model,
+    model_long=settings.model_long or None,
+    route_threshold_chars=settings.route_threshold_chars,
 )
 agents = {
     "summary_page": SummaryPageAgent(**_agent_opts),
@@ -58,21 +61,25 @@ def create_task(task: TaskCreate) -> TaskRecord:
     if agent is None:
         raise HTTPException(status_code=400, detail=f"Unsupported agent: {task.agent}")
 
-    logger.info(
-        "task received agent=%s model=%s url=%s", task.agent, settings.model, task.url
-    )
+    logger.info("task received agent=%s url=%s", task.agent, task.url)
 
     started_at = datetime.now(timezone.utc)
     t0 = time.perf_counter()
     prompt = ""
+    model = settings.model
     try:
         prompt = agent.build_prompt(task)
+        # 路由后实际使用的模型(测试中的 fake agent 没有 pick_model)。
+        if hasattr(agent, "pick_model"):
+            model = agent.pick_model(prompt)
         result = agent.run(task)
         duration_ms = int((time.perf_counter() - t0) * 1000)
         record = TaskRecord(
             status="completed",
             request=task,
             prompt=prompt,
+            input_chars=len(prompt),
+            model=model,
             result=result,
             result_html=render_markdown(result),
             started_at=started_at,
@@ -80,8 +87,10 @@ def create_task(task: TaskCreate) -> TaskRecord:
             duration_ms=duration_ms,
         )
         logger.info(
-            "task completed agent=%s duration_ms=%d chars=%d",
+            "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
             task.agent,
+            model,
+            len(prompt) / 1000,
             duration_ms,
             len(result),
         )
@@ -91,12 +100,19 @@ def create_task(task: TaskCreate) -> TaskRecord:
             status="failed",
             request=task,
             prompt=prompt,
+            input_chars=len(prompt),
+            model=model,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
             duration_ms=duration_ms,
             error=str(exc),
         )
-        logger.exception("task failed agent=%s duration_ms=%d", task.agent, duration_ms)
+        logger.exception(
+            "task failed agent=%s input=%.1fk duration_ms=%d",
+            task.agent,
+            len(prompt) / 1000,
+            duration_ms,
+        )
 
     store.append(record)
     if record.status == "failed":

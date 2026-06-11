@@ -37,6 +37,17 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   });
 });
 
+// 把弹窗里的语言偏好解析成网关需要的 lang 值:
+// "browser"(默认) -> 按浏览器界面语言解析为 zh/en;"zh"/"en"/"auto" 原样透传。
+async function resolveLang() {
+  const { langPref } = await chrome.storage.sync.get({ langPref: "browser" });
+  if (langPref === "browser") {
+    const ui = (chrome.i18n.getUILanguage() || "en").toLowerCase();
+    return ui.startsWith("zh") ? "zh" : "en";
+  }
+  return langPref;
+}
+
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.type !== "AGENT_BRIDGE_CONTEXT" || !sender.tab) {
     return;
@@ -52,11 +63,21 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
 
-  fetch(GATEWAY_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...message.payload, agent }),
-    signal: controller.signal
+  // Chrome kills an MV3 service worker after ~30s of inactivity, and an
+  // in-flight fetch does NOT reset that idle timer — agent runs longer than
+  // 30s would die silently and leave the panel stuck on "loading". Calling
+  // any extension API resets the timer, so poke one every 20s until the
+  // request settles.
+  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+
+  resolveLang().then((lang) => {
+    console.log("[Agent Bridge] lang:", lang);
+    return fetch(GATEWAY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...message.payload, agent, lang }),
+      signal: controller.signal
+    });
   })
     .then((response) => {
       console.log("[Agent Bridge] gateway responded:", response.status);
@@ -64,6 +85,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     })
     .then((task) => {
       clearTimeout(timeout);
+      clearInterval(keepAlive);
       console.log("[Agent Bridge] task:", task.status, task.duration_ms + "ms");
       showResult(tabId, {
         state: "result",
@@ -75,6 +97,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     })
     .catch((error) => {
       clearTimeout(timeout);
+      clearInterval(keepAlive);
       console.error("[Agent Bridge] gateway request failed:", error);
       const hint =
         error.name === "AbortError"

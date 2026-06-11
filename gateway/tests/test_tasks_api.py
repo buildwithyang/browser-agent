@@ -34,9 +34,10 @@ def test_create_task_returns_result(tmp_path, monkeypatch):
     # The gateway also returns sanitized HTML for the extension to render.
     assert "<h2>Summary</h2>" in body["result_html"]
     assert "<strong>Go</strong>" in body["result_html"]
-    # Timing fields are recorded.
+    # Timing + input-size fields are recorded.
     assert body["started_at"] and body["finished_at"]
     assert isinstance(body["duration_ms"], int)
+    assert body["input_chars"] == len("PROMPT")  # fake agent's build_prompt output
 
 
 def test_unsupported_agent_returns_400(tmp_path, monkeypatch):
