@@ -6,22 +6,61 @@ const MENU_AGENT = {
   "agent-bridge-jobmatch": "job_match"
 };
 
+// 菜单文字跟随语言偏好:zh/en 强制;"browser"/"auto" 按浏览器界面语言。
+const MENU_TITLES = {
+  zh: {
+    "agent-bridge-summary": "Agent Bridge: 总结此页面",
+    "agent-bridge-jobmatch": "Agent Bridge: 分析与简历匹配"
+  },
+  en: {
+    "agent-bridge-summary": "Agent Bridge: Summarize this page",
+    "agent-bridge-jobmatch": "Agent Bridge: Match against my resume"
+  }
+};
+
 // 记录每个 tab 本次点击选择的 agent;content.js 回传上下文时再读取。
 const pendingAgent = {};
 
+function browserLang() {
+  const ui = (chrome.i18n.getUILanguage() || "en").toLowerCase();
+  return ui.startsWith("zh") ? "zh" : "en";
+}
+
+async function menuLang() {
+  const { langPref } = await chrome.storage.sync.get({ langPref: "browser" });
+  return langPref === "zh" || langPref === "en" ? langPref : browserLang();
+}
+
+async function syncMenuTitles() {
+  const titles = MENU_TITLES[await menuLang()];
+  for (const [id, title] of Object.entries(titles)) {
+    chrome.contextMenus.update(id, { title });
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: "agent-bridge-summary",
-      title: "Agent Bridge: 总结此页面",
-      contexts: ["page", "selection"]
-    });
-    chrome.contextMenus.create({
-      id: "agent-bridge-jobmatch",
-      title: "Agent Bridge: 分析与简历匹配",
-      contexts: ["page", "selection"]
-    });
+  chrome.contextMenus.removeAll(async () => {
+    const titles = MENU_TITLES[await menuLang()];
+    for (const id of Object.keys(MENU_AGENT)) {
+      chrome.contextMenus.create({
+        id,
+        title: titles[id],
+        contexts: ["page", "selection"]
+      });
+    }
   });
+});
+
+// popup 里切换语言后立即更新菜单文字(事件会唤醒 service worker)。
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "sync" && changes.langPref) {
+    syncMenuTitles();
+  }
+});
+
+// 浏览器启动时同步一次,覆盖"跟随浏览器"且浏览器界面语言变了的情况。
+chrome.runtime.onStartup.addListener(() => {
+  syncMenuTitles();
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -41,11 +80,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 // "browser"(默认) -> 按浏览器界面语言解析为 zh/en;"zh"/"en"/"auto" 原样透传。
 async function resolveLang() {
   const { langPref } = await chrome.storage.sync.get({ langPref: "browser" });
-  if (langPref === "browser") {
-    const ui = (chrome.i18n.getUILanguage() || "en").toLowerCase();
-    return ui.startsWith("zh") ? "zh" : "en";
-  }
-  return langPref;
+  return langPref === "browser" ? browserLang() : langPref;
 }
 
 chrome.runtime.onMessage.addListener((message, sender) => {
@@ -176,6 +211,13 @@ function renderPanel(payload) {
   style.textContent = `
     :host { all: initial; }
     * { box-sizing: border-box; }
+
+    /* 未悬停时淡出,尽量不挡住页面内容;悬停/键盘聚焦时恢复完整深色面板。
+       JS 在渲染后延迟加上 .ab-dim(结果先完整展示几秒),:hover 规则在后,
+       同特异性下后者生效。 */
+    :host { transition: opacity .3s ease; }
+    :host(.ab-dim) { opacity: .28; }
+    :host(:hover), :host(:focus-within) { opacity: 1; }
 
     .panel {
       /* Cool blue-black instrument chassis; a single warm "signal" accent. */
@@ -362,4 +404,9 @@ function renderPanel(payload) {
   panel.append(head, body);
   shadow.append(style, panel);
   document.body.appendChild(host);
+
+  // 加载中很快就淡出;结果/错误先完整展示几秒再淡出,确保用户注意到。
+  // 若此时鼠标正悬停在面板上,:hover 规则会压过 .ab-dim,保持不透明。
+  const dimDelay = state === "loading" ? 800 : 4000;
+  setTimeout(() => host.classList.add("ab-dim"), dimDelay);
 }
