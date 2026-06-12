@@ -1,6 +1,10 @@
 Agent Bridge
 
+English | [中文](README.zh-CN.md)
+
 Turn any webpage into actionable AI context.
+
+> 📦 Installation guide with screenshots and environment variable setup: [安装说明 (Chinese)](deploy/INSTALL.zh-CN.md)
 
 Overview
 
@@ -279,7 +283,7 @@ Use it:
 1. Open a webpage
 2. Select text if needed
 3. Right click
-4. Choose `Send to Agent Bridge`
+4. Pick an action from the Agent Bridge menu (`Summarize this page` or `Match against my resume`)
 5. Read the result in the overlay panel that appears in the page
 
 Run the gateway tests:
