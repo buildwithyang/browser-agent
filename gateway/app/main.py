@@ -74,6 +74,18 @@ def create_task(task: TaskCreate) -> TaskRecord:
             model = agent.pick_model(prompt)
         result = agent.run(task)
         duration_ms = int((time.perf_counter() - t0) * 1000)
+        # Agents may split their output into renderable sections (collapsible UI).
+        sections = []
+        if hasattr(agent, "build_sections"):
+            sections = agent.build_sections(result, task.lang)
+        if sections:
+            # Clean fallback HTML for clients that ignore `sections`.
+            result_html = "".join(
+                (f"<h3>{s.title}</h3>{s.html}" if s.title else s.html)
+                for s in sections
+            )
+        else:
+            result_html = render_markdown(result)
         record = TaskRecord(
             status="completed",
             request=task,
@@ -81,7 +93,8 @@ def create_task(task: TaskCreate) -> TaskRecord:
             input_chars=len(prompt),
             model=model,
             result=result,
-            result_html=render_markdown(result),
+            result_html=result_html,
+            sections=sections,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
             duration_ms=duration_ms,

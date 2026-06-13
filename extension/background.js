@@ -125,6 +125,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       showResult(tabId, {
         state: "result",
         html: task.result_html,
+        sections: task.sections || [],
         text: task.result || task.detail || "(no result)",
         source: (task.request && task.request.url) || (message.payload && message.payload.url),
         durationMs: task.duration_ms
@@ -172,6 +173,65 @@ function renderPanel(payload) {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
     return n;
+  };
+
+  // 区块文字超过该字符数则默认折叠(点击展开)。
+  const SECTION_COLLAPSE_CHARS = 160;
+
+  const copyTextTo = (btn, text) => {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        const old = btn.innerHTML;
+        btn.innerHTML = ICON_CHECK + "<span>已复制</span>";
+        btn.classList.add("copied");
+        setTimeout(() => {
+          btn.innerHTML = old;
+          btn.classList.remove("copied");
+        }, 1600);
+      })
+      .catch(() => {});
+  };
+
+  // job_match 的结构化区块:结论(高亮 lede)+ 其余可折叠/可复制区块。
+  const renderSections = (container, sections) => {
+    sections.forEach((s) => {
+      if (s.id === "conclusion") {
+        const lede = el("div", "lede");
+        lede.innerHTML = s.html; // sanitized server-side
+        container.append(lede);
+        return;
+      }
+      const sec = el("details", "sec");
+      const summary = el("summary", "sec-head");
+      const caret = el("span", "sec-caret");
+      caret.textContent = "▸";
+      const title = el("span", "sec-title");
+      title.textContent = s.title || "";
+      summary.append(caret, title);
+
+      const secBody = el("div", "sec-body");
+      secBody.innerHTML = s.html; // sanitized server-side
+      const textLen = (secBody.textContent || "").trim().length;
+      // collapsible=false 的区块(如业务介绍)始终展开;其余超长才默认折叠。
+      sec.open = s.collapsible === false || textLen <= SECTION_COLLAPSE_CHARS;
+
+      if (s.copyable) {
+        const cbtn = el("button", "sec-copy");
+        cbtn.type = "button";
+        cbtn.innerHTML = ICON_COPY + "<span>复制</span>";
+        cbtn.addEventListener("click", (e) => {
+          e.preventDefault(); // 阻止 <details> 折叠切换
+          e.stopPropagation();
+          copyTextTo(cbtn, (secBody.textContent || "").trim());
+        });
+        summary.append(cbtn);
+      }
+
+      sec.append(summary, secBody);
+      container.append(sec);
+    });
   };
   // Inline SVGs use currentColor so the surrounding CSS controls their hue —
   // presentation attributes can't read CSS custom properties.
@@ -287,6 +347,23 @@ function renderPanel(payload) {
     .body th, .body td { border: 1px solid var(--hairline); padding: 6px 10px; text-align: left; }
     .body th { background: var(--ink-raised); }
 
+    /* job_match: collapsible / copyable sections */
+    .lede :first-child { margin-top: 0; }
+    .lede :last-child { margin-bottom: 0; }
+    .lede p { margin: 0; }
+    .sec { border: 1px solid var(--hairline); border-radius: 9px; margin: 10px 0; background: var(--ink-raised); overflow: hidden; }
+    .sec > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-weight: 600; font-size: 13.5px; user-select: none; }
+    .sec > summary::-webkit-details-marker { display: none; }
+    .sec-caret { color: var(--text-dim); font-size: 10px; transition: transform .15s; }
+    .sec[open] .sec-caret { transform: rotate(90deg); }
+    .sec-title { flex: 1; min-width: 0; }
+    .sec-copy { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; background: var(--signal-soft); color: var(--signal); border: none; border-radius: 6px; padding: 4px 9px; font-size: 11px; font-weight: 600; cursor: pointer; }
+    .sec-copy:hover { filter: brightness(1.18); }
+    .sec-copy svg { width: 13px; height: 13px; }
+    .sec-body { padding: 4px 12px 12px; }
+    .sec-body > :first-child { margin-top: .2em; }
+    .sec-body > :last-child { margin-bottom: 0; }
+
     /* error: name what broke and hand over the fix. */
     .error-head { display: flex; align-items: center; gap: 7px; color: var(--alert); font-weight: 600; font-size: 13.5px; margin-bottom: 9px; }
     .error-msg { margin: 0; color: var(--text); }
@@ -326,7 +403,9 @@ function renderPanel(payload) {
     copyBtn.setAttribute("aria-label", "复制摘要");
     copyBtn.innerHTML = ICON_COPY;
     copyBtn.addEventListener("click", () => {
-      const txt = payload.text || body.innerText || "";
+      const txt = (payload.text || body.innerText || "")
+        .replace(/^@@SECTION\s+\w+\s*$/gm, "")
+        .trim();
       if (!navigator.clipboard || !navigator.clipboard.writeText) return;
       navigator.clipboard.writeText(txt).then(() => {
         copyBtn.innerHTML = ICON_CHECK;
@@ -393,6 +472,8 @@ function renderPanel(payload) {
       wrap.append(sub, cmd);
     }
     body.append(wrap);
+  } else if (payload.sections && payload.sections.length) {
+    renderSections(body, payload.sections);
   } else if (payload.html) {
     body.innerHTML = payload.html; // sanitized by the gateway before it reaches here
     const firstP = body.querySelector("p");

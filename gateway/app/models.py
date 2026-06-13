@@ -34,6 +34,21 @@ class TaskCreate(BaseModel):
     lang: Literal["auto", "zh", "en"] = "auto"
 
 
+class Section(BaseModel):
+    """A renderable block of an agent result (for the collapsible panel UI).
+
+    Whether a section is collapsed is decided client-side by its length, so the
+    gateway only flags whether it is worth offering a copy button.
+    """
+
+    id: str
+    title: str
+    html: str  # sanitized HTML (rendered from the section's Markdown)
+    copyable: bool = False
+    # False = 前端始终展开(如业务介绍);True = 内容超长时前端自动折叠。
+    collapsible: bool = True
+
+
 class TaskRecord(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -44,6 +59,7 @@ class TaskRecord(BaseModel):
     model: str = ""  # the model the task was routed to (by input length)
     result: str = ""
     result_html: str = ""
+    sections: list[Section] = Field(default_factory=list)
     error: str = ""
     started_at: datetime | None = None
     finished_at: datetime | None = None

@@ -23,6 +23,47 @@ def test_prompt_includes_cv_and_job():
     assert "Go 和 Kubernetes" in prompt
     assert "Senior Go Engineer" in prompt
     assert "We need Go, Kubernetes" in prompt
+    # 一次请求要求全部区块(含业务介绍)
+    assert "@@SECTION conclusion" in prompt
+    assert "@@SECTION overview" in prompt
+    assert "@@SECTION skills" in prompt
+    assert "@@SECTION cover_letter" in prompt
+    assert "@@SECTION resume_tips" in prompt
+
+
+def test_build_sections_parses_markers_and_flags():
+    agent = JobMatchAgent()
+    raw = (
+        "@@SECTION conclusion\n金融科技支付行业,匹配度 88。\n"
+        "@@SECTION overview\n这家公司做跨境支付。\n"
+        "@@SECTION skills\n- Go ✅\n- K8s ⚠️\n"
+        "@@SECTION cover_letter\nDear Hiring Manager, ...\n"
+        "@@SECTION resume_tips\n- 量化你的成果\n"
+    )
+
+    sections = agent.build_sections(raw, "zh")
+
+    ids = [s.id for s in sections]
+    assert ids == ["conclusion", "overview", "skills", "cover_letter", "resume_tips"]
+    # 业务介绍排在技能匹配之前,且始终展开(不可折叠)
+    assert ids.index("overview") < ids.index("skills")
+    overview = next(s for s in sections if s.id == "overview")
+    assert overview.title == "业务介绍"
+    assert overview.collapsible is False
+    cover = next(s for s in sections if s.id == "cover_letter")
+    assert cover.title == "求职信"
+    assert cover.copyable is True
+    assert cover.collapsible is True
+    assert "Dear Hiring Manager" in cover.html
+    # 结论区块不可复制
+    assert sections[0].copyable is False
+
+
+def test_build_sections_fallback_when_no_markers():
+    agent = JobMatchAgent()
+    sections = agent.build_sections("模型忘了加标记,直接输出了一段。", "zh")
+    assert len(sections) == 1
+    assert sections[0].id == "result"
 
 
 def test_run_passes_model_and_cv():
