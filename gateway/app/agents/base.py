@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 
 from openai import OpenAI
 
-from app.models import TaskCreate
+from app.modules.task.schema import TaskCreate
 
 DEFAULT_MODEL = os.environ.get("AGENT_BRIDGE_MODEL", "gpt-4o-mini")
 

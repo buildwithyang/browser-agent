@@ -1,17 +1,26 @@
 import logging
-import time
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.job_match import JobMatchAgent
 from app.agents.summary_page import SummaryPageAgent
 from app.config import settings
-from app.models import TaskCreate, TaskRecord
-from app.render import render_markdown
-from app.storage.tasks import JsonlTaskStore
+from app.core import (
+    CookieSessionMiddleware,
+    close_database_resources,
+    create_database_resources,
+)
+from app.modules.auth import AuthService, UserRepository
+from app.modules.auth.api import router as auth_router
+from app.modules.resume import ResumeRepository, ResumeService, create_storage_provider
+from app.modules.resume.api import router as resume_router
+from app.modules.task.api import router as task_router
+from app.modules.task.repo import TaskRepository
+from app.modules.task.service import TaskService
 
 # Configure our own logger so task activity prints to the terminal regardless of
 # uvicorn's logging setup.
@@ -25,18 +34,6 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-app = FastAPI(title="Agent Bridge Gateway")
-
-# The extension posts from arbitrary origins (the page the user is on), so allow
-# cross-origin requests to the local gateway.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["POST", "GET", "OPTIONS"],
-    allow_headers=["*"],
-)
-
-store = JsonlTaskStore()
 _agent_opts: dict[str, Any] = dict(
     api_key=settings.openai_api_key or None,
     base_url=settings.openai_base_url or None,
@@ -50,84 +47,67 @@ agents = {
 }
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 建库（默认 SQLite，自动建表）。无 DATABASE_URL 时各 repo 为 None，
+    # 登录/简历接口会明确报错，任务摘要等无状态能力仍可用（任务指标不落库）。
+    db_resources = create_database_resources(settings)
+    session_factory = db_resources.session_factory
+
+    user_repository = UserRepository(session_factory) if session_factory is not None else None
+    resume_repository = ResumeRepository(session_factory) if session_factory is not None else None
+    task_repository = TaskRepository(session_factory) if session_factory is not None else None
+
+    resume_service = ResumeService(
+        settings=settings,
+        storage=create_storage_provider(settings),
+        repository=resume_repository,
+    )
+
+    app.state.settings = settings
+    app.state.db_resources = db_resources
+    app.state.auth_service = AuthService(settings=settings, repository=user_repository)
+    app.state.resume_service = resume_service
+    app.state.task_service = TaskService(
+        agents=agents,
+        repository=task_repository,
+        resume_service=resume_service,
+        default_model=settings.model,
+    )
+    try:
+        yield
+    finally:
+        close_database_resources(db_resources)
+
+
+app = FastAPI(title="Agent Bridge Gateway", lifespan=lifespan)
+
+# 登录态 cookie（auth 模块用 request.session 读写）。
+app.add_middleware(
+    CookieSessionMiddleware,
+    secret_key=settings.auth_session_secret,
+    same_site="lax",
+    https_only=settings.auth_cookie_secure,
+)
+
+# CORS:简历管理前端走带 cookie 的跨域请求(allow_credentials),所以必须回显具体
+# Origin 而非 "*"。浏览器扩展通过 host_permissions 直连 /tasks,不受 CORS 约束。
+_frontend = urlsplit(settings.auth_frontend_redirect_url)
+_frontend_origin = f"{_frontend.scheme}://{_frontend.netloc}" if _frontend.netloc else ""
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o for o in {_frontend_origin, "http://localhost:5173", "http://127.0.0.1:5173"} if o],
+    allow_origin_regex=r"chrome-extension://.*",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth_router)
+app.include_router(resume_router)
+app.include_router(task_router)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@app.post("/tasks", response_model=TaskRecord)
-def create_task(task: TaskCreate) -> TaskRecord:
-    agent = agents.get(task.agent)
-    if agent is None:
-        raise HTTPException(status_code=400, detail=f"Unsupported agent: {task.agent}")
-
-    logger.info("task received agent=%s url=%s", task.agent, task.url)
-
-    started_at = datetime.now(timezone.utc)
-    t0 = time.perf_counter()
-    prompt = ""
-    model = settings.model
-    try:
-        prompt = agent.build_prompt(task)
-        # 路由后实际使用的模型(测试中的 fake agent 没有 pick_model)。
-        if hasattr(agent, "pick_model"):
-            model = agent.pick_model(prompt)
-        result = agent.run(task)
-        duration_ms = int((time.perf_counter() - t0) * 1000)
-        # Agents may split their output into renderable sections (collapsible UI).
-        sections = []
-        if hasattr(agent, "build_sections"):
-            sections = agent.build_sections(result, task.lang)
-        if sections:
-            # Clean fallback HTML for clients that ignore `sections`.
-            result_html = "".join(
-                (f"<h3>{s.title}</h3>{s.html}" if s.title else s.html)
-                for s in sections
-            )
-        else:
-            result_html = render_markdown(result)
-        record = TaskRecord(
-            status="completed",
-            request=task,
-            prompt=prompt,
-            input_chars=len(prompt),
-            model=model,
-            result=result,
-            result_html=result_html,
-            sections=sections,
-            started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
-            duration_ms=duration_ms,
-        )
-        logger.info(
-            "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
-            task.agent,
-            model,
-            len(prompt) / 1000,
-            duration_ms,
-            len(result),
-        )
-    except Exception as exc:  # surface failures to the browser instead of a 500
-        duration_ms = int((time.perf_counter() - t0) * 1000)
-        record = TaskRecord(
-            status="failed",
-            request=task,
-            prompt=prompt,
-            input_chars=len(prompt),
-            model=model,
-            started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
-            duration_ms=duration_ms,
-            error=str(exc),
-        )
-        logger.exception(
-            "task failed agent=%s input=%.1fk duration_ms=%d",
-            task.agent,
-            len(prompt) / 1000,
-            duration_ms,
-        )
-
-    store.append(record)
-    if record.status == "failed":
-        raise HTTPException(status_code=502, detail=record.error)
-    return record

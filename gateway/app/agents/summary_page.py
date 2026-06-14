@@ -1,5 +1,5 @@
 from app.agents.base import OpenAIChatAgent
-from app.models import TaskCreate
+from app.modules.task.schema import TaskCreate
 
 SYSTEM_PROMPT = (
     "你是 Agent Bridge 的网页摘要助手。用户会把当前正在浏览的网页内容发给你,"

@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOST_NAME="${DEV_HOST_NAME:-dev.buildwithyang.com}"
+HOSTS_FILE="${DEV_HOSTS_FILE:-/etc/hosts}"
+INTERFACE_NAME="${DEV_HOST_INTERFACE:-en0}"
+BEGIN_MARKER="# BEGIN dev-host"
+END_MARKER="# END dev-host"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="${ROOT_DIR}/gateway"
+FRONTEND_DIR="${ROOT_DIR}/frontend"
+
+usage() {
+  cat <<EOF
+Usage:
+  dev-start             Update hosts entry, then start gateway + frontend (one-click)
+  dev-start backend     Update hosts entry, then start gateway only
+  dev-start frontend    Update hosts entry, then start frontend only
+  dev-start apply       Update the hosts entry only
+  dev-start show        Show the current hosts entry
+  dev-start clear       Remove the hosts entry
+
+Default host:
+  ${HOST_NAME}
+
+Default gateway (backend) port:
+  ${DEV_BACKEND_PORT:-17321}
+
+Default frontend port:
+  ${DEV_FRONTEND_PORT:-5173}
+
+Default interface:
+  ${INTERFACE_NAME}
+
+Environment:
+  DEV_HOST_NAME       Override host name
+  DEV_HOST_INTERFACE  Override network interface
+  DEV_HOSTS_FILE      Override hosts file, mainly for testing
+  DEV_BACKEND_PORT    Override gateway port
+  DEV_FRONTEND_PORT   Override frontend port
+EOF
+}
+
+die() {
+  echo "dev-start: $*" >&2
+  exit 1
+}
+
+ensure_write_access() {
+  if [[ ! -w "${HOSTS_FILE}" && "${EUID}" -ne 0 ]]; then
+    exec sudo env DEV_HOST_NAME="${HOST_NAME}" DEV_HOST_INTERFACE="${INTERFACE_NAME}" DEV_HOSTS_FILE="${HOSTS_FILE}" "$0" "$@"
+  fi
+}
+
+validate_ipv4() {
+  local ip="$1"
+  local IFS=.
+  local -a parts
+
+  [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  read -r -a parts <<< "${ip}"
+  [[ "${#parts[@]}" -eq 4 ]] || return 1
+
+  local part
+  for part in "${parts[@]}"; do
+    [[ "${part}" =~ ^[0-9]+$ ]] || return 1
+    (( part >= 0 && part <= 255 )) || return 1
+  done
+}
+
+get_interface_ipv4() {
+  local ip=""
+
+  if command -v ipconfig >/dev/null 2>&1; then
+    ip="$(ipconfig getifaddr "${INTERFACE_NAME}" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "${ip}" ]] && command -v ifconfig >/dev/null 2>&1; then
+    ip="$(
+      ifconfig "${INTERFACE_NAME}" 2>/dev/null |
+        awk '/^[[:space:]]*inet / { print $2; exit }'
+    )"
+  fi
+
+  [[ -n "${ip}" ]] || die "cannot find IPv4 address for interface ${INTERFACE_NAME}"
+  validate_ipv4 "${ip}" || die "invalid IPv4 address from ${INTERFACE_NAME}: ${ip}"
+  echo "${ip}"
+}
+
+ensure_frontend_deps() {
+  if [[ ! -d "${FRONTEND_DIR}/node_modules" ]]; then
+    echo "Installing frontend dependencies..."
+    ( cd "${FRONTEND_DIR}" && npm install )
+  fi
+}
+
+flush_cache() {
+  if command -v dscacheutil >/dev/null 2>&1; then
+    dscacheutil -flushcache
+  fi
+
+  if command -v killall >/dev/null 2>&1; then
+    killall -HUP mDNSResponder >/dev/null 2>&1 || true
+  fi
+}
+
+write_hosts_without_block() {
+  local output_file="$1"
+
+  awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" '
+    $0 == begin { skip = 1; next }
+    $0 == end { skip = 0; next }
+    !skip { print }
+  ' "${HOSTS_FILE}" > "${output_file}"
+}
+
+cmd_apply() {
+  local ip
+  ip="$(get_interface_ipv4)"
+  ensure_write_access apply
+
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/dev-host.XXXXXX")"
+  trap "rm -f '${tmp}'" EXIT
+
+  write_hosts_without_block "${tmp}"
+  {
+    echo
+    echo "${BEGIN_MARKER}"
+    echo "${ip} ${HOST_NAME}"
+    echo "${END_MARKER}"
+  } >> "${tmp}"
+
+  cat "${tmp}" > "${HOSTS_FILE}"
+  flush_cache
+  echo "${HOST_NAME} -> ${ip}"
+}
+
+cmd_show() {
+  local line
+  line="$(
+    awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" -v host="${HOST_NAME}" '
+      $0 == begin { inside = 1; next }
+      $0 == end { inside = 0; next }
+      inside && $2 == host { print; found = 1 }
+      END { if (!found) exit 1 }
+    ' "${HOSTS_FILE}" 2>/dev/null
+  )" || die "${HOST_NAME} is not set"
+
+  echo "${line}"
+}
+
+cmd_clear() {
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/dev-host.XXXXXX")"
+  trap "rm -f '${tmp}'" EXIT
+
+  write_hosts_without_block "${tmp}"
+  cat "${tmp}" > "${HOSTS_FILE}"
+  flush_cache
+  echo "cleared ${HOST_NAME}"
+}
+
+# 启动网关:在 gateway/ 下用 uv 跑 uvicorn。有 .env 就带上(config.py 也会自行 load_dotenv)。
+# 绑 0.0.0.0:同时监听 127.0.0.1(前端 Vite /api 代理的目标)和局域网 IP(dev 域名直访)。
+# 绑死单个 hostname 会导致回环地址连不上,代理报 ECONNREFUSED 127.0.0.1。
+run_gateway() {
+  local port="$1"
+  cd "${BACKEND_DIR}"
+  if [[ -f .env ]]; then
+    exec uv run uvicorn app.main:app --env-file .env --host 0.0.0.0 --port "${port}" --reload
+  else
+    exec uv run uvicorn app.main:app --host 0.0.0.0 --port "${port}" --reload
+  fi
+}
+
+cmd_backend() {
+  local port="${DEV_BACKEND_PORT:-17321}"
+
+  "$0" apply
+  run_gateway "${port}"
+}
+
+cmd_frontend() {
+  local port="${DEV_FRONTEND_PORT:-5173}"
+
+  "$0" apply
+  ensure_frontend_deps
+  cd "${FRONTEND_DIR}"
+  exec npm run dev -- --host 0.0.0.0 --port "${port}"
+}
+
+cmd_dev() {
+  local backend_port="${DEV_BACKEND_PORT:-17321}"
+  local frontend_port="${DEV_FRONTEND_PORT:-5173}"
+  local backend_pid=""
+  local frontend_pid=""
+
+  "$0" apply
+  ensure_frontend_deps
+
+  cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM
+
+    if [[ -n "${backend_pid}" ]]; then
+      kill "${backend_pid}" 2>/dev/null || true
+    fi
+    if [[ -n "${frontend_pid}" ]]; then
+      kill "${frontend_pid}" 2>/dev/null || true
+    fi
+
+    wait "${backend_pid}" 2>/dev/null || true
+    wait "${frontend_pid}" 2>/dev/null || true
+    exit "${exit_code}"
+  }
+
+  trap cleanup EXIT INT TERM
+
+  (
+    run_gateway "${backend_port}"
+  ) &
+  backend_pid=$!
+
+  (
+    cd "${FRONTEND_DIR}"
+    exec npm run dev -- --host 0.0.0.0 --port "${frontend_port}"
+  ) &
+  frontend_pid=$!
+
+  echo "Gateway:  http://${HOST_NAME}:${backend_port}"
+  echo "Frontend: http://${HOST_NAME}:${frontend_port}"
+  echo "Press Ctrl-C to stop both servers."
+
+  local status=0
+  while true; do
+    if ! kill -0 "${backend_pid}" 2>/dev/null; then
+      wait "${backend_pid}" || status=$?
+      break
+    fi
+    if ! kill -0 "${frontend_pid}" 2>/dev/null; then
+      wait "${frontend_pid}" || status=$?
+      break
+    fi
+    sleep 1
+  done
+
+  exit "${status}"
+}
+
+main() {
+  local command="${1:-}"
+  shift || true
+
+  case "${command}" in
+    ""|dev|all|start|up)
+      cmd_dev "$@"
+      ;;
+    apply)
+      cmd_apply
+      ;;
+    show)
+      cmd_show "$@"
+      ;;
+    backend|serve|gateway|start-backend)
+      cmd_backend "$@"
+      ;;
+    frontend|web|start-frontend)
+      cmd_frontend "$@"
+      ;;
+    clear)
+      ensure_write_access "${command}" "$@"
+      cmd_clear "$@"
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

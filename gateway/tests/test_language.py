@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.agents.summary_page import SummaryPageAgent
-from app.models import TaskCreate
+from app.modules.task.schema import TaskCreate
 
 
 def run_with_lang(lang: str) -> str:

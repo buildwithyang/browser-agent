@@ -4,8 +4,8 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from app.agents.base import OpenAIChatAgent
-from app.models import Section, TaskCreate
+from app.agents.base import OpenAIChatAgent, language_directive
+from app.modules.task.schema import Section, TaskCreate
 from app.render import render_markdown
 
 SYSTEM_PROMPT = (
@@ -80,6 +80,13 @@ class JobMatchAgent(OpenAIChatAgent):
             self._cv_text = self._read_cv()
         return self._cv_text
 
+    def _resolve_cv_text(self, override: str | None) -> str:
+        """云端多租户:用调用方注入的当前用户简历文本;
+        无注入(开源单用户)时回退到本地 AGENT_BRIDGE_CV_PATH。"""
+        if override and override.strip():
+            return override
+        return self.cv_text()
+
     def _read_cv(self) -> str:
         if not self.cv_path.exists():
             raise FileNotFoundError(
@@ -94,7 +101,7 @@ class JobMatchAgent(OpenAIChatAgent):
             )
         return text
 
-    def build_prompt(self, task: TaskCreate) -> str:
+    def build_prompt(self, task: TaskCreate, cv_text: str | None = None) -> str:
         section_lines = ["请按顺序输出以下区块:"]
         for sid, instruction in SECTION_SPECS:
             section_lines.append(f"@@SECTION {sid} — {instruction}")
@@ -104,7 +111,7 @@ class JobMatchAgent(OpenAIChatAgent):
                 *section_lines,
                 "",
                 "# 我的简历",
-                self.cv_text()[:MAX_CV_CHARS],
+                self._resolve_cv_text(cv_text)[:MAX_CV_CHARS],
                 "",
                 "# 当前招聘职位页面",
                 "标题:",
@@ -119,6 +126,11 @@ class JobMatchAgent(OpenAIChatAgent):
                 task.image_text.strip() or "(无)",
             ]
         )
+
+    def run(self, task: TaskCreate, cv_text: str | None = None) -> str:
+        system = self.system_prompt + "\n\n" + language_directive(task.lang)
+        prompt = self.build_prompt(task, cv_text=cv_text)
+        return self.complete(system, prompt, model=self.pick_model(prompt))
 
     def build_sections(self, result: str, lang: str) -> list[Section]:
         """Split the model output on `@@SECTION <id>` markers into renderable blocks."""

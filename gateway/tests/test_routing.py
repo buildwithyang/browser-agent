@@ -1,5 +1,5 @@
 from app.agents.base import OpenAIChatAgent
-from app.models import TaskCreate
+from app.modules.task.schema import TaskCreate
 
 
 class DummyAgent(OpenAIChatAgent):

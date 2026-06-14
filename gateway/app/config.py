@@ -25,6 +25,31 @@ def _get_env_int(name: str, default: int) -> int:
         return default
 
 
+def _get_env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _get_env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Gateway configuration, loaded from environment / the gateway `.env` file.
@@ -32,17 +57,50 @@ class Settings:
     复制 `.env.example` 为 `.env` 并填入真实值；`.env` 不要提交到 git。
     """
 
-    # OpenAI 或任意 OpenAI 兼容服务的 API key。
+    # --- LLM（OpenAI 或任意 OpenAI 兼容服务）---------------------------------
     openai_api_key: str = ""
-    # 接口地址；留空用 OpenAI 官方地址。
     openai_base_url: str = ""
-    # 模型 id。
     model: str = "gpt-4o-mini"
-    # 长输入(prompt 超过 route_threshold_chars 字符)改用的模型 id;
-    # 留空则不路由,所有任务统一用 model。
+    # 长输入(prompt 超过 route_threshold_chars 字符)改用的模型 id;留空则不路由。
     model_long: str = ""
-    # prompt 超过该字符数视为"长输入"。
     route_threshold_chars: int = 8000
+
+    # --- 数据库（默认 SQLite；PostgreSQL 用 postgresql://...）---------------
+    database_url: str = "sqlite:///./data/agent_bridge.sqlite3"
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 10
+    db_pool_timeout: float = 30.0
+
+    # --- 登录态 cookie ------------------------------------------------------
+    # 签名 session cookie 的 HMAC secret；防篡改，不是加密。生产务必替换。
+    auth_session_secret: str = "dev-session-secret-change-me"
+    # 本地 HTTP 开发为 false；HTTPS 部署应为 true，否则浏览器不发送 Secure cookie。
+    auth_cookie_secure: bool = False
+    # 登录成功后浏览器最终跳转回的前端地址（简历管理页）。
+    auth_frontend_redirect_url: str = "http://127.0.0.1:5173/"
+
+    # --- Casdoor OAuth ------------------------------------------------------
+    casdoor_endpoint: str = ""
+    casdoor_client_id: str = ""
+    casdoor_client_secret: str = ""
+    # 必须和 Casdoor 应用 Redirect URLs 完全一致，授权和换 token 两步都用它。
+    casdoor_redirect_uri: str = ""
+    casdoor_http_timeout: float = 15.0
+
+    # --- 对象存储（简历文件）------------------------------------------------
+    # fake（本地联调，不真正存储）/ oss。
+    storage_provider: str = "fake"
+    # 资源读取基础 URL，与 object_key 拼成最终访问地址（OSS bucket 域名或 CDN）。
+    asset_base_url: str = ""
+    # 服务端下载文件做解析时的 HTTP 超时，秒。
+    asset_http_timeout: float = 30.0
+    # 简历文件大小上限（字节）；超过则拒绝。
+    resume_max_bytes: int = 10 * 1024 * 1024
+    # 阿里云 OSS 配置。
+    oss_region: str = "cn-hangzhou"
+    oss_bucket: str = ""
+    oss_access_key_id: str = ""
+    oss_access_key_secret: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -56,6 +114,28 @@ class Settings:
             route_threshold_chars=_get_env_int(
                 "AGENT_BRIDGE_ROUTE_THRESHOLD", cls.route_threshold_chars
             ),
+            database_url=_get_env_str("DATABASE_URL", cls.database_url),
+            db_pool_min_size=_get_env_int("DB_POOL_MIN_SIZE", cls.db_pool_min_size),
+            db_pool_max_size=_get_env_int("DB_POOL_MAX_SIZE", cls.db_pool_max_size),
+            db_pool_timeout=_get_env_float("DB_POOL_TIMEOUT", cls.db_pool_timeout),
+            auth_session_secret=_get_env_str("AUTH_SESSION_SECRET", cls.auth_session_secret),
+            auth_cookie_secure=_get_env_bool("AUTH_COOKIE_SECURE", cls.auth_cookie_secure),
+            auth_frontend_redirect_url=_get_env_str(
+                "AUTH_FRONTEND_REDIRECT_URL", cls.auth_frontend_redirect_url
+            ),
+            casdoor_endpoint=_get_env_str("CASDOOR_ENDPOINT", cls.casdoor_endpoint),
+            casdoor_client_id=_get_env_str("CASDOOR_CLIENT_ID", cls.casdoor_client_id),
+            casdoor_client_secret=_get_env_str("CASDOOR_CLIENT_SECRET", cls.casdoor_client_secret),
+            casdoor_redirect_uri=_get_env_str("CASDOOR_REDIRECT_URI", cls.casdoor_redirect_uri),
+            casdoor_http_timeout=_get_env_float("CASDOOR_HTTP_TIMEOUT", cls.casdoor_http_timeout),
+            storage_provider=_get_env_str("STORAGE_PROVIDER", cls.storage_provider).lower(),
+            asset_base_url=_get_env_str("ASSET_BASE_URL", cls.asset_base_url).rstrip("/"),
+            asset_http_timeout=_get_env_float("ASSET_HTTP_TIMEOUT", cls.asset_http_timeout),
+            resume_max_bytes=_get_env_int("RESUME_MAX_BYTES", cls.resume_max_bytes),
+            oss_region=_get_env_str("OSS_REGION", cls.oss_region),
+            oss_bucket=_get_env_str("OSS_BUCKET", cls.oss_bucket),
+            oss_access_key_id=_get_env_str("OSS_ACCESS_KEY_ID", cls.oss_access_key_id),
+            oss_access_key_secret=_get_env_str("OSS_ACCESS_KEY_SECRET", cls.oss_access_key_secret),
         )
 
 

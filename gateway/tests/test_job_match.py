@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agents.job_match import JobMatchAgent
-from app.models import TaskCreate
+from app.modules.task.schema import TaskCreate
 
 
 def make_task() -> TaskCreate:
