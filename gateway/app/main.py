@@ -28,7 +28,11 @@ logger = logging.getLogger("agent_bridge")
 if not logger.handlers:
     _handler = logging.StreamHandler()
     _handler.setFormatter(
-        logging.Formatter("%(asctime)s [agent-bridge] %(levelname)s %(message)s")
+        # 末尾的 %(pathname)s:%(lineno)d 是日志调用处的绝对路径+行号,
+        # 终端/IDE(如 VS Code)里可点击直接跳转到打印日志的源码位置。
+        logging.Formatter(
+            "%(asctime)s [agent-bridge] %(levelname)s %(message)s  (%(pathname)s:%(lineno)d)"
+        )
     )
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)

@@ -49,7 +49,7 @@ deploy/initdb/          # PostgreSQL 权威建表脚本
 
 ## Commands
 
-- 安装依赖：`cd gateway && uv sync`（OSS 直传需 `uv sync --extra oss`，PostgreSQL 需 `uv sync --extra postgres`）
+- 安装依赖：`cd gateway && uv sync`（PostgreSQL 部署需 `uv sync --extra postgres`）
 - 全部测试：`cd gateway && uv run pytest`
 - 指定测试：`cd gateway && uv run pytest tests/test_job_match.py`
 - 导入检查：`cd gateway && uv run python -c "import app.main; print('main import ok')"`

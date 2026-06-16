@@ -1,30 +1,30 @@
 from fastapi.testclient import TestClient
 
 from app import main
+from app.config import Settings
 from app.modules.auth import AuthService
 from app.modules.resume import ResumeService, create_storage_provider
+
+# 受控的测试配置:不读开发者的 .env(否则 Casdoor / OSS 一旦配上就会改变这些断言)。
+# 默认即「无 Casdoor、storage=fake」。
+TEST_SETTINGS = Settings()
 
 
 def _wire_state(monkeypatch, *, repository=None):
     """Set the request-scoped services on app.state without running lifespan."""
-    monkeypatch.setattr(
-        main.app.state,
-        "settings",
-        main.settings,
-        raising=False,
-    )
+    monkeypatch.setattr(main.app.state, "settings", TEST_SETTINGS, raising=False)
     monkeypatch.setattr(
         main.app.state,
         "auth_service",
-        AuthService(settings=main.settings, repository=repository),
+        AuthService(settings=TEST_SETTINGS, repository=repository),
         raising=False,
     )
     monkeypatch.setattr(
         main.app.state,
         "resume_service",
         ResumeService(
-            settings=main.settings,
-            storage=create_storage_provider(main.settings),
+            settings=TEST_SETTINGS,
+            storage=create_storage_provider(TEST_SETTINGS),
             repository=None,
         ),
         raising=False,

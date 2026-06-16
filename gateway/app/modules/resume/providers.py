@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import timedelta
 from urllib.parse import urlencode
 
+import alibabacloud_oss_v2 as oss
+
 from app.config import Settings
 from app.modules.resume.types import StorageProvider
 
@@ -47,10 +49,6 @@ class OSSStorageProvider:
         if not settings.oss_access_key_secret:
             raise ValueError("OSS_ACCESS_KEY_SECRET is required when STORAGE_PROVIDER=oss")
 
-        # 延迟导入，未装 oss extra 的自部署用户用 fake provider 时不强制安装该依赖。
-        import alibabacloud_oss_v2 as oss
-
-        self._oss = oss
         cfg = oss.config.load_default()
         cfg.credentials_provider = oss.credentials.StaticCredentialsProvider(
             settings.oss_access_key_id,
@@ -68,7 +66,7 @@ class OSSStorageProvider:
         expires: timedelta,
     ) -> str:
         pre = self._client.presign(
-            self._oss.PutObjectRequest(
+            oss.PutObjectRequest(
                 bucket=self._bucket,
                 key=object_key,
                 content_type=content_type,
@@ -79,14 +77,14 @@ class OSSStorageProvider:
 
     def generate_presigned_get_url(self, object_key: str, expires: timedelta) -> str:
         pre = self._client.presign(
-            self._oss.GetObjectRequest(bucket=self._bucket, key=object_key),
+            oss.GetObjectRequest(bucket=self._bucket, key=object_key),
             expires=expires,
         )
         return pre.url or ""
 
     def download_bytes(self, object_key: str) -> bytes:
         result = self._client.get_object(
-            self._oss.GetObjectRequest(bucket=self._bucket, key=object_key)
+            oss.GetObjectRequest(bucket=self._bucket, key=object_key)
         )
         body = result.body
         data = body.read() if hasattr(body, "read") else bytes(body or b"")
@@ -94,7 +92,7 @@ class OSSStorageProvider:
 
     def delete_object(self, object_key: str) -> None:
         self._client.delete_object(
-            self._oss.DeleteObjectRequest(bucket=self._bucket, key=object_key)
+            oss.DeleteObjectRequest(bucket=self._bucket, key=object_key)
         )
 
 

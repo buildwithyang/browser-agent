@@ -43,7 +43,7 @@ DATABASE_URL=sqlite:///./data/agent_bridge.sqlite3
 
 说明：
 - `STORAGE_PROVIDER=fake` 时不真正存储、无法回源解析，仅用于跑通登录与接口联调。
-- 真实解析需 `STORAGE_PROVIDER=oss` 并安装 OSS 依赖：`uv sync --extra oss`。
+- 真实解析需 `STORAGE_PROVIDER=oss`（OSS SDK 已是核心依赖，`uv sync` 即装好）。
 - `ASSET_BASE_URL` 可替换为 CDN 域名。
 
 ## 模块结构
