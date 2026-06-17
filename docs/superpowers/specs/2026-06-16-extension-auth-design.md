@@ -54,7 +54,8 @@
 | **有效期 / 刷新** | **长效（30 天）+ 可吊销 + 网页重推** | DB token 本就可吊销；前端在登录态下可随时经 `/auth/extension-token` + externally_connectable 静默重新签发推送——这条管道**本身就是刷新路径**，无需再造 refresh token。扩展遇过期/401 即请网页重推。 |
 | **自部署单用户** | **`REQUIRE_AUTH=false` 时匿名直连、token 可选** | 自部署单用户不应被迫架 Casdoor。一个开关切两种模式，同一份网关代码通吃；保持自部署现有「无登录直连本地」体验不变。 |
 | **token 存储形态** | **DB 只存 `sha256(token)`，不存明文** | 明文 token 仅在签发那一刻返回给前端；DB 泄露也拿不到可用 token，与「token 不落日志」安全基调一致。 |
-| **解绑设备** | **补 `GET` / `DELETE` 两个 token 管理端点** | 目标明确含「可解绑设备」，DB 模型天然支持，与签发同批做掉。 |
+| **解绑设备** | **后端 `GET` / `DELETE` 端点 v1 即做；前端管理 UI 延后** | 目标含「可解绑设备」，端点 DB 模型天然支持顺手做掉；但前端列表 UI 非首发刚需，延后到后续迭代。 |
+| **前端连接触发** | **混合：检测到已装即静默自动推送 + 常驻手动按钮兜底** | 兼顾「无感连上」与「用户可控、可重试、过期自愈」；纯自动缺乏可控入口，纯手动则每次过期都要手动重连。 |
 
 ## 各端改动清单
 
@@ -100,19 +101,67 @@ auth_tokens
 
 ### 前端（frontend）
 
-- 登录态下调用 `/auth/extension-token` 取 token。
-- 检测扩展是否安装，`chrome.runtime.sendMessage(扩展ID, { type: "AUTH_TOKEN", token })` 推送；加「连接扩展」按钮兜底。
-- （可选）「已连接设备」管理界面，调用 `GET` / `DELETE /auth/extension-tokens` 做解绑。
+- 登录态下调用 `/auth/extension-token` 取 token，`chrome.runtime.sendMessage(扩展ID, { type: "AUTH_TOKEN", token })` 推送给扩展。
+- 在现有单页卡片栈（[App.jsx](../../../frontend/src/App.jsx)，登录态下 `上传简历` / `我的简历` 两张卡）中**新增一张「浏览器扩展」卡片**，承载探测 / 连接 / 状态回显。详见下文「前端交互」。
+- **解绑设备 UI 延后**：后端 `GET` / `DELETE /auth/extension-tokens` 端点 v1 即做（见上），但前端的「已连接设备」管理界面**不在 v1 范围**，列入开放项 / 后续迭代。
 
 ### 扩展（extension）
 
 - `manifest.json`：加 `"externally_connectable": { "matches": ["https://*.<域名>/*"] }`；`host_permissions` 增加网关域名；`GATEWAY_URL` 改为**可配置**（`chrome.storage`，托管默认云域名 / 自部署填本地）。
-- `background.js`：`chrome.runtime.onMessageExternal` 收 token 存 `chrome.storage`；`/tasks` 请求带 `Authorization: Bearer`；遇 401 触发「请在网页端登录并连接扩展」。
+- `background.js`：`chrome.runtime.onMessageExternal` 处理三类消息——
+  - `PING`：回 `PONG` 并报告**当前是否持有有效 token**（供前端区分「已装未连」/「已连」）。
+  - `AUTH_TOKEN`：收 token 存 `chrome.storage`，并在 `sendResponse` 里**回 ack**（供前端确认连接成功）。
+- `/tasks` 请求带 `Authorization: Bearer`；遇 401 触发「请在网页端登录并连接扩展」。
 - token 存储：敏感优先 `chrome.storage.session`（内存、浏览器关闭即清，需重连）；要持久登录用 `chrome.storage.local`。MV3 service worker 不能用全局变量存状态。
 
 ### Casdoor
 
 - **无需改动**：OAuth 回调仍是网关已登记的 `/auth/callback`，扩展流程不经过 Casdoor。
+
+## 前端交互（扩展连接卡片）
+
+前端是单页卡片栈，无路由。扩展连接作为登录态下的**第三张卡片**接入，不引入路由改动。
+
+### 触发方式：混合（自动 + 手动兜底）
+
+检测到扩展已装但未连接时，**静默自动推送一次**；同时卡片上常驻「连接 / 重新连接」按钮做兜底。兼顾「无感连上」与「用户可控、可重试」。
+
+### 卡片状态机
+
+卡片在 `me` 就绪后向扩展 `chrome.runtime.sendMessage(扩展ID, { type: "PING" })` 探测，按结果切换：
+
+| 状态 | 触发条件 | 展示 |
+|---|---|---|
+| 检测中 | PING 已发、未回 | 「检测中…」 |
+| 未安装 | 无 `chrome.runtime` / 报错 / 超时 | 「未检测到扩展」+ 安装链接 |
+| 已装·未连接 | PONG 返回但无有效 token | 「连接扩展」按钮（并自动推一次） |
+| 已连接 | token 推送成功（收到 ack）/ PONG 报告已持有 | 「已连接 ✓ + 最近连接时间」+「重新连接」 |
+
+```text
+[me 就绪] → PING 扩展
+   ├─ 无响应/报错 → 未安装（给安装链接）
+   └─ PONG ─┬─ 已持 token → 已连接
+            └─ 无 token → 自动 POST /auth/extension-token → sendMessage 推送
+                            └─ 收到 ack → 已连接
+```
+
+### 连接数据流
+
+```text
+前端 POST /auth/extension-token（cookie 鉴权）
+   └─ 网关签发 → 返回明文 token
+前端 chrome.runtime.sendMessage(扩展ID, { type: "AUTH_TOKEN", token })
+   └─ 扩展 onMessageExternal 存入 chrome.storage → sendResponse(ack)
+前端收 ack → 卡片切「已连接」
+```
+
+### 过期自愈
+
+扩展遇 401 无法主动通知前端；改由前端**每次加载探测到扩展已装时静默重签发 + 重推一次**（token 重推无害、成本低），用户基本无感地保持连接。扩展侧 401 时在 popup 提示「请在网页端登录并连接扩展」。
+
+### 对扩展侧的隐含要求
+
+本交互要求扩展 `onMessageExternal` 额外支持：**`PING`→`PONG`（含「是否持有有效 token」标志）握手**，以及 **`AUTH_TOKEN` 的 `sendResponse` ack 回执**。已并入「扩展（extension）」改动清单。
 
 ## 安全注意事项
 
@@ -131,8 +180,9 @@ auth_tokens
 - [ ] 网关：auth 层 `resolve_user_id`（Bearer 优先、cookie 回退，命中刷新 `last_used_at`）
 - [ ] 网关：`/tasks` 接入 `resolve_user_id` + `REQUIRE_AUTH` 开关
 - [ ] 网关：输入封顶（`max_length`）+ 按用户限流（复用 `task_records`，超额 429）
-- [ ] 前端：取 token + `sendMessage` 推送 +「连接扩展」按钮（可选设备管理界面）
-- [ ] 扩展：`externally_connectable` + `onMessageExternal` + token 存储 + `Authorization` 头 + 可配置域名
+- [ ] 前端：新增「浏览器扩展」卡片（PING 探测 + 4 态 + 混合触发：自动推送 + 手动按钮 + 过期自愈重推）
+- [ ] 扩展：`externally_connectable` + `onMessageExternal`（`PING`/`PONG` 握手 + `AUTH_TOKEN` ack）+ token 存储 + `Authorization` 头 + 可配置域名
+- [ ] （延后，非 v1）前端「已连接设备」管理界面（解绑），调用 `GET` / `DELETE /auth/extension-tokens`
 - [ ] 文档：更新 `extension/README` 与 `auth`/`task` 模块 README，本 spec 转「已实施」
 
 ## 参考
