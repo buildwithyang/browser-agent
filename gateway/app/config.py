@@ -78,6 +78,8 @@ class Settings:
     auth_cookie_secure: bool = False
     # 登录成功后浏览器最终跳转回的前端地址（简历管理页）。
     auth_frontend_redirect_url: str = "http://127.0.0.1:5173/"
+    # 扩展 bearer token 有效期（秒），默认 30 天。
+    extension_token_ttl_seconds: int = 30 * 24 * 3600
 
     # --- Casdoor OAuth ------------------------------------------------------
     casdoor_endpoint: str = ""
@@ -122,6 +124,9 @@ class Settings:
             auth_cookie_secure=_get_env_bool("AUTH_COOKIE_SECURE", cls.auth_cookie_secure),
             auth_frontend_redirect_url=_get_env_str(
                 "AUTH_FRONTEND_REDIRECT_URL", cls.auth_frontend_redirect_url
+            ),
+            extension_token_ttl_seconds=_get_env_int(
+                "EXTENSION_TOKEN_TTL_SECONDS", cls.extension_token_ttl_seconds
             ),
             casdoor_endpoint=_get_env_str("CASDOOR_ENDPOINT", cls.casdoor_endpoint),
             casdoor_client_id=_get_env_str("CASDOOR_CLIENT_ID", cls.casdoor_client_id),

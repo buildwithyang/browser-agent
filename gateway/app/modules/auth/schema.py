@@ -28,3 +28,21 @@ class AuthUser(BaseModel):
 
 class AuthMeData(BaseModel):
     user: AuthUser | None = None
+
+
+class ExtensionTokenIssued(BaseModel):
+    token: str  # 明文，仅签发时返回这一次
+    expires_at: datetime
+
+
+class ExtensionTokenInfo(BaseModel):
+    id: str
+    label: str | None = None
+    created_at: datetime
+    last_used_at: datetime | None = None
+    expires_at: datetime
+    revoked: bool
+
+
+class ExtensionTokenListData(BaseModel):
+    items: list[ExtensionTokenInfo]
