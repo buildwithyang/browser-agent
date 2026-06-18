@@ -14,7 +14,12 @@ from app.core import (
     close_database_resources,
     create_database_resources,
 )
-from app.modules.auth import AuthService, UserRepository
+from app.modules.auth import (
+    AuthService,
+    ExtensionTokenRepository,
+    ExtensionTokenService,
+    UserRepository,
+)
 from app.modules.auth.api import router as auth_router
 from app.modules.resume import ResumeRepository, ResumeService, create_storage_provider
 from app.modules.resume.api import router as resume_router
@@ -59,6 +64,9 @@ async def lifespan(app: FastAPI):
     session_factory = db_resources.session_factory
 
     user_repository = UserRepository(session_factory) if session_factory is not None else None
+    extension_token_repository = (
+        ExtensionTokenRepository(session_factory) if session_factory is not None else None
+    )
     resume_repository = ResumeRepository(session_factory) if session_factory is not None else None
     task_repository = TaskRepository(session_factory) if session_factory is not None else None
 
@@ -71,12 +79,18 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.db_resources = db_resources
     app.state.auth_service = AuthService(settings=settings, repository=user_repository)
+    app.state.extension_token_service = ExtensionTokenService(
+        repository=extension_token_repository,
+        ttl_seconds=settings.extension_token_ttl_seconds,
+    )
     app.state.resume_service = resume_service
     app.state.task_service = TaskService(
         agents=agents,
         repository=task_repository,
         resume_service=resume_service,
         default_model=settings.model,
+        rate_limit_max=settings.task_rate_limit_max,
+        rate_limit_window_seconds=settings.task_rate_limit_window_seconds,
     )
     try:
         yield

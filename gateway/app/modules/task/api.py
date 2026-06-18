@@ -4,8 +4,9 @@ from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.modules.auth.identity import resolve_user_id
 from app.modules.task.schema import TaskCreate, TaskResponse
-from app.modules.task.service import TaskExecutionError, TaskService
+from app.modules.task.service import RateLimitError, TaskExecutionError, TaskService
 
 router = APIRouter(tags=["tasks"])
 
@@ -17,20 +18,22 @@ def get_task_service(request: Request) -> TaskService:
     return cast(TaskService, service)
 
 
-def _current_user_id(request: Request) -> str | None:
-    # /tasks 对扩展保持匿名可用:有登录 cookie 就用其简历,没有就回退本地文件。
-    auth_service = getattr(request.app.state, "auth_service", None)
-    if auth_service is None:
-        return None
-    user = auth_service.get_current_user(request.session)
-    return user.user_id if user is not None else None
-
-
 @router.post("/tasks", response_model=TaskResponse)
 def create_task(task: TaskCreate, request: Request) -> TaskResponse:
     service = get_task_service(request)
+    # 先 bearer 后 cookie 解析身份;扩展跨站发不出 cookie,走 Authorization: Bearer。
+    user_id = resolve_user_id(request)
+
+    settings = getattr(request.app.state, "settings", None)
+    if getattr(settings, "require_auth", False) and user_id is None:
+        # 托管平台:/tasks 不接受匿名调用。
+        raise HTTPException(status_code=401, detail="Authentication required")
+
     try:
-        return service.run(task, user_id=_current_user_id(request))
+        return service.run(task, user_id=user_id)
+    except RateLimitError as exc:
+        # 用户超出限流窗口配额。
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except ValueError as exc:
         # 未知 agent / 登录用户无可用简历 -> 客户端可纠正。
         raise HTTPException(status_code=400, detail=str(exc)) from exc

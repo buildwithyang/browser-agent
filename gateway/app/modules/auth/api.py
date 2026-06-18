@@ -5,8 +5,15 @@ from typing import cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from starlette.responses import RedirectResponse
 
-from app.modules.auth.schema import ApiResponse, AuthMeData, AuthUser
+from app.modules.auth.schema import (
+    ApiResponse,
+    AuthMeData,
+    AuthUser,
+    ExtensionTokenIssued,
+    ExtensionTokenListData,
+)
 from app.modules.auth.service import AuthService
+from app.modules.auth.token_service import ExtensionTokenService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -26,6 +33,13 @@ def require_auth_user(
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user
+
+
+def get_extension_token_service(request: Request) -> ExtensionTokenService:
+    service = getattr(request.app.state, "extension_token_service", None)
+    if service is None:
+        raise HTTPException(status_code=500, detail="Extension token service is not initialized")
+    return cast(ExtensionTokenService, service)
 
 
 @router.get("/login")
@@ -66,3 +80,30 @@ def me(request: Request, auth_service: AuthService = Depends(get_auth_service)):
 def logout(request: Request, auth_service: AuthService = Depends(get_auth_service)):
     auth_service.logout(request.session)
     return ApiResponse(data=AuthMeData(user=None))
+
+
+@router.post("/extension-token", response_model=ApiResponse[ExtensionTokenIssued])
+def issue_extension_token(
+    user: AuthUser = Depends(require_auth_user),
+    service: ExtensionTokenService = Depends(get_extension_token_service),
+):
+    issued = service.issue(user_id=user.user_id, label="浏览器扩展")
+    return ApiResponse(data=issued)
+
+
+@router.get("/extension-tokens", response_model=ApiResponse[ExtensionTokenListData])
+def list_extension_tokens(
+    user: AuthUser = Depends(require_auth_user),
+    service: ExtensionTokenService = Depends(get_extension_token_service),
+):
+    return ApiResponse(data=ExtensionTokenListData(items=service.list_for_user(user.user_id)))
+
+
+@router.delete("/extension-tokens/{token_id}", response_model=ApiResponse[ExtensionTokenListData])
+def revoke_extension_token(
+    token_id: str,
+    user: AuthUser = Depends(require_auth_user),
+    service: ExtensionTokenService = Depends(get_extension_token_service),
+):
+    service.revoke(user_id=user.user_id, token_id=token_id)
+    return ApiResponse(data=ExtensionTokenListData(items=service.list_for_user(user.user_id)))
