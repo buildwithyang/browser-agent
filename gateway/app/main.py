@@ -89,6 +89,8 @@ async def lifespan(app: FastAPI):
         repository=task_repository,
         resume_service=resume_service,
         default_model=settings.model,
+        rate_limit_max=settings.task_rate_limit_max,
+        rate_limit_window_seconds=settings.task_rate_limit_window_seconds,
     )
     try:
         yield

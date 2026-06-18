@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.modules.auth.identity import resolve_user_id
 from app.modules.task.schema import TaskCreate, TaskResponse
-from app.modules.task.service import TaskExecutionError, TaskService
+from app.modules.task.service import RateLimitError, TaskExecutionError, TaskService
 
 router = APIRouter(tags=["tasks"])
 
@@ -31,6 +31,9 @@ def create_task(task: TaskCreate, request: Request) -> TaskResponse:
 
     try:
         return service.run(task, user_id=user_id)
+    except RateLimitError as exc:
+        # 用户超出限流窗口配额。
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except ValueError as exc:
         # 未知 agent / 登录用户无可用简历 -> 客户端可纠正。
         raise HTTPException(status_code=400, detail=str(exc)) from exc

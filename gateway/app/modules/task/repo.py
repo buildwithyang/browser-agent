@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
@@ -58,6 +58,21 @@ class TaskRepository:
                 return [self._to_data(model) for model in rows]
         except SQLAlchemyError as exc:
             raise RuntimeError(f"Failed to list task records: {exc}") from exc
+
+    def count_since(self, *, user_id: str, since) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(TaskRecordModel)
+            .where(
+                TaskRecordModel.user_id == user_id,
+                TaskRecordModel.created_at >= since,
+            )
+        )
+        try:
+            with self._session_scope() as db:
+                return int(db.execute(stmt).scalar_one() or 0)
+        except SQLAlchemyError as exc:
+            raise RuntimeError(f"Failed to count task records: {exc}") from exc
 
     @staticmethod
     def _to_data(model: TaskRecordModel) -> TaskRecordData:

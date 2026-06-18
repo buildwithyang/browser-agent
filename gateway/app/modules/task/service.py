@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.agents.job_match import JobMatchAgent
@@ -19,6 +19,10 @@ class TaskExecutionError(RuntimeError):
     """agent 执行失败:已落库 failed 记录,api 应映射为 502。"""
 
 
+class RateLimitError(RuntimeError):
+    """用户在限流窗口内超额:api 应映射为 429。"""
+
+
 class TaskService:
     """任务请求生命周期:agent 分发 -> (job_match)解析用户简历 -> 执行 -> 落库指标。
 
@@ -32,16 +36,22 @@ class TaskService:
         repository: TaskRepository | None,
         resume_service: ResumeService | None,
         default_model: str,
+        rate_limit_max: int = 0,
+        rate_limit_window_seconds: int = 86400,
     ) -> None:
         self._agents = agents
         self._repository = repository
         self._resume_service = resume_service
         self._default_model = default_model
+        self._rate_limit_max = rate_limit_max
+        self._rate_limit_window_seconds = rate_limit_window_seconds
 
     def run(self, task: TaskCreate, *, user_id: str | None) -> TaskResponse:
         agent = self._agents.get(task.agent)
         if agent is None:
             raise ValueError(f"Unsupported agent: {task.agent}")
+
+        self._enforce_rate_limit(user_id)
 
         logger.info("task received agent=%s url=%s", task.agent, task.url)
 
@@ -107,6 +117,17 @@ class TaskService:
         if self._repository is None:
             return []
         return self._repository.list_recent(user_id=user_id, limit=limit)
+
+    def _enforce_rate_limit(self, user_id: str | None) -> None:
+        # 仅对已识别用户限流;匿名(自部署)不限。0 = 关闭。
+        if user_id is None or self._repository is None or self._rate_limit_max <= 0:
+            return
+        since = datetime.now(timezone.utc) - timedelta(seconds=self._rate_limit_window_seconds)
+        used = self._repository.count_since(user_id=user_id, since=since)
+        if used >= self._rate_limit_max:
+            raise RateLimitError(
+                f"已达使用上限({self._rate_limit_max} 次 / {self._rate_limit_window_seconds}s),请稍后再试。"
+            )
 
     def _resolve_cv_text(self, user_id: str | None) -> str | None:
         if user_id is None:

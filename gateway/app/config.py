@@ -82,6 +82,9 @@ class Settings:
     extension_token_ttl_seconds: int = 30 * 24 * 3600
     # /tasks 是否强制登录：托管 true（须 token/cookie）；自部署 false（匿名直连，token 可选）。
     require_auth: bool = False
+    # 单用户 /tasks 限流:窗口内最大次数,0=不限流(自部署默认);窗口秒数默认 1 天。
+    task_rate_limit_max: int = 0
+    task_rate_limit_window_seconds: int = 86400
 
     # --- Casdoor OAuth ------------------------------------------------------
     casdoor_endpoint: str = ""
@@ -131,6 +134,10 @@ class Settings:
                 "EXTENSION_TOKEN_TTL_SECONDS", cls.extension_token_ttl_seconds
             ),
             require_auth=_get_env_bool("REQUIRE_AUTH", cls.require_auth),
+            task_rate_limit_max=_get_env_int("TASK_RATE_LIMIT_MAX", cls.task_rate_limit_max),
+            task_rate_limit_window_seconds=_get_env_int(
+                "TASK_RATE_LIMIT_WINDOW_SECONDS", cls.task_rate_limit_window_seconds
+            ),
             casdoor_endpoint=_get_env_str("CASDOOR_ENDPOINT", cls.casdoor_endpoint),
             casdoor_client_id=_get_env_str("CASDOOR_CLIENT_ID", cls.casdoor_client_id),
             casdoor_client_secret=_get_env_str("CASDOOR_CLIENT_SECRET", cls.casdoor_client_secret),
