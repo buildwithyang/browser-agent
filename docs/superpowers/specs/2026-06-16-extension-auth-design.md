@@ -174,12 +174,12 @@ auth_tokens
 
 ## 实施步骤
 
-- [ ] 网关：`auth_tokens` 表 + model/repo（含 `sha256` 存储），同步 `deploy/initdb/001-schema.sql`
-- [ ] 网关：`POST /auth/extension-token`（登录态下签发，返回明文）
-- [ ] 网关：`GET /auth/extension-tokens` + `DELETE /auth/extension-tokens/{id}`（解绑设备）
-- [ ] 网关：auth 层 `resolve_user_id`（Bearer 优先、cookie 回退，命中刷新 `last_used_at`）
-- [ ] 网关：`/tasks` 接入 `resolve_user_id` + `REQUIRE_AUTH` 开关
-- [ ] 网关：输入封顶（`max_length`）+ 按用户限流（复用 `task_records`，超额 429）
+- [x] 网关：`auth_tokens` 表 + model/repo（含 `sha256` 存储），同步 `deploy/initdb/001-schema.sql`
+- [x] 网关：`POST /auth/extension-token`（登录态下签发，返回明文）
+- [x] 网关：`GET /auth/extension-tokens` + `DELETE /auth/extension-tokens/{id}`（解绑设备）
+- [x] 网关：auth 层 `resolve_user_id`（Bearer 优先、cookie 回退，命中刷新 `last_used_at`）
+- [x] 网关：`/tasks` 接入 `resolve_user_id` + `REQUIRE_AUTH` 开关
+- [x] 网关：输入封顶（`max_length`）+ 按用户限流（复用 `task_records`，超额 429）
 - [ ] 前端：新增「浏览器扩展」卡片（PING 探测 + 4 态 + 混合触发：自动推送 + 手动按钮 + 过期自愈重推）
 - [ ] 扩展：`externally_connectable` + `onMessageExternal`（`PING`/`PONG` 握手 + `AUTH_TOKEN` ack）+ token 存储 + `Authorization` 头 + 可配置域名
 - [ ] （延后，非 v1）前端「已连接设备」管理界面（解绑），调用 `GET` / `DELETE /auth/extension-tokens`
