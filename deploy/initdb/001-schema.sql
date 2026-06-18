@@ -26,6 +26,28 @@ CREATE INDEX IF NOT EXISTS idx_auth_users_email
     ON public.auth_users (email);
 
 -- =====================================================================
+-- auth_tokens：扩展 bearer token（DB opaque，可吊销 / 可解绑设备）
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS public.auth_tokens (
+    id            VARCHAR(32) PRIMARY KEY,                         -- token 记录 ID（uuid hex）
+    user_id       VARCHAR(32) NOT NULL,                            -- 归属用户（auth_users.user_id）
+    token_hash    VARCHAR(64) NOT NULL,                            -- sha256(明文 token) 十六进制
+    label         VARCHAR(128),                                    -- 设备/来源标识
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- 签发时间
+    last_used_at  TIMESTAMPTZ,                                     -- 最近使用
+    expires_at    TIMESTAMPTZ NOT NULL,                            -- 过期时间（签发 + TTL）
+    revoked       BOOLEAN NOT NULL DEFAULT FALSE                   -- 是否已吊销
+);
+
+-- token 校验：按 hash 唯一定位
+CREATE UNIQUE INDEX IF NOT EXISTS uq_auth_tokens_token_hash
+    ON public.auth_tokens (token_hash);
+
+-- 按用户列出 token（解绑设备 UI）
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_created_at
+    ON public.auth_tokens (user_id, created_at);
+
+-- =====================================================================
 -- resume：简历表（object_key + 元数据 + 解析文本 + 生效标记，按用户隔离）
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS public.resume_resumes (
