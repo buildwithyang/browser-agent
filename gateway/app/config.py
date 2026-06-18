@@ -80,6 +80,8 @@ class Settings:
     auth_frontend_redirect_url: str = "http://127.0.0.1:5173/"
     # 扩展 bearer token 有效期（秒），默认 30 天。
     extension_token_ttl_seconds: int = 30 * 24 * 3600
+    # /tasks 是否强制登录：托管 true（须 token/cookie）；自部署 false（匿名直连，token 可选）。
+    require_auth: bool = False
 
     # --- Casdoor OAuth ------------------------------------------------------
     casdoor_endpoint: str = ""
@@ -128,6 +130,7 @@ class Settings:
             extension_token_ttl_seconds=_get_env_int(
                 "EXTENSION_TOKEN_TTL_SECONDS", cls.extension_token_ttl_seconds
             ),
+            require_auth=_get_env_bool("REQUIRE_AUTH", cls.require_auth),
             casdoor_endpoint=_get_env_str("CASDOOR_ENDPOINT", cls.casdoor_endpoint),
             casdoor_client_id=_get_env_str("CASDOOR_CLIENT_ID", cls.casdoor_client_id),
             casdoor_client_secret=_get_env_str("CASDOOR_CLIENT_SECRET", cls.casdoor_client_secret),
