@@ -18,6 +18,11 @@ class ApiResponse(BaseModel, Generic[T]):
 # 内置 OpenAI-backed agents。"claude-code"/"codex" 为未来外部适配预留，暂未实现。
 AgentName = Literal["summary_page", "job_match", "claude-code", "codex", "openclaw"]
 
+# /tasks 输入封顶：防止匿名/恶意调用塞超大正文烧平台 LLM 钱。
+PAGE_TEXT_MAX_CHARS = 200_000
+SELECTED_TEXT_MAX_CHARS = 100_000
+IMAGE_TEXT_MAX_CHARS = 50_000
+
 
 class TaskCreate(BaseModel):
     """浏览器扩展提交的任务（agent 的输入契约）。
@@ -30,10 +35,10 @@ class TaskCreate(BaseModel):
 
     url: str
     title: str = ""
-    selected_text: str = Field("", alias="selectedText")
-    page_text: str = Field("", alias="pageText")
+    selected_text: str = Field("", alias="selectedText", max_length=SELECTED_TEXT_MAX_CHARS)
+    page_text: str = Field("", alias="pageText", max_length=PAGE_TEXT_MAX_CHARS)
     # 图片文字线索(alt / caption / aria-label),纯文本,不含图片本身。
-    image_text: str = Field("", alias="imageText")
+    image_text: str = Field("", alias="imageText", max_length=IMAGE_TEXT_MAX_CHARS)
     intent: str = "Summarize this page."
     agent: AgentName = "summary_page"
     # 输出语言:"zh"/"en" 强制;"auto" 跟随页面语言。扩展通常已把用户偏好解析为 zh/en。
