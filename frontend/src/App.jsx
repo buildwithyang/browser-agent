@@ -9,6 +9,7 @@ import {
   logout,
   uploadResume,
 } from "./api.js";
+import ExtensionCard from "./ExtensionCard.jsx";
 
 const PARSE_LABEL = {
   0: { text: "解析中", cls: "badge-wait" },
@@ -168,6 +169,8 @@ export default function App() {
               />
               {stage && <div className="progress"><span /></div>}
             </section>
+
+            <ExtensionCard />
 
             {error && <div className="alert alert-error">{error}</div>}
             {notice && <div className="alert alert-ok">{notice}</div>}

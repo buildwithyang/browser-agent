@@ -35,6 +35,10 @@ export function fetchMe() {
   return call("/auth/me");
 }
 
+export function issueExtensionToken() {
+  return call("/auth/extension-token", { method: "POST" });
+}
+
 export function logout() {
   return call("/auth/logout", { method: "POST" });
 }
