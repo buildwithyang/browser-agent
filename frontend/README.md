@@ -13,6 +13,11 @@ npm run dev                 # http://127.0.0.1:5173
 
 需要后端网关同时运行（默认 `http://127.0.0.1:17321`，见 `gateway/`）。
 
+- `VITE_EXTENSION_ID`：已安装扩展的 ID，用于把登录 token 推送给扩展。加载 unpacked 扩展后从 `chrome://extensions` 复制。
+  > ⚠️ 验证扩展连接时前端必须跑在 `dev.buildwithyang.com:5173`（`npm run dev` 已配该域名），**不能用 `127.0.0.1`**——`externally_connectable` 不匹配 IP。
+
+前端逻辑测试：`npm test`（vitest）。
+
 ## 与后端的关系（同源 `/api` 代理）
 
 开发时前端**不直接跨域**访问网关，而是统一走同源 `/api`，由 Vite 反向代理转发到网关

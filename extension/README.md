@@ -9,7 +9,11 @@
         → 网关调用模型 → 返回结果 → 注入页面的 Shadow DOM 面板显示
 ```
 
-网关地址固定为 `http://127.0.0.1:17321/tasks`(见 `background.js` 的 `GATEWAY_URL`)。**使用前必须先启动 gateway**(见仓库根目录与 `gateway/` 的说明)。
+网关地址可在扩展弹窗(popup)配置,存于 `chrome.storage.local.gatewayUrl`,默认 `http://127.0.0.1:17321`;云端填 `https://browser-agent.buildwithyang.com/api`。**使用前必须先启动 gateway**(见仓库根目录与 `gateway/` 的说明)。
+
+登录态下,前端「浏览器扩展」卡片会经 `externally_connectable` 把 bearer token 推送给扩展,之后 `/tasks` 自动带 `Authorization: Bearer`。遇 401(token 过期/被解绑)扩展会清除本地 token 并提示在网页端重新连接。自部署(`REQUIRE_AUTH=false`)无需 token,匿名直连本地网关即可。
+
+扩展逻辑测试:`cd extension && node --test`。
 
 ## 功能
 

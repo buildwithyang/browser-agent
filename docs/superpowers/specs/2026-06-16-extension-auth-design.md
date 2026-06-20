@@ -228,14 +228,15 @@ auth_tokens
 - [x] 网关：auth 层 `resolve_user_id`（Bearer 优先、cookie 回退，命中刷新 `last_used_at`）
 - [x] 网关：`/tasks` 接入 `resolve_user_id` + `REQUIRE_AUTH` 开关
 - [x] 网关：输入封顶（`max_length`）+ 按用户限流（复用 `task_records`，超额 429）
-- [ ] 扩展：`manifest.json`（externally_connectable / host_permissions / 固定 key）
-- [ ] 扩展：`auth.js` 纯逻辑 + `node --test` 单测（消息处理 / header / 401）
-- [ ] 扩展：`background.js` 接 `onMessageExternal` + 可配置 `getGatewayUrl()` + `/tasks` bearer + 401 清 token；popup 加网关地址
-- [ ] 前端：`extensionConnect.js` 纯逻辑 + vitest 单测（4 态 / 连接流）；`api.issueExtensionToken()`
-- [ ] 前端：`App.jsx` 新增「浏览器扩展」卡片（混合触发 + 过期自愈重推）
-- [ ] 验证：`npm test` / `node --test` / `npm run build` 通过 + 人工浏览器 checklist
+- [x] 扩展：`manifest.json`（externally_connectable / host_permissions / 模块 worker）。扩展 ID：unpacked 同路径稳定，经 `VITE_EXTENSION_ID` 注入前端；`key` 固定留待打包上架。
+- [x] 扩展：`auth.js` 纯逻辑 + `node --test` 单测（消息处理 / header / 401）
+- [x] 扩展：`background.js` 接 `onMessageExternal` + 可配置 `getGatewayConfig()` + `/tasks` bearer + 401 清 token；popup 加网关地址
+- [x] 前端：`extensionConnect.js` 纯逻辑 + vitest 单测（4 态 / 连接流）；`api.issueExtensionToken()`
+- [x] 前端：`ExtensionCard.jsx`「浏览器扩展」卡片（混合触发 + 过期自愈重推），App.jsx 接入
+- [x] 验证（自动）：`npm test`（9）/ `node --test`（8）/ `npm run build` 通过
+- [ ] 验证（人工）：浏览器 checklist（见「实现与验证」）—— 待本人执行
 - [ ] （延后，非 v1）前端「已连接设备」管理界面（解绑），调用 `GET` / `DELETE /auth/extension-tokens`
-- [ ] 文档：更新 `extension/README` 与 `frontend/README`，本 spec 转「已实施」
+- [x] 文档：更新 `extension/README` 与 `frontend/README`
 
 ## 参考
 
