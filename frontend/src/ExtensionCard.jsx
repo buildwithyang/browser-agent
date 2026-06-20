@@ -5,16 +5,24 @@ import { EXT_STATE, probeThenAutoConnect, connect } from "./extensionConnect.js"
 
 const EXT_ID = import.meta.env.VITE_EXTENSION_ID || "";
 
+// 页面侧是否拿到了扩展通道（有匹配 externally_connectable 的扩展时才有 chrome.runtime.sendMessage）。
+function hasRuntime() {
+  return typeof chrome !== "undefined" && !!(chrome.runtime && chrome.runtime.sendMessage);
+}
+
 // 包一层 Promise 的 chrome.runtime.sendMessage（仅此处碰真实 chrome API）。
 function sendMessage(extId, msg) {
   return new Promise((resolve, reject) => {
-    const runtime = typeof chrome !== "undefined" && chrome.runtime;
-    if (!runtime || !runtime.sendMessage || !extId) {
-      reject(new Error("no-extension"));
+    if (!extId) {
+      reject(new Error("no-ext-id"));
+      return;
+    }
+    if (!hasRuntime()) {
+      reject(new Error("no-runtime"));
       return;
     }
     try {
-      runtime.sendMessage(extId, msg, (res) => {
+      chrome.runtime.sendMessage(extId, msg, (res) => {
         const err = chrome.runtime.lastError;
         if (err) reject(new Error(err.message));
         else resolve(res);
@@ -32,6 +40,17 @@ const LABEL = {
   [EXT_STATE.CONNECTED]: "已连接",
 };
 
+// 把「未连上」拆成可操作的具体原因，避免一句笼统的“连接失败”。
+function diagnose() {
+  if (!EXT_ID) {
+    return "未配置扩展 ID：把 chrome://extensions 里 Agent Bridge 的 ID 填进 frontend/.env 的 VITE_EXTENSION_ID，然后重启 dev。";
+  }
+  if (!hasRuntime()) {
+    return "页面拿不到扩展通道：确认扩展已加载，且改 manifest 后在 chrome://extensions 点过「重新加载」；当前页须在 dev.buildwithyang.com（externally_connectable 允许的域名）下。";
+  }
+  return "扩展 ID 不匹配：VITE_EXTENSION_ID 与 chrome://extensions 显示的 ID 不一致，请对齐后重启 dev。";
+}
+
 export default function ExtensionCard() {
   const [state, setState] = useState(EXT_STATE.DETECTING);
   const [busy, setBusy] = useState(false);
@@ -39,15 +58,19 @@ export default function ExtensionCard() {
 
   const deps = { sendMessage, extId: EXT_ID, issueToken: issueExtensionToken };
 
-  const autoConnect = useCallback(async () => {
+  const run = useCallback(async () => {
     setError("");
+    // 诊断信息留在控制台，便于排查（不打印 token）。
+    console.debug("[ExtensionCard] extId set:", !!EXT_ID, "runtime:", hasRuntime());
     const res = await probeThenAutoConnect(deps);
     setState(res.state);
+    if (res.state === EXT_STATE.NOT_INSTALLED) setError(diagnose());
+    else if (res.state === EXT_STATE.NOT_CONNECTED) setError("扩展已检测到，但未确认连接，请点「重新连接」重试。");
   }, []);
 
   useEffect(() => {
-    autoConnect();
-  }, [autoConnect]);
+    run();
+  }, [run]);
 
   const onConnect = async () => {
     setBusy(true);
@@ -57,8 +80,8 @@ export default function ExtensionCard() {
       setState(res.ok ? EXT_STATE.CONNECTED : EXT_STATE.NOT_CONNECTED);
       if (!res.ok) setError("连接未被扩展确认，请重试。");
     } catch {
-      setError("连接失败：请确认已安装扩展，且当前页面在扩展允许的域名下。");
       setState(EXT_STATE.NOT_INSTALLED);
+      setError(diagnose());
     } finally {
       setBusy(false);
     }
@@ -80,9 +103,6 @@ export default function ExtensionCard() {
         )}
       </div>
       <p className="muted">{LABEL[state]}</p>
-      {state === EXT_STATE.NOT_INSTALLED && (
-        <p className="muted">未检测到扩展。请先安装 Agent Bridge 扩展并刷新本页。</p>
-      )}
       {error && <div className="alert alert-error">{error}</div>}
     </section>
   );
