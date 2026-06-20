@@ -174,7 +174,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
         state: "error",
         source: message.payload && message.payload.url,
         errorHint: hint,
-        errorCmd: "cd gateway && uv run uvicorn app.main:app --host 127.0.0.1 --port 17321",
+        errorCmd: "./dev-start backend",
         text: "Agent Bridge 出错:" + hint
       });
     });
