@@ -23,4 +23,9 @@ export default defineConfig({
       },
     },
   },
+  // 纯逻辑单测（extensionConnect 等）；组件/浏览器 e2e 走人工 checklist。
+  test: {
+    environment: "node",
+    include: ["src/**/*.test.js"],
+  },
 });
