@@ -1,4 +1,13 @@
-const GATEWAY_URL = "http://127.0.0.1:17321/tasks";
+import {
+  buildAuthHeaders,
+  taskUrl,
+  shouldClearToken,
+  handleExternalMessage,
+  TOKEN_KEY,
+  EXPIRES_KEY,
+  GATEWAY_KEY,
+  DEFAULT_GATEWAY,
+} from "./auth.js";
 
 // 右键菜单项 -> 使用哪个网关 agent。
 const MENU_AGENT = {
@@ -24,6 +33,13 @@ const pendingAgent = {};
 function browserLang() {
   const ui = (chrome.i18n.getUILanguage() || "en").toLowerCase();
   return ui.startsWith("zh") ? "zh" : "en";
+}
+
+// 网关基址可配置：cloud 填 https://browser-agent.buildwithyang.com/api，自部署默认本地。
+function getGatewayConfig() {
+  return chrome.storage.local
+    .get({ [GATEWAY_KEY]: DEFAULT_GATEWAY, [TOKEN_KEY]: "" })
+    .then((cfg) => ({ base: cfg[GATEWAY_KEY], token: cfg[TOKEN_KEY] }));
 }
 
 async function menuLang() {
@@ -105,20 +121,35 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   // request settles.
   const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
 
-  resolveLang().then((lang) => {
-    console.log("[Agent Bridge] lang:", lang);
-    return fetch(GATEWAY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...message.payload, agent, lang }),
-      signal: controller.signal
-    });
-  })
+  Promise.all([resolveLang(), getGatewayConfig()])
+    .then(([lang, { base, token }]) => {
+      console.log("[Agent Bridge] lang:", lang);
+      return fetch(taskUrl(base), {
+        method: "POST",
+        headers: buildAuthHeaders(token),
+        body: JSON.stringify({ ...message.payload, agent, lang }),
+        signal: controller.signal
+      });
+    })
     .then((response) => {
       console.log("[Agent Bridge] gateway responded:", response.status);
+      if (shouldClearToken(response.status)) {
+        // token 过期 / 被吊销：清掉本地 token，提示去网页端重新连接。
+        chrome.storage.local.remove([TOKEN_KEY, EXPIRES_KEY]);
+        clearTimeout(timeout);
+        clearInterval(keepAlive);
+        showResult(tabId, {
+          state: "error",
+          source: message.payload && message.payload.url,
+          errorHint: "登录已过期或扩展被解绑,请在网页端重新登录并连接扩展。",
+          text: "Agent Bridge: 请在网页端重新登录并连接扩展。"
+        });
+        return null;
+      }
       return response.json();
     })
     .then((task) => {
+      if (!task) return; // 401 已在上一步处理
       clearTimeout(timeout);
       clearInterval(keepAlive);
       console.log("[Agent Bridge] task:", task.status, task.duration_ms + "ms");
@@ -491,3 +522,15 @@ function renderPanel(payload) {
   const dimDelay = state === "loading" ? 800 : 4000;
   setTimeout(() => host.classList.add("ab-dim"), dimDelay);
 }
+
+// 网页（externally_connectable.matches 内）推送 token / 探测连接。
+chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
+  const store = {
+    get: (key) => chrome.storage.local.get(key).then((obj) => obj[key]),
+    set: (obj) => chrome.storage.local.set(obj)
+  };
+  handleExternalMessage(msg, { store, now: Date.now() }).then((res) => {
+    if (res) sendResponse(res);
+  });
+  return true; // 异步 sendResponse
+});

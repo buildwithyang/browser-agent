@@ -40,3 +40,18 @@ document.getElementById("options").addEventListener("change", (event) => {
   markChecked();
   updateHint(pref);
 });
+
+// 网关地址（chrome.storage.local.gatewayUrl）；与 background.js 的 getGatewayConfig 对应。
+const GATEWAY_KEY = "gatewayUrl";
+const DEFAULT_GATEWAY = "http://127.0.0.1:17321";
+const gatewayInput = document.getElementById("gateway");
+
+chrome.storage.local.get({ [GATEWAY_KEY]: DEFAULT_GATEWAY }).then((cfg) => {
+  gatewayInput.value = cfg[GATEWAY_KEY];
+});
+
+gatewayInput.addEventListener("change", () => {
+  const value = gatewayInput.value.trim() || DEFAULT_GATEWAY;
+  chrome.storage.local.set({ [GATEWAY_KEY]: value });
+  gatewayInput.value = value;
+});
