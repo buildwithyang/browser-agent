@@ -1,0 +1,58 @@
+# Agent Bridge —— 多租户云端部署（内置 Postgres，先跑 HTTP）。
+# 用法（在 deploy/ 目录下）：
+#   cp .env.example .env && 编辑 .env
+#   docker compose up -d --build
+#
+# 说明：compose 会自动加载本目录的 .env 用于 ${...} 插值；
+#       同一个 .env 又通过 env_file 注入到 gateway 容器里。
+name: agent-bridge
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentbridge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-agentbridge}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 数据卷为空（首次启动）时自动执行此目录下的 .sql 建表 / 索引 / 触发器。
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentbridge} -d ${POSTGRES_DB:-agentbridge}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/gateway.Dockerfile
+    env_file:
+      - .env
+    environment:
+      # 由 db 服务的账号拼出连接串；to_sqlalchemy_database_url 会自动补成 postgresql+psycopg://。
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agentbridge}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-agentbridge}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # 仅 STORAGE_PROVIDER=fake / 本地 CV 回退时用到；OSS 模式下基本闲置。
+      - gatewaydata:/app/data
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    ports:
+      # 对外统一入口：nginx。SPA 在 /，API 在 /api（内部转发到 gateway:17321）。
+      - "${WEB_PORT:-17321}:80"
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  gatewaydata:

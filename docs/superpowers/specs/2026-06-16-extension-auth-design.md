@@ -1,6 +1,6 @@
 # 扩展登录与 `/tasks` 鉴权方案
 
-> 状态：**已定稿，待实现** · 日期：2026-06-16 · 关联模块：`gateway/app/modules/auth`、`gateway/app/modules/task`、`extension/`、`frontend/`
+> 状态：**网关已实现；前端 + 扩展待实现** · 日期：2026-06-16（2026-06-19 补充前端/扩展定稿）· 关联模块：`gateway/app/modules/auth`、`gateway/app/modules/task`、`extension/`、`frontend/`
 
 ## 背景
 
@@ -56,6 +56,9 @@
 | **token 存储形态** | **DB 只存 `sha256(token)`，不存明文** | 明文 token 仅在签发那一刻返回给前端；DB 泄露也拿不到可用 token，与「token 不落日志」安全基调一致。 |
 | **解绑设备** | **后端 `GET` / `DELETE` 端点 v1 即做；前端管理 UI 延后** | 目标含「可解绑设备」，端点 DB 模型天然支持顺手做掉；但前端列表 UI 非首发刚需，延后到后续迭代。 |
 | **前端连接触发** | **混合：检测到已装即静默自动推送 + 常驻手动按钮兜底** | 兼顾「无感连上」与「用户可控、可重试、过期自愈」；纯自动缺乏可控入口，纯手动则每次过期都要手动重连。 |
+| **域名 / 路由** | **单域名 `browser-agent.buildwithyang.com`（nginx：`/` 静态前端、`/api/*` 反代网关）；本地验证用 `dev.buildwithyang.com`** | 前端 origin = 网关 origin，同一域名。externally_connectable 不认 IP，故本地验证走 `dev.buildwithyang.com`，扩展 cloud 基址须含 `/api`。 |
+| **扩展 token 存储** | **`chrome.storage.local`（持久）** | 扩展在任意页面调 `/tasks`，需浏览器重启后仍可用；token 已可吊销 + 窄权限 + 30 天，持久化风险可控。 |
+| **验证策略** | **轻量单测（前端 vitest / 扩展 `node --test`）+ 人工浏览器点击** | 状态机 / 消息处理 / header / 401 等纯逻辑自动覆盖；真实跨上下文 push 与 Casdoor 回环只能人工，给 checklist。 |
 
 ## 各端改动清单
 
@@ -101,18 +104,23 @@ auth_tokens
 
 ### 前端（frontend）
 
-- 登录态下调用 `/auth/extension-token` 取 token，`chrome.runtime.sendMessage(扩展ID, { type: "AUTH_TOKEN", token })` 推送给扩展。
-- 在现有单页卡片栈（[App.jsx](../../../frontend/src/App.jsx)，登录态下 `上传简历` / `我的简历` 两张卡）中**新增一张「浏览器扩展」卡片**，承载探测 / 连接 / 状态回显。详见下文「前端交互」。
-- **解绑设备 UI 延后**：后端 `GET` / `DELETE /auth/extension-tokens` 端点 v1 即做（见上），但前端的「已连接设备」管理界面**不在 v1 范围**，列入开放项 / 后续迭代。
+- `api.js`：加 `issueExtensionToken()` → `POST /api/auth/extension-token`（同源；dev 经 Vite `/api` 代理，cloud 经 nginx `/api`）。
+- 新文件 `frontend/src/extensionConnect.js`：**纯逻辑**（不依赖 React，便于单测）——`probe()`（PING）、`connect()`（issue → sendMessage → ack）、4 态计算。扩展 ID 来自 `import.meta.env.VITE_EXTENSION_ID`。
+- `App.jsx`：在现有单页卡片栈（登录态下 `上传简历` / `我的简历` 两张卡）中**新增一张「浏览器扩展」卡片**，承载探测 / 连接 / 状态回显。详见下文「前端交互」。
+- **解绑设备 UI 延后**：后端 `GET` / `DELETE /auth/extension-tokens` 端点已就绪，但前端「已连接设备」管理界面**不在 v1 范围**，列入后续迭代。
 
 ### 扩展（extension）
 
-- `manifest.json`：加 `"externally_connectable": { "matches": ["https://*.<域名>/*"] }`；`host_permissions` 增加网关域名；`GATEWAY_URL` 改为**可配置**（`chrome.storage`，托管默认云域名 / 自部署填本地）。
-- `background.js`：`chrome.runtime.onMessageExternal` 处理三类消息——
-  - `PING`：回 `PONG` 并报告**当前是否持有有效 token**（供前端区分「已装未连」/「已连」）。
-  - `AUTH_TOKEN`：收 token 存 `chrome.storage`，并在 `sendResponse` 里**回 ack**（供前端确认连接成功）。
-- `/tasks` 请求带 `Authorization: Bearer`；遇 401 触发「请在网页端登录并连接扩展」。
-- token 存储：敏感优先 `chrome.storage.session`（内存、浏览器关闭即清，需重连）；要持久登录用 `chrome.storage.local`。MV3 service worker 不能用全局变量存状态。
+- `manifest.json`：
+  - `"externally_connectable": { "matches": ["https://browser-agent.buildwithyang.com/*", "http://dev.buildwithyang.com/*"] }`（cloud 前端 + 本地验证用 dev 域名；**不能用 `127.0.0.1`/`localhost`**——externally_connectable 不认 IP/无点主机）。
+  - `host_permissions` 增加 `"https://browser-agent.buildwithyang.com/*"`（保留 `"http://127.0.0.1:17321/*"`）。
+  - 加固定 `"key"`，稳定开发期扩展 ID（与前端 `VITE_EXTENSION_ID` 对齐）。
+- `background.js`：
+  - `GATEWAY_URL` 改为**可配置**：读 `chrome.storage.local.gatewayUrl`，默认 `http://127.0.0.1:17321`（自部署不回归）；cloud 填 `https://browser-agent.buildwithyang.com/api`（网关在 `/api` 之后）。请求拼 `${base}/tasks`。
+  - `chrome.runtime.onMessageExternal` 处理两类消息（见「消息契约」）：`PING`→`PONG{connected}`、`AUTH_TOKEN`→存储 + ack。
+  - `/tasks` 请求带 `Authorization: Bearer <token>`（有 token 才带）；遇 **401** 清掉本地 token 并在结果面板提示「请在网页端登录并连接扩展」。
+- token 存储：`chrome.storage.local`（持久；浏览器重启后扩展在任意页面仍可调 `/tasks`）。MV3 service worker 不能用全局变量存状态。
+- popup：加「网关地址」输入（自部署填本地 / cloud 填上面地址）+ 连接状态小字。
 
 ### Casdoor
 
@@ -145,13 +153,22 @@ auth_tokens
                             └─ 收到 ack → 已连接
 ```
 
+### 消息契约（前端 ↔ 扩展）
+
+前端用已知扩展 ID（`VITE_EXTENSION_ID`）`chrome.runtime.sendMessage(EXT_ID, msg, cb)`，扩展 `onMessageExternal` 处理。Chrome 保证只有 `externally_connectable.matches` 内的页面能发到，扩展无需再校验 origin。
+
+| 前端发送 | 扩展回执（`sendResponse`） |
+|---|---|
+| `{ type: "PING" }` | `{ type: "PONG", connected: <bool, 是否持有未过期 token> }` |
+| `{ type: "AUTH_TOKEN", token, expiresAt }` | `{ type: "AUTH_TOKEN_ACK", ok: true }` |
+
 ### 连接数据流
 
 ```text
-前端 POST /auth/extension-token（cookie 鉴权）
-   └─ 网关签发 → 返回明文 token
-前端 chrome.runtime.sendMessage(扩展ID, { type: "AUTH_TOKEN", token })
-   └─ 扩展 onMessageExternal 存入 chrome.storage → sendResponse(ack)
+前端 POST /api/auth/extension-token（cookie 鉴权）
+   └─ 网关签发 → 返回明文 token + expiresAt
+前端 chrome.runtime.sendMessage(EXT_ID, { type: "AUTH_TOKEN", token, expiresAt })
+   └─ 扩展 onMessageExternal 存入 chrome.storage.local → sendResponse(AUTH_TOKEN_ACK)
 前端收 ack → 卡片切「已连接」
 ```
 
@@ -162,6 +179,37 @@ auth_tokens
 ### 对扩展侧的隐含要求
 
 本交互要求扩展 `onMessageExternal` 额外支持：**`PING`→`PONG`（含「是否持有有效 token」标志）握手**，以及 **`AUTH_TOKEN` 的 `sendResponse` ack 回执**。已并入「扩展（extension）」改动清单。
+
+## 实现与验证（前端 + 扩展）
+
+### 文件结构
+
+| 文件 | 职责 |
+|---|---|
+| `extension/manifest.json` | externally_connectable / host_permissions / 固定 key |
+| `extension/auth.js`（新） | 纯逻辑：`buildAuthHeaders(token)`、`handleExternalMessage(msg, store)`、`shouldClearOn401(status)`——便于 `node --test` |
+| `extension/background.js` | 接 `onMessageExternal`、可配置 `getGatewayUrl()`、`/tasks` 带 bearer、401 清 token |
+| `extension/popup.{html,js}` | 网关地址输入 + 连接状态 |
+| `frontend/src/extensionConnect.js`（新） | 纯逻辑：probe / connect / 4 态计算——便于 vitest |
+| `frontend/src/api.js` | `issueExtensionToken()` |
+| `frontend/src/App.jsx` | 「浏览器扩展」卡片 |
+
+### 测试策略（自动）
+
+- **前端**：新增 devDeps `vitest` + `@testing-library/react` + `jsdom`；mock `window.chrome.runtime.sendMessage` / `fetch`，覆盖 `extensionConnect` 状态机与连接流。命令 `cd frontend && npm test`。
+- **扩展**：用 Node 内置 `node --test`（零依赖），mock 全局 `chrome` / `fetch`，覆盖 `auth.js` 的消息处理 / header / 401。命令 `cd extension && node --test`。
+- **构建 / 静态**：`cd frontend && npm run build` 通过；`manifest.json` 为合法 JSON 且 matches 格式正确。
+
+### 人工验证 checklist（需浏览器，本人执行）
+
+> ⚠️ 必须把前端跑在 `dev.buildwithyang.com:5173`，**不能用 `127.0.0.1`**——externally_connectable 不匹配 IP。
+
+1. 网关 `REQUIRE_AUTH=true` 启动（`127.0.0.1:17321`，Casdoor 配好）。
+2. 前端 `dev.buildwithyang.com:5173`，加载 unpacked 扩展（`VITE_EXTENSION_ID` 与 manifest `key` 派生的 ID 一致）。
+3. Casdoor 登录 → 「浏览器扩展」卡片自动显示「已连接 ✓」。
+4. 任意网页右键用扩展 → `/tasks` 带 token 成功返回结果。
+5. 前端「重新连接」按钮可重推；`DELETE` 吊销该 token 后扩展再调 `/tasks` → 401 → 面板提示重新连接。
+6. 浏览器重启后扩展仍持 token（`chrome.storage.local`），无需重连即可用。
 
 ## 安全注意事项
 
@@ -180,10 +228,14 @@ auth_tokens
 - [x] 网关：auth 层 `resolve_user_id`（Bearer 优先、cookie 回退，命中刷新 `last_used_at`）
 - [x] 网关：`/tasks` 接入 `resolve_user_id` + `REQUIRE_AUTH` 开关
 - [x] 网关：输入封顶（`max_length`）+ 按用户限流（复用 `task_records`，超额 429）
-- [ ] 前端：新增「浏览器扩展」卡片（PING 探测 + 4 态 + 混合触发：自动推送 + 手动按钮 + 过期自愈重推）
-- [ ] 扩展：`externally_connectable` + `onMessageExternal`（`PING`/`PONG` 握手 + `AUTH_TOKEN` ack）+ token 存储 + `Authorization` 头 + 可配置域名
+- [ ] 扩展：`manifest.json`（externally_connectable / host_permissions / 固定 key）
+- [ ] 扩展：`auth.js` 纯逻辑 + `node --test` 单测（消息处理 / header / 401）
+- [ ] 扩展：`background.js` 接 `onMessageExternal` + 可配置 `getGatewayUrl()` + `/tasks` bearer + 401 清 token；popup 加网关地址
+- [ ] 前端：`extensionConnect.js` 纯逻辑 + vitest 单测（4 态 / 连接流）；`api.issueExtensionToken()`
+- [ ] 前端：`App.jsx` 新增「浏览器扩展」卡片（混合触发 + 过期自愈重推）
+- [ ] 验证：`npm test` / `node --test` / `npm run build` 通过 + 人工浏览器 checklist
 - [ ] （延后，非 v1）前端「已连接设备」管理界面（解绑），调用 `GET` / `DELETE /auth/extension-tokens`
-- [ ] 文档：更新 `extension/README` 与 `auth`/`task` 模块 README，本 spec 转「已实施」
+- [ ] 文档：更新 `extension/README` 与 `frontend/README`，本 spec 转「已实施」
 
 ## 参考
 

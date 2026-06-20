@@ -1,0 +1,27 @@
+# Docker 构建上下文裁剪。必须放在构建上下文根（= 仓库根），这是 Docker 的约定，
+# 无法移进 deploy/。gateway / web 两个镜像共用此文件：COPY 时各取 gateway/、
+# frontend/ 子路径，这里把无关或会污染镜像的大目录排掉。
+#   最关键：挡掉 frontend/node_modules（42M，且是 macOS 二进制，绝不能进 Linux 镜像）。
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+.pytest_cache/
+
+# Node / 前端构建产物（镜像内重新 npm ci + build）
+**/node_modules/
+**/dist/
+
+# 本地数据（SQLite / 任务记录 / 简历文件）
+gateway/data/
+
+# 版本控制 / 编辑器 / 系统
+.git/
+.gitignore
+.DS_Store
+
+# 密钥：只允许 .env.example 进上下文
+**/.env
+*.env
+!**/.env.example
