@@ -3,6 +3,13 @@
   "name": "Agent Bridge",
   "version": "0.1.0",
   "description": "Send the current webpage context to a local Python gateway.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqAyb1R8rD3BrnQlSmTq7VKg0toORx+bn2sfvgBvzi3OBKaxh0Y/WZUrnzbBZoKgoUOZ6AREDfPV3YsqeRy4CPmjqfqRkECE+X2Tj/nKuK3+H1Qp4813rCDYtWOh1DlJkBCzYq8xfAV80QpIje70y5aBybBuW/CBUH2ZjqmKJyWNebR/bUEg80Lfbfw4R0Jc9vqYhlD+PY64WQFUXF0GiOJUupmtqc7s8YFv9cNmvikp+yar8Bgiszk+w2g819mi8WKde5kyp4H5zuiya+mBRqAk/qRHgF4UNjgbrAB+WH+fSSSXCOWraLSHgXKCgEwdDwK+VHHXX5FLL9kLxnuLleQIDAQAB",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "permissions": ["contextMenus", "activeTab", "scripting", "notifications", "storage"],
   "host_permissions": [
     "http://127.0.0.1:17321/*",
@@ -20,6 +27,10 @@
   },
   "action": {
     "default_title": "Agent Bridge",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
   }
 }

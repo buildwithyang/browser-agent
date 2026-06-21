@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Agent Bridge 占位图标：渐变圆角方块 + “连接两节点”意象（页面 ↔ agent）。后续可换正式设计。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+  <g stroke="#ffffff" stroke-width="10" stroke-linecap="round" fill="#ffffff">
+    <line x1="42" y1="86" x2="86" y2="42"/>
+    <circle cx="42" cy="86" r="12" stroke="none"/>
+    <circle cx="86" cy="42" r="12" stroke="none"/>
+  </g>
+</svg>

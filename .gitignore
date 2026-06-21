@@ -15,5 +15,10 @@ __pycache__/
 # Local task data
 gateway/data/
 
+# 扩展打包产物与签名私钥（公钥 key 已写进 manifest，私钥不入库）
+extension/dist/
+extension/key.pem
+extension/node_modules/
+
 # OS
 .DS_Store

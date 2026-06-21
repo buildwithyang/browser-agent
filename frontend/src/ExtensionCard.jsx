@@ -3,7 +3,10 @@ import { useCallback, useEffect, useState } from "react";
 import { issueExtensionToken } from "./api.js";
 import { EXT_STATE, probeThenAutoConnect, connect } from "./extensionConnect.js";
 
-const EXT_ID = import.meta.env.VITE_EXTENSION_ID || "";
+// 扩展 ID 由 manifest 的固定 key 派生，对所有用户一致；自部署无需再设 VITE_EXTENSION_ID。
+// 上架 Chrome 商店后若分配了不同 ID，改这里的默认值（或用 VITE_EXTENSION_ID 覆盖）。
+const DEFAULT_EXT_ID = "njllhjolgnfainjapjekgimjbipigpja";
+const EXT_ID = import.meta.env.VITE_EXTENSION_ID || DEFAULT_EXT_ID;
 
 // 页面侧是否拿到了扩展通道（有匹配 externally_connectable 的扩展时才有 chrome.runtime.sendMessage）。
 function hasRuntime() {
@@ -42,13 +45,10 @@ const LABEL = {
 
 // 把「未连上」拆成可操作的具体原因，避免一句笼统的“连接失败”。
 function diagnose() {
-  if (!EXT_ID) {
-    return "未配置扩展 ID：把 chrome://extensions 里 Agent Bridge 的 ID 填进 frontend/.env 的 VITE_EXTENSION_ID，然后重启 dev。";
-  }
   if (!hasRuntime()) {
-    return "页面拿不到扩展通道：确认扩展已加载，且改 manifest 后在 chrome://extensions 点过「重新加载」；当前页须在 dev.buildwithyang.com（externally_connectable 允许的域名）下。";
+    return "页面拿不到扩展通道：确认已安装 Agent Bridge 扩展、并在 chrome://extensions 点过「重新加载」；当前页须在 externally_connectable 允许的域名下（云端 / dev 域名，不是 127.0.0.1）。";
   }
-  return "扩展 ID 不匹配：VITE_EXTENSION_ID 与 chrome://extensions 显示的 ID 不一致，请对齐后重启 dev。";
+  return `扩展已安装但 ID 不匹配：当前扩展 ID 与前端期望的 ${EXT_ID} 不一致（多见于装了未含 manifest key 的旧版扩展，或商店分配了不同 ID）。请安装含固定 key 的版本，或用 VITE_EXTENSION_ID 覆盖。`;
 }
 
 export default function ExtensionCard() {
@@ -104,6 +104,12 @@ export default function ExtensionCard() {
       </div>
       <p className="muted">{LABEL[state]}</p>
       {error && <div className="alert alert-error">{error}</div>}
+      {state !== EXT_STATE.CONNECTED && state !== EXT_STATE.DETECTING && (
+        <p className="muted">
+          还没安装？<a href="/download/agent-bridge-extension.zip" download>下载扩展 zip</a>
+          ，解压后在 <code>chrome://extensions</code> 开启「开发者模式」→「加载已解压」选择该目录，再回来点「连接扩展」。
+        </p>
+      )}
     </section>
   );
 }

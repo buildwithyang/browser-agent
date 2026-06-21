@@ -53,6 +53,11 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 17321
 
 ## 第三步:在 Chrome 中安装扩展
 
+扩展有固定 ID(`njllhjolgnfainjapjekgimjbipigpja`)。两种安装来源任选其一:
+
+- **应用商店**(最省事,上架后补链接):点「添加至 Chrome」即可,可跳过下面的开发者模式步骤。
+- **离线 zip / 源码目录**(本文档场景):用下面的「加载已解压」方式。zip 由 `cd extension && npm run package` 生成后解压;没有 zip 时直接选仓库里的 `extension` 目录也行。
+
 ### 1. 打开扩展程序管理页
 
 点击 Chrome 右上角菜单 → 扩展程序 → 管理扩展程序(或直接在地址栏输入 `chrome://extensions`):
@@ -65,9 +70,9 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 17321
 
 ![加载未打包的扩展程序](install_extension_cn_2.png)
 
-### 3. 选择 extension 目录
+### 3. 选择扩展目录
 
-在弹出的文件选择框中,选择本项目下的 `extension` 目录:
+在弹出的文件选择框中,选择**解压后的扩展目录**(或没打包时直接选本项目下的 `extension` 目录):
 
 ![选择 extension 目录](install_extension_cn_3.png)
 

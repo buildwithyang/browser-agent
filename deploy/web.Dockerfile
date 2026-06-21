@@ -2,7 +2,7 @@
 # 构建上下文 = 仓库根。
 #   docker compose -f deploy/docker-compose.yml build web
 
-# ---- 构建阶段 ----
+# ---- 前端构建阶段 ----
 FROM node:20-alpine AS build
 WORKDIR /app
 
@@ -16,8 +16,20 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
+# ---- 扩展打包阶段 ----
+# 复用 extension/package.sh 打出 zip，供网站自托管下载（解压→加载已解压）。
+# 与本地 npm run package 同一份脚本，文件清单不漂移。
+FROM node:20-alpine AS extpack
+RUN apk add --no-cache bash zip
+WORKDIR /ext
+COPY extension/ ./
+RUN bash package.sh
+
 # ---- 运行阶段 ----
 FROM nginx:alpine
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+# 扩展 zip 放到 /download/，nginx 直接静态提供：
+#   稳定链接 http://<host>:<port>/download/agent-bridge-extension.zip
+COPY --from=extpack /ext/dist/ /usr/share/nginx/html/download/
 EXPOSE 80

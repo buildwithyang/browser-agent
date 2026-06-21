@@ -25,3 +25,4 @@ gateway/data/
 **/.env
 *.env
 !**/.env.example
+extension/key.pem

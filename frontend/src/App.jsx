@@ -46,6 +46,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const fileInput = useRef(null);
+  // 区分「从未登录 / 会话失效」与「用户主动退出」：前者自动跳转 Casdoor，
+  // 后者停在已退出页面，避免退出后被 Casdoor SSO 立刻静默登录回来。
+  const justLoggedOut = useRef(false);
 
   const refreshResumes = useCallback(async () => {
     try {
@@ -64,6 +67,15 @@ export default function App() {
       })
       .catch(() => setMe(null));
   }, [refreshResumes]);
+
+  // 未登录时直接跳转到 Casdoor，省去点击「使用 Casdoor 登录」按钮。
+  // 主动退出(justLoggedOut)不跳，否则会被 SSO 立刻登录回来。
+  // 用 replace 不留历史记录，避免「后退」回到这个跳转中的空白页。
+  useEffect(() => {
+    if (me === null && !justLoggedOut.current) {
+      window.location.replace(loginUrl);
+    }
+  }, [me]);
 
   const onPick = () => fileInput.current?.click();
 
@@ -115,6 +127,7 @@ export default function App() {
 
   const onLogout = async () => {
     await logout().catch(() => {});
+    justLoggedOut.current = true; // 退出后停在已退出页面，不自动跳回登录
     setMe(null);
     setResumes([]);
   };
@@ -140,11 +153,15 @@ export default function App() {
 
         {me === null && (
           <section className="card signin">
-            <h1>登录以管理你的简历</h1>
-            <p className="muted">
-              登录后上传的简历会用于浏览器扩展的「与简历匹配」功能。简历文本仅用于为你生成匹配分析。
-            </p>
-            <a className="btn-primary" href={loginUrl}>使用 Casdoor 登录</a>
+            {justLoggedOut.current ? (
+              <>
+                <h1>已退出登录</h1>
+                <p className="muted">你已安全退出。</p>
+                <a className="btn-primary" href={loginUrl}>重新登录</a>
+              </>
+            ) : (
+              <p className="muted">正在跳转到登录…</p>
+            )}
           </section>
         )}
 

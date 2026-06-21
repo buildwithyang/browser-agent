@@ -45,17 +45,49 @@
 
 | 文件 | 作用 |
 |---|---|
-| `manifest.json` | MV3 清单;权限 `contextMenus / activeTab / scripting / notifications / storage`,`action` 弹窗,`host_permissions` 指向本地网关 |
-| `background.js` | service worker:建右键菜单、解析语言、POST 网关、把结果注入页面面板 |
+| `manifest.json` | MV3 清单;固定 `key`(定 ID)、`icons`、权限、`action` 弹窗、`host_permissions`、`externally_connectable` |
+| `background.js` | service worker:建右键菜单、解析语言、POST 网关、把结果注入页面面板、收外部推送的 token |
 | `content.js` | 注入到页面,抓取上下文(含图片文字线索)并回传 |
-| `popup.html` / `popup.js` | 扩展图标弹窗:语言偏好设置 |
+| `popup.html` / `popup.js` | 扩展图标弹窗:语言偏好 + 网关地址设置 |
+| `auth.js` | token 存取、默认网关、鉴权头、外部消息处理(纯逻辑,带 `auth.test.js`) |
+| `icons/` | `icon.svg` 主图 + `icon-16/32/48/128.png`(由 SVG 生成) |
+| `package.sh` | 打 zip 的脚本(`npm run package`) |
 
-## 安装(开发模式)
+## 安装
 
-1. 打开 `chrome://extensions`
-2. 打开右上角「开发者模式」
-3. 点「加载已解压的扩展程序」,选择本 `extension/` 目录
-4. 改动代码后,在该页点扩展卡片上的刷新图标重新加载
+扩展 manifest 内置了固定 `key`,因此**所有人安装后扩展 ID 都一致**:
+`njllhjolgnfainjapjekgimjbipigpja`。网页端据此推送登录 token,无需任何人再手动配 ID。
+
+### 方式 A:Chrome 应用商店(云端用户,最省事)
+
+1. 在 Chrome 应用商店点「添加至 Chrome」(上架后补链接)。
+2. 打开网页端登录,在「浏览器扩展」卡片点「连接扩展」即可。
+
+### 方式 B:下载 zip 离线安装(自部署 / 未上架时)
+
+1. 从 Release 下载 `agent-bridge-extension-<版本>.zip`,解压到一个目录。
+2. 打开 `chrome://extensions` → 右上角开「开发者模式」→ 点「加载已解压的扩展程序」→ 选解压后的目录。
+3. 自部署:点扩展图标,在 popup 把网关地址填成 `http://127.0.0.1:17321`(`REQUIRE_AUTH=false` 匿名直连,无需登录)。
+
+> zip 由 `npm run package` 生成(见下「打包」)。
+
+### 开发者(改源码)
+
+直接「加载已解压」本 `extension/` 目录;改动后到 `chrome://extensions` 点扩展卡片的刷新图标重新加载。
+
+## 打包
+
+```bash
+cd extension
+npm run package        # 产出 dist/agent-bridge-extension-<版本>.zip
+```
+
+同一个 zip 两用:上传 Chrome 应用商店,或给自部署者「加载已解压」。打包只含运行所需文件,
+排除测试 / `package.json` / 本说明 / 私钥。
+
+> 固定 ID 由 `manifest.json` 的 `key`(公钥)派生;对应私钥在 `extension/key.pem`,**不入库**
+> (仅日后签 `.crx` 时才需要)。上架商店后若分配了不同 ID,需把新 `key` 回填到 `manifest.json`
+> 与前端默认 ID([frontend/src/ExtensionCard.jsx](../frontend/src/ExtensionCard.jsx))。
 
 ## 使用
 
