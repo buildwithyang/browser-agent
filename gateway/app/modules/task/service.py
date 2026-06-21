@@ -58,6 +58,12 @@ class TaskService:
 
         logger.info("task received agent=%s url=%s", task.agent, task.url)
 
+        # agent 可声明输入预检(如 job_match 要求页面有足够职位内容)。不满足时抛
+        # ValueError -> API 映射 400,在调用模型之前就失败,不浪费 token、也不瞎编。
+        validate = getattr(agent, "validate", None)
+        if callable(validate):
+            validate(task)
+
         # job_match 需要简历文本:按登录用户解析(无可用简历 -> ValueError 引导上传);
         # 匿名(扩展单用户)返回 None,交给 agent 回退本地简历文件。
         run_kwargs: dict[str, Any] = {}

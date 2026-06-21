@@ -29,6 +29,9 @@ const MENU_TITLES = {
 
 // 记录每个 tab 本次点击选择的 agent;content.js 回传上下文时再读取。
 const pendingAgent = {};
+// 右键事件里 Chrome 给的选区快照(info.selectionText)。比 content.js 里
+// window.getSelection() 可靠 —— 菜单触发脚本注入时,页面选区常已被清除。
+const pendingSelection = {};
 
 function browserLang() {
   const ui = (chrome.i18n.getUILanguage() || "en").toLowerCase();
@@ -85,6 +88,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     return;
   }
   pendingAgent[tab.id] = agent;
+  pendingSelection[tab.id] = info.selectionText || "";
 
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
@@ -107,7 +111,19 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   const tabId = sender.tab.id;
   const agent = pendingAgent[tabId] || "summary_page";
   delete pendingAgent[tabId];
-  console.log("[Agent Bridge] context received:", agent, message.payload && message.payload.url);
+
+  // 优先用右键事件的选区快照(可靠);content.js 的 getSelection 仅作兜底。
+  const snapshot = pendingSelection[tabId];
+  delete pendingSelection[tabId];
+  const payload = { ...message.payload };
+  if (snapshot && snapshot.trim()) payload.selectedText = snapshot;
+
+  console.log(
+    "[Agent Bridge] context received:", agent,
+    "selection chars:", (payload.selectedText || "").length,
+    "page chars:", (payload.pageText || "").length,
+    message.payload && message.payload.url
+  );
   showResult(tabId, { state: "loading", source: message.payload && message.payload.url });
 
   // Abort if the gateway never responds, so the panel can't get stuck forever.
@@ -127,7 +143,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       return fetch(taskUrl(base), {
         method: "POST",
         headers: buildAuthHeaders(token),
-        body: JSON.stringify({ ...message.payload, agent, lang }),
+        body: JSON.stringify({ ...payload, agent, lang }),
         signal: controller.signal
       });
     })

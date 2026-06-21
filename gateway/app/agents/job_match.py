@@ -61,6 +61,9 @@ SECTION_SPECS = [
 # 简历路径,相对网关运行目录(gateway/)。可用环境变量覆盖。
 DEFAULT_CV_PATH = os.environ.get("AGENT_BRIDGE_CV_PATH", "data/cv/cv.pdf")
 MAX_CV_CHARS = 15000
+# 职位内容(页面正文或选中文字,取较长者)少于该字符数时直接失败,
+# 避免在几乎没内容的页面上让模型凭空编造职位/匹配结果。
+MIN_JOB_CONTENT_CHARS = 80
 
 _SECTION_RE = re.compile(r"^@@SECTION\s+(\w+)\s*$", re.MULTILINE)
 
@@ -101,7 +104,21 @@ class JobMatchAgent(OpenAIChatAgent):
             )
         return text
 
+    def validate(self, task: TaskCreate) -> None:
+        """内容太少就直接失败,避免模型凭空编造职位/匹配。
+
+        由 TaskService 在调用模型前预检(抛 ValueError -> API 返回 400,且不耗 token)。
+        """
+        job_chars = max(len(task.page_text.strip()), len(task.selected_text.strip()))
+        if job_chars < MIN_JOB_CONTENT_CHARS:
+            raise ValueError(
+                "这个页面没抓到足够的职位内容,无法进行简历匹配。"
+                "请打开完整的招聘职位页面,或选中职位描述文字后再试。"
+            )
+
     def build_prompt(self, task: TaskCreate, cv_text: str | None = None) -> str:
+        # 兜底:任何路径构造 prompt 前都先校验,确保模型不会在稀疏内容上瞎编。
+        self.validate(task)
         section_lines = ["请按顺序输出以下区块:"]
         for sid, instruction in SECTION_SPECS:
             section_lines.append(f"@@SECTION {sid} — {instruction}")

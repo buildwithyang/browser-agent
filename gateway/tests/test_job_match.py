@@ -10,7 +10,10 @@ def make_task() -> TaskCreate:
     return TaskCreate(
         url="https://example.com/jobs/9",
         title="Senior Go Engineer",
-        page_text="We need Go, Kubernetes, 5y backend.",
+        page_text=(
+            "We need Go, Kubernetes, distributed systems, and 5 years of backend "
+            "experience for our Dubai fintech payments platform."
+        ),
     )
 
 
@@ -93,3 +96,24 @@ def test_missing_cv_raises(tmp_path):
     agent = JobMatchAgent(cv_path=tmp_path / "nope.pdf")
     with pytest.raises(FileNotFoundError):
         agent.build_prompt(make_task())
+
+
+def test_validate_rejects_sparse_content():
+    agent = JobMatchAgent()
+    sparse = TaskCreate(url="https://x.com/j", title="Job", page_text="Go")
+    with pytest.raises(ValueError):
+        agent.validate(sparse)
+
+
+def test_validate_passes_when_selection_has_enough():
+    agent = JobMatchAgent()
+    # 页面正文为空,但选中了足够长的职位描述 -> 通过。
+    sel = "We need a senior Go engineer with Kubernetes and distributed systems experience."
+    agent.validate(TaskCreate(url="https://x.com/j", title="Job", selectedText=sel))
+
+
+def test_build_prompt_rejects_sparse_content():
+    agent = JobMatchAgent()
+    agent._cv_text = "Go / 5y backend"  # 即便有简历,内容太少也不该构造 prompt
+    with pytest.raises(ValueError):
+        agent.build_prompt(TaskCreate(url="https://x.com/j", title="Job", page_text="hi"))
