@@ -6,11 +6,11 @@
   "permissions": ["contextMenus", "activeTab", "scripting", "notifications", "storage"],
   "host_permissions": [
     "http://127.0.0.1:17321/*",
-    "https://browser-agent.buildwithyang.com/*"
+    "https://browser.buildwithyang.com/*"
   ],
   "externally_connectable": {
     "matches": [
-      "https://browser-agent.buildwithyang.com/*",
+      "https://browser.buildwithyang.com/*",
       "http://dev.buildwithyang.com/*"
     ]
   },

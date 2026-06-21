@@ -11,8 +11,8 @@
 ## Global Constraints
 
 - Gateway endpoints already exist: `POST /auth/extension-token` → `{code,message,data:{token, expires_at}}`; `/tasks` accepts `Authorization: Bearer`.
-- Domain: cloud single host `browser-agent.buildwithyang.com` (nginx: `/` static, `/api/*` → gateway). Local verify via `dev.buildwithyang.com` — **never `127.0.0.1`/`localhost`** in `externally_connectable` (rejects IPs/no-dot hosts).
-- Extension `GATEWAY_URL` is configurable via `chrome.storage.local.gatewayUrl`, default `http://127.0.0.1:17321`; cloud value is `https://browser-agent.buildwithyang.com/api`; the extension appends `/tasks`.
+- Domain: cloud single host `browser.buildwithyang.com` (nginx: `/` static, `/api/*` → gateway). Local verify via `dev.buildwithyang.com` — **never `127.0.0.1`/`localhost`** in `externally_connectable` (rejects IPs/no-dot hosts).
+- Extension `GATEWAY_URL` is configurable via `chrome.storage.local.gatewayUrl`, default `http://127.0.0.1:17321`; cloud value is `https://browser.buildwithyang.com/api`; the extension appends `/tasks`.
 - Token stored in `chrome.storage.local` (persistent).
 - Message contract: `{type:"PING"}` → `{type:"PONG", connected}`; `{type:"AUTH_TOKEN", token, expiresAt}` → `{type:"AUTH_TOKEN_ACK", ok:true}`.
 - **Never log the token** (`AGENTS.md` redaction rule).
@@ -227,11 +227,11 @@ Edit `extension/manifest.json` — make the background a module, broaden host_pe
   "permissions": ["contextMenus", "activeTab", "scripting", "notifications", "storage"],
   "host_permissions": [
     "http://127.0.0.1:17321/*",
-    "https://browser-agent.buildwithyang.com/*"
+    "https://browser.buildwithyang.com/*"
   ],
   "externally_connectable": {
     "matches": [
-      "https://browser-agent.buildwithyang.com/*",
+      "https://browser.buildwithyang.com/*",
       "http://dev.buildwithyang.com/*"
     ]
   },
@@ -279,7 +279,7 @@ const GATEWAY_URL = "http://127.0.0.1:17321/tasks";
 Add a config reader near the other helpers (e.g. after `browserLang()`):
 
 ```js
-// 网关基址可配置：cloud 填 https://browser-agent.buildwithyang.com/api，自部署默认本地。
+// 网关基址可配置：cloud 填 https://browser.buildwithyang.com/api，自部署默认本地。
 function getGatewayConfig() {
   return chrome.storage.local
     .get({ [GATEWAY_KEY]: DEFAULT_GATEWAY, [TOKEN_KEY]: "" })
@@ -381,7 +381,7 @@ In `extension/popup.html`, add before the closing `</body>` (after the `hint` di
   <input id="gateway" type="text" spellcheck="false"
     style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #2a2e39;border-radius:8px;background:#1b1e26;color:#e6e8ee;font-size:12px"
     placeholder="http://127.0.0.1:17321" />
-  <div class="hint" id="gateway-hint">云端填 https://browser-agent.buildwithyang.com/api</div>
+  <div class="hint" id="gateway-hint">云端填 https://browser.buildwithyang.com/api</div>
 ```
 
 In `extension/popup.js`, append:
@@ -804,7 +804,7 @@ VITE_EXTENSION_ID=
 In `extension/README.md`, replace the line that says the gateway URL is fixed (around line 12, `网关地址固定为 ...`) with:
 
 ```markdown
-网关地址可在扩展弹窗（popup）配置，存于 `chrome.storage.local.gatewayUrl`，默认 `http://127.0.0.1:17321`；云端填 `https://browser-agent.buildwithyang.com/api`。登录态下，前端「浏览器扩展」卡片会把 bearer token 推送给扩展，之后 `/tasks` 自动带 `Authorization: Bearer`。遇 401（token 过期/被解绑）扩展会清除本地 token 并提示在网页端重新连接。
+网关地址可在扩展弹窗（popup）配置，存于 `chrome.storage.local.gatewayUrl`，默认 `http://127.0.0.1:17321`；云端填 `https://browser.buildwithyang.com/api`。登录态下，前端「浏览器扩展」卡片会把 bearer token 推送给扩展，之后 `/tasks` 自动带 `Authorization: Bearer`。遇 401（token 过期/被解绑）扩展会清除本地 token 并提示在网页端重新连接。
 
 扩展逻辑测试：`cd extension && node --test`。
 ```

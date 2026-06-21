@@ -56,7 +56,7 @@
 | **token 存储形态** | **DB 只存 `sha256(token)`，不存明文** | 明文 token 仅在签发那一刻返回给前端；DB 泄露也拿不到可用 token，与「token 不落日志」安全基调一致。 |
 | **解绑设备** | **后端 `GET` / `DELETE` 端点 v1 即做；前端管理 UI 延后** | 目标含「可解绑设备」，端点 DB 模型天然支持顺手做掉；但前端列表 UI 非首发刚需，延后到后续迭代。 |
 | **前端连接触发** | **混合：检测到已装即静默自动推送 + 常驻手动按钮兜底** | 兼顾「无感连上」与「用户可控、可重试、过期自愈」；纯自动缺乏可控入口，纯手动则每次过期都要手动重连。 |
-| **域名 / 路由** | **单域名 `browser-agent.buildwithyang.com`（nginx：`/` 静态前端、`/api/*` 反代网关）；本地验证用 `dev.buildwithyang.com`** | 前端 origin = 网关 origin，同一域名。externally_connectable 不认 IP，故本地验证走 `dev.buildwithyang.com`，扩展 cloud 基址须含 `/api`。 |
+| **域名 / 路由** | **单域名 `browser.buildwithyang.com`（nginx：`/` 静态前端、`/api/*` 反代网关）；本地验证用 `dev.buildwithyang.com`** | 前端 origin = 网关 origin，同一域名。externally_connectable 不认 IP，故本地验证走 `dev.buildwithyang.com`，扩展 cloud 基址须含 `/api`。 |
 | **扩展 token 存储** | **`chrome.storage.local`（持久）** | 扩展在任意页面调 `/tasks`，需浏览器重启后仍可用；token 已可吊销 + 窄权限 + 30 天，持久化风险可控。 |
 | **验证策略** | **轻量单测（前端 vitest / 扩展 `node --test`）+ 人工浏览器点击** | 状态机 / 消息处理 / header / 401 等纯逻辑自动覆盖；真实跨上下文 push 与 Casdoor 回环只能人工，给 checklist。 |
 
@@ -112,11 +112,11 @@ auth_tokens
 ### 扩展（extension）
 
 - `manifest.json`：
-  - `"externally_connectable": { "matches": ["https://browser-agent.buildwithyang.com/*", "http://dev.buildwithyang.com/*"] }`（cloud 前端 + 本地验证用 dev 域名；**不能用 `127.0.0.1`/`localhost`**——externally_connectable 不认 IP/无点主机）。
-  - `host_permissions` 增加 `"https://browser-agent.buildwithyang.com/*"`（保留 `"http://127.0.0.1:17321/*"`）。
+  - `"externally_connectable": { "matches": ["https://browser.buildwithyang.com/*", "http://dev.buildwithyang.com/*"] }`（cloud 前端 + 本地验证用 dev 域名；**不能用 `127.0.0.1`/`localhost`**——externally_connectable 不认 IP/无点主机）。
+  - `host_permissions` 增加 `"https://browser.buildwithyang.com/*"`（保留 `"http://127.0.0.1:17321/*"`）。
   - 加固定 `"key"`，稳定开发期扩展 ID（与前端 `VITE_EXTENSION_ID` 对齐）。
 - `background.js`：
-  - `GATEWAY_URL` 改为**可配置**：读 `chrome.storage.local.gatewayUrl`，默认 `http://127.0.0.1:17321`（自部署不回归）；cloud 填 `https://browser-agent.buildwithyang.com/api`（网关在 `/api` 之后）。请求拼 `${base}/tasks`。
+  - `GATEWAY_URL` 改为**可配置**：读 `chrome.storage.local.gatewayUrl`，默认 `http://127.0.0.1:17321`（自部署不回归）；cloud 填 `https://browser.buildwithyang.com/api`（网关在 `/api` 之后）。请求拼 `${base}/tasks`。
   - `chrome.runtime.onMessageExternal` 处理两类消息（见「消息契约」）：`PING`→`PONG{connected}`、`AUTH_TOKEN`→存储 + ack。
   - `/tasks` 请求带 `Authorization: Bearer <token>`（有 token 才带）；遇 **401** 清掉本地 token 并在结果面板提示「请在网页端登录并连接扩展」。
 - token 存储：`chrome.storage.local`（持久；浏览器重启后扩展在任意页面仍可调 `/tasks`）。MV3 service worker 不能用全局变量存状态。

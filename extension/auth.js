@@ -3,7 +3,7 @@ export const TOKEN_KEY = "authToken";
 export const EXPIRES_KEY = "authTokenExpiresAt";
 export const GATEWAY_KEY = "gatewayUrl";
 // 默认走云端;自部署在扩展弹窗里改成本地 http://127.0.0.1:17321。
-export const DEFAULT_GATEWAY = "https://browser-agent.buildwithyang.com/api";
+export const DEFAULT_GATEWAY = "https://browser.buildwithyang.com/api";
 
 export function buildAuthHeaders(token) {
   const headers = { "Content-Type": "application/json" };

@@ -38,7 +38,7 @@ function browserLang() {
   return ui.startsWith("zh") ? "zh" : "en";
 }
 
-// 网关基址可配置：cloud 填 https://browser-agent.buildwithyang.com/api，自部署默认本地。
+// 网关基址可配置：cloud 填 https://browser.buildwithyang.com/api，自部署默认本地。
 function getGatewayConfig() {
   return chrome.storage.local
     .get({ [GATEWAY_KEY]: DEFAULT_GATEWAY, [TOKEN_KEY]: "" })
