@@ -43,13 +43,7 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-_agent_opts: dict[str, Any] = dict(
-    api_key=settings.openai_api_key or None,
-    base_url=settings.openai_base_url or None,
-    model=settings.model,
-    model_long=settings.model_long or None,
-    route_threshold_chars=settings.route_threshold_chars,
-)
+_agent_opts: dict[str, Any] = dict(router=settings.model_router)
 agents = {
     "summary_page": SummaryPageAgent(**_agent_opts),
     "job_match": JobMatchAgent(**_agent_opts),
@@ -88,7 +82,7 @@ async def lifespan(app: FastAPI):
         agents=agents,
         repository=task_repository,
         resume_service=resume_service,
-        default_model=settings.model,
+        default_model=settings.model_router.default_model,
         rate_limit_max=settings.task_rate_limit_max,
         rate_limit_window_seconds=settings.task_rate_limit_window_seconds,
     )

@@ -1,11 +1,11 @@
-import os
 from abc import ABC, abstractmethod
 
 from openai import OpenAI
 
+from app.agents.model_router import ModelRouter, ModelTier
 from app.modules.task.schema import TaskCreate
 
-DEFAULT_MODEL = os.environ.get("AGENT_BRIDGE_MODEL", "gpt-4o-mini")
+DEFAULT_MODEL = "gpt-4o-mini"
 
 # Output-language directives, appended last to the system prompt so they win
 # regardless of the language the prompt body is written in.
@@ -45,42 +45,42 @@ class OpenAIChatAgent(AgentAdapter):
 
     def __init__(
         self,
+        router: ModelRouter | None = None,
+        *,
         client: OpenAI | None = None,
         model: str | None = None,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        model_long: str | None = None,
-        route_threshold_chars: int = 8000,
     ) -> None:
-        self._client = client
-        self.model = model or DEFAULT_MODEL
-        self.model_long = model_long or ""
-        self.route_threshold_chars = route_threshold_chars
-        self._api_key = api_key
-        self._base_url = base_url
+        # 无 router(测试/简单场景):用固定 model 合成一个单层 default router。
+        if router is None:
+            router = ModelRouter(default=ModelTier(model=model or DEFAULT_MODEL))
+        self._router = router
+        # 注入的 client 用于所有层(测试);否则按 (url,key) 懒构建并缓存,同厂多层共用。
+        self._injected_client = client
+        self._clients: dict[tuple[str, str], OpenAI] = {}
 
-    @property
-    def client(self) -> OpenAI:
-        # Lazily construct so importing never requires an API key. Explicit
-        # api_key / base_url win; None falls back to the OPENAI_* env vars.
-        if self._client is None:
+    def _client_for(self, tier: ModelTier) -> OpenAI:
+        if self._injected_client is not None:
+            return self._injected_client
+        cache_key = (tier.url, tier.key)
+        client = self._clients.get(cache_key)
+        if client is None:
+            # Explicit url / key win; empty falls back to the OpenAI SDK defaults.
             kwargs = {}
-            if self._api_key:
-                kwargs["api_key"] = self._api_key
-            if self._base_url:
-                kwargs["base_url"] = self._base_url
-            self._client = OpenAI(**kwargs)
-        return self._client
+            if tier.key:
+                kwargs["api_key"] = tier.key
+            if tier.url:
+                kwargs["base_url"] = tier.url
+            client = OpenAI(**kwargs)
+            self._clients[cache_key] = client
+        return client
 
     def pick_model(self, prompt: str) -> str:
-        """按输入长度路由:长输入用 model_long(若配置),保证大页面也能快速返回。"""
-        if self.model_long and len(prompt) > self.route_threshold_chars:
-            return self.model_long
-        return self.model
+        """按输入长度路由到某一层,返回其 model id(供指标/日志使用)。"""
+        return self._router.pick(len(prompt)).model
 
-    def complete(self, system: str, user: str, model: str | None = None) -> str:
-        response = self.client.chat.completions.create(
-            model=model or self.model,
+    def complete(self, system: str, user: str, tier: ModelTier) -> str:
+        response = self._client_for(tier).chat.completions.create(
+            model=tier.model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -91,4 +91,4 @@ class OpenAIChatAgent(AgentAdapter):
     def run(self, task: TaskCreate) -> str:
         system = self.system_prompt + "\n\n" + language_directive(task.lang)
         prompt = self.build_prompt(task)
-        return self.complete(system, prompt, model=self.pick_model(prompt))
+        return self.complete(system, prompt, tier=self._router.pick(len(prompt)))

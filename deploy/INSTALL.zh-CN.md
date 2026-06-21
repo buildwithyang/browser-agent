@@ -21,23 +21,25 @@ cp .env.example .env
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | ✅ | OpenAI 或任意 OpenAI 兼容服务的 API Key |
-| `OPENAI_BASE_URL` | | 接口地址,留空使用 OpenAI 官方地址。示例:`https://api.moonshot.ai/v1`(Moonshot / Kimi)、`https://ark.cn-beijing.volces.com/api/v3`(火山方舟 / 豆包)、`https://api.deepseek.com/v1`(DeepSeek)、`http://localhost:11434/v1`(本地 Ollama) |
-| `AGENT_BRIDGE_MODEL` | | 模型 id,短输入使用,要快要省。默认 `gpt-4o-mini`,例:`moonshot-v1-8k` |
-| `AGENT_BRIDGE_MODEL_LONG` | | 长输入路由:prompt 超过阈值字符数时改用该模型,让大页面 / 简历匹配也能装下。留空则不路由,所有任务统一用 `AGENT_BRIDGE_MODEL`。例:`moonshot-v1-128k` |
-| `AGENT_BRIDGE_ROUTE_THRESHOLD` | | 长输入阈值,单位是**字符**,默认 `6000`。中文约 1 字符 = 1 token,英文约 4 字符 = 1 token,中文偏多时阈值要设低 |
+| `AGENT_BRIDGE_MODELS` | ✅ | LLM 分层路由,一个 JSON map。键 = 该层能容纳的最大 prompt 字符数;`"default"` = 兜底层(无上限,必填)。值 = `{url, key, model}`,每层独立、可跨厂。按 prompt 长度选「阈值 ≥ 长度 的最小那层」,超出所有阈值用 `default`。阈值单位是**字符**(中文约 1 字符 = 1 token,英文约 4 字符 = 1 token,中文偏多时阈值要设低)。无需 key 的端点(如本地 Ollama)`url`/`key` 可留空。常见 url:`https://api.moonshot.ai/v1`(Moonshot)、`https://ark.cn-beijing.volces.com/api/v3`(火山方舟)、`https://api.deepseek.com/v1`(DeepSeek)、`http://localhost:11434/v1`(本地 Ollama) |
 | `AGENT_BRIDGE_CV_PATH` | | 简历文件路径(职位匹配 Agent 使用),默认 `data/cv/cv.pdf`(相对 `gateway` 目录) |
 
-> 注意:`.env` 包含密钥,不要提交到 git。真实环境变量优先于 `.env` 文件中的值,所以也可以不用 `.env`,直接 `export OPENAI_API_KEY=sk-...`。
+> 注意:`.env` 包含密钥,不要提交到 git。真实环境变量优先于 `.env` 文件中的值,所以也可以不用 `.env`,直接 `export AGENT_BRIDGE_MODELS='...'`。
 
-一个使用 Moonshot 的完整示例:
+最简配置(单厂、只兜底):
 
 ```bash
-OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://api.moonshot.ai/v1
-AGENT_BRIDGE_MODEL=moonshot-v1-8k
-AGENT_BRIDGE_MODEL_LONG=moonshot-v1-128k
-AGENT_BRIDGE_ROUTE_THRESHOLD=6000
+AGENT_BRIDGE_MODELS='{"default": {"url": "https://api.moonshot.ai/v1", "key": "sk-...", "model": "moonshot-v1-128k"}}'
+```
+
+分层示例(短输入走便宜快的,长输入走大上下文,可跨厂):
+
+```bash
+AGENT_BRIDGE_MODELS='{
+  "6000":   {"url": "https://api.deepseek.com/v1", "key": "sk-deepseek-xxx", "model": "deepseek-chat"},
+  "31000":  {"url": "https://api.moonshot.ai/v1",  "key": "sk-moonshot-xxx", "model": "moonshot-v1-32k"},
+  "default":{"url": "https://api.moonshot.ai/v1",  "key": "sk-moonshot-xxx", "model": "moonshot-v1-128k"}
+}'
 ```
 
 ## 第二步:启动 Gateway
@@ -87,5 +89,5 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 17321
 ## 常见问题
 
 - **右键发送后没有反应 / 报错**:确认 Gateway 已启动,且监听在 `127.0.0.1:17321`。
-- **返回模型调用错误**:检查 `.env` 中的 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL` 是否正确,模型 id 是否是该服务商支持的。
-- **大页面 / 长文本失败**:配置 `AGENT_BRIDGE_MODEL_LONG` 为长上下文模型,必要时调低 `AGENT_BRIDGE_ROUTE_THRESHOLD`。
+- **返回模型调用错误**:检查 `AGENT_BRIDGE_MODELS` 中各层的 `url` / `key` 是否正确,`model` 是否是该服务商支持的。
+- **大页面 / 长文本失败**:给 `default` 层用长上下文模型,或加一个更高阈值的层(必要时调低各层阈值,让大输入更早路由到长上下文模型)。

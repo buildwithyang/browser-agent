@@ -130,7 +130,7 @@ class JobMatchAgent(OpenAIChatAgent):
     def run(self, task: TaskCreate, cv_text: str | None = None) -> str:
         system = self.system_prompt + "\n\n" + language_directive(task.lang)
         prompt = self.build_prompt(task, cv_text=cv_text)
-        return self.complete(system, prompt, model=self.pick_model(prompt))
+        return self.complete(system, prompt, tier=self._router.pick(len(prompt)))
 
     def build_sections(self, result: str, lang: str) -> list[Section]:
         """Split the model output on `@@SECTION <id>` markers into renderable blocks."""

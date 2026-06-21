@@ -1,7 +1,9 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
+
+from app.agents.model_router import ModelRouter, ModelTier
 
 
 def _get_env_str(name: str, default: str) -> str:
@@ -57,13 +59,12 @@ class Settings:
     复制 `.env.example` 为 `.env` 并填入真实值；`.env` 不要提交到 git。
     """
 
-    # --- LLM（OpenAI 或任意 OpenAI 兼容服务）---------------------------------
-    openai_api_key: str = ""
-    openai_base_url: str = ""
-    model: str = "gpt-4o-mini"
-    # 长输入(prompt 超过 route_threshold_chars 字符)改用的模型 id;留空则不路由。
-    model_long: str = ""
-    route_threshold_chars: int = 8000
+    # --- LLM 分层路由（按 prompt 字符长度选 {url, key, model}）---------------
+    # 由 AGENT_BRIDGE_MODELS（JSON map）解析；未配置时为仅含 default 占位层的兜底
+    # router（缺 key，真正发请求时由 OpenAI client 报错，与缺 key 行为一致）。
+    model_router: ModelRouter = field(
+        default_factory=lambda: ModelRouter(default=ModelTier(model="gpt-4o-mini"))
+    )
 
     # --- 数据库（默认 SQLite；PostgreSQL 用 postgresql://...）---------------
     database_url: str = "sqlite:///./data/agent_bridge.sqlite3"
@@ -113,14 +114,14 @@ class Settings:
     def from_env(cls) -> "Settings":
         # override=False: 真实环境变量优先于 .env 文件中的值。
         load_dotenv(override=False)
+        kwargs: dict = {}
+        # AGENT_BRIDGE_MODELS 配了就解析（非法配置会抛 ValueError，立刻暴露）；
+        # 没配就用 dataclass 默认的占位兜底 router，保证导入/测试不依赖该变量。
+        models_raw = os.getenv("AGENT_BRIDGE_MODELS")
+        if models_raw and models_raw.strip():
+            kwargs["model_router"] = ModelRouter.from_json(models_raw)
         return cls(
-            openai_api_key=_get_env_str("OPENAI_API_KEY", cls.openai_api_key),
-            openai_base_url=_get_env_str("OPENAI_BASE_URL", cls.openai_base_url),
-            model=_get_env_str("AGENT_BRIDGE_MODEL", cls.model),
-            model_long=_get_env_str("AGENT_BRIDGE_MODEL_LONG", cls.model_long),
-            route_threshold_chars=_get_env_int(
-                "AGENT_BRIDGE_ROUTE_THRESHOLD", cls.route_threshold_chars
-            ),
+            **kwargs,
             database_url=_get_env_str("DATABASE_URL", cls.database_url),
             db_pool_min_size=_get_env_int("DB_POOL_MIN_SIZE", cls.db_pool_min_size),
             db_pool_max_size=_get_env_int("DB_POOL_MAX_SIZE", cls.db_pool_max_size),

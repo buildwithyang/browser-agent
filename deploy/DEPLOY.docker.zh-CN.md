@@ -30,7 +30,7 @@ cp .env.example .env
 编辑 `.env`，**至少**填好：
 
 - `POSTGRES_PASSWORD`：数据库密码。
-- `OPENAI_API_KEY`（及按需 `OPENAI_BASE_URL` / 模型）。
+- `AGENT_BRIDGE_MODELS`：LLM 分层路由 JSON（至少含一个 `default` 层的 `{url, key, model}`）。
 - `AUTH_SESSION_SECRET`：换成随机长串，`openssl rand -hex 32`。
 - `AUTH_FRONTEND_REDIRECT_URL` 与 `CASDOOR_REDIRECT_URI`：把里面的 `YOUR_HOST:17321` 换成用户实际访问 web 的地址（域名或 IP + `WEB_PORT`）。
 - Casdoor：`CASDOOR_ENDPOINT` / `CASDOOR_CLIENT_ID` / `CASDOOR_CLIENT_SECRET`。

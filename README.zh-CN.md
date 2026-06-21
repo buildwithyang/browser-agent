@@ -211,12 +211,11 @@ cp .env.example .env   # 填入 API Key 等配置
 uv run uvicorn app.main:app --host 127.0.0.1 --port 17321
 ```
 
-后端通过环境变量随意切换:
+后端通过单个环境变量 `AGENT_BRIDGE_MODELS` 随意切换 —— 一个按 **prompt 长度** 路由的 JSON map:
 
-- `OPENAI_API_KEY` — API Key(必填)
-- `OPENAI_BASE_URL` — 任意 OpenAI 兼容接口地址(默认 OpenAI 官方;也可以是本地模型或代理)
-- `AGENT_BRIDGE_MODEL` — 模型 id(默认 `gpt-4o-mini`)
-- `AGENT_BRIDGE_MODEL_LONG` / `AGENT_BRIDGE_ROUTE_THRESHOLD` — 长输入路由到长上下文模型
+- 键 = 该层能容纳的最大 prompt 字符数;`"default"` = 兜底层(无上限,必填)。
+- 值 = `{url, key, model}`,不同长度区间可指向 **不同厂家**(短页面走便宜快的、大页面走长上下文)。无需 key 的端点(如本地 Ollama)`url`/`key` 可留空。
+- 最小只配 `default`;按需再加数字层优化特定长度。示例见 [gateway/.env.example](gateway/.env.example)。
 
 加载 Chrome 扩展:
 

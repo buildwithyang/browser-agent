@@ -257,19 +257,19 @@ The first implementation uses:
 * A built-in `SimpleAgent` backed by an OpenAI-compatible model (no external agent install required)
 * JSONL task storage at `gateway/data/tasks.jsonl`
 
-Set your API key and run the gateway:
+Configure your model(s) and run the gateway:
 
 ```bash
 cd gateway
-export OPENAI_API_KEY=sk-...
+export AGENT_BRIDGE_MODELS='{"default": {"url": "https://api.openai.com/v1", "key": "sk-...", "model": "gpt-4o-mini"}}'
 uv run uvicorn app.main:app --host 127.0.0.1 --port 17321
 ```
 
-The backend is fully swappable via environment variables:
+The backend is fully swappable via a single env var, `AGENT_BRIDGE_MODELS` — a JSON map that routes each request to a model **by prompt length**:
 
-* `OPENAI_API_KEY` — API key (required)
-* `OPENAI_BASE_URL` — point at any OpenAI-compatible endpoint (defaults to OpenAI; e.g. a local model or proxy)
-* `AGENT_BRIDGE_MODEL` — model id (default `gpt-4o-mini`)
+* Each key is the max prompt length (in characters) that tier handles; `"default"` is the required fallback (no upper bound).
+* Each value is `{url, key, model}`, so different length bands can point at **different vendors** (e.g. a cheap fast model for short pages, a long-context model for big ones). `url`/`key` may be empty for endpoints that need no key (e.g. local Ollama).
+* Minimal setup is just `default`; add numeric tiers only to optimize specific length bands. See [gateway/.env.example](gateway/.env.example) for a worked example.
 
 Load the Chrome extension:
 

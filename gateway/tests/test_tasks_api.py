@@ -22,7 +22,7 @@ def _wire(monkeypatch, agents):
             agents=agents,
             repository=None,  # 指标落库可选；测试不依赖 DB
             resume_service=None,
-            default_model=main.settings.model,
+            default_model=main.settings.model_router.default_model,
         ),
         raising=False,
     )

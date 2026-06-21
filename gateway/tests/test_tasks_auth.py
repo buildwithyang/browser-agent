@@ -43,7 +43,7 @@ def _wire(monkeypatch, *, settings, token_service):
             agents={"summary_page": fake_agent},
             repository=None,
             resume_service=None,
-            default_model=settings.model,
+            default_model=settings.model_router.default_model,
         ),
         raising=False,
     )
