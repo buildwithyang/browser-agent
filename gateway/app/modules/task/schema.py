@@ -25,9 +25,9 @@ IMAGE_TEXT_MAX_CHARS = 50_000
 
 
 class TaskCreate(BaseModel):
-    """浏览器扩展提交的任务（agent 的输入契约）。
+    """浏览器扩展提交的任务(agent 的输入契约）。
 
-    扩展发送扁平的 camelCase 负载(``{url, title, selectedText, pageText}``)，
+    扩展发送扁平的 camelCase 负载(``{url, title, selectedText, pageText}``),
     这里用别名接收，同时对网关其余部分暴露 snake_case 属性。
     """
 
@@ -78,7 +78,11 @@ class TaskResponse(BaseModel):
 
 
 class TaskRecordData(BaseModel):
-    """落库的任务记录领域对象：metrics-only，不含 prompt / 结果文本 / 页面正文。"""
+    """落库的任务记录领域对象。
+
+    默认 metrics-only。下面的明细字段仅在 TASK_DEBUG_STORE 开启时由 service 填充，
+    用于对比不同模型效果；含隐私，不会回传给前端(recent 列表不读取它们)。
+    """
 
     id: str
     user_id: str | None = None
@@ -91,3 +95,9 @@ class TaskRecordData(BaseModel):
     duration_ms: int | None = None
     error: str = ""
     created_at: datetime
+    # debug 明细(默认 None)
+    url: str | None = None
+    title: str | None = None
+    prompt: str | None = None
+    page_text: str | None = None
+    result: str | None = None

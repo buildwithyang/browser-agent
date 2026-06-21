@@ -41,6 +41,10 @@ class ModelRouter:
 
     def pick(self, prompt_len: int) -> ModelTier:
         for tier in self._tiers:
+            # max_chars can be None (though tiers should normally have numeric thresholds).
+            # Skip tiers without a numeric threshold to avoid comparing int with None.
+            if tier.max_chars is None:
+                continue
             if prompt_len <= tier.max_chars:
                 return tier
         return self._default

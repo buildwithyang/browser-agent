@@ -38,6 +38,7 @@ class TaskService:
         default_model: str,
         rate_limit_max: int = 0,
         rate_limit_window_seconds: int = 86400,
+        debug_store: bool = False,
     ) -> None:
         self._agents = agents
         self._repository = repository
@@ -45,6 +46,8 @@ class TaskService:
         self._default_model = default_model
         self._rate_limit_max = rate_limit_max
         self._rate_limit_window_seconds = rate_limit_window_seconds
+        # debug:额外把 url/title/prompt/页面正文/结果文本 落库,用于对比模型效果。
+        self._debug_store = debug_store
 
     def run(self, task: TaskCreate, *, user_id: str | None) -> TaskResponse:
         agent = self._agents.get(task.agent)
@@ -96,7 +99,11 @@ class TaskService:
                 finished_at=datetime.now(timezone.utc),
                 duration_ms=duration_ms,
             )
-            self._persist(rid.hex, task, user_id, model, "completed", len(prompt), len(result), duration_ms, "")
+            self._persist(
+                rid.hex, task, user_id, model, "completed",
+                len(prompt), len(result), duration_ms, "",
+                prompt=prompt, result=result,
+            )
             logger.info(
                 "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
                 task.agent, model, len(prompt) / 1000, duration_ms, len(result),
@@ -105,7 +112,9 @@ class TaskService:
         except Exception as exc:
             duration_ms = int((time.perf_counter() - t0) * 1000)
             self._persist(
-                rid.hex, task, user_id, model, "failed", len(prompt), 0, duration_ms, str(exc)[:512]
+                rid.hex, task, user_id, model, "failed",
+                len(prompt), 0, duration_ms, str(exc)[:512],
+                prompt=prompt, result="",
             )
             logger.exception(
                 "task failed agent=%s input=%.1fk duration_ms=%d",
@@ -150,9 +159,22 @@ class TaskService:
         result_chars: int,
         duration_ms: int | None,
         error: str,
+        *,
+        prompt: str = "",
+        result: str = "",
     ) -> None:
         if self._repository is None:
             return
+        # debug 模式额外存明细(含隐私),用于对比不同模型效果;默认不存。
+        detail: dict[str, str] = {}
+        if self._debug_store:
+            detail = {
+                "url": task.url,
+                "title": task.title,
+                "prompt": prompt,
+                "page_text": task.page_text,
+                "result": result,
+            }
         try:
             self._repository.append(
                 TaskRecordData(
@@ -167,6 +189,7 @@ class TaskService:
                     duration_ms=duration_ms,
                     error=error,
                     created_at=datetime.now(timezone.utc),
+                    **detail,
                 )
             )
         except Exception as exc:

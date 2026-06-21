@@ -85,6 +85,7 @@ async def lifespan(app: FastAPI):
         default_model=settings.model_router.default_model,
         rate_limit_max=settings.task_rate_limit_max,
         rate_limit_window_seconds=settings.task_rate_limit_window_seconds,
+        debug_store=settings.task_debug_store,
     )
     try:
         yield
