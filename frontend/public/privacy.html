@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="index,follow" />
+    <title>隐私政策 · Agent Bridge / Privacy Policy</title>
+    <style>
+      :root {
+        --ink: #1b1e26; --text: #2c313c; --dim: #6b7280; --line: #e5e7eb;
+        --signal: #c98a16; --bg: #ffffff; --soft: #f7f8fa;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--soft); color: var(--text);
+        font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      main { max-width: 760px; margin: 0 auto; padding: 48px 24px 80px; }
+      .card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 40px 40px 44px; }
+      h1 { font-size: 26px; margin: 0 0 4px; color: var(--ink); letter-spacing: .01em; }
+      .meta { color: var(--dim); font-size: 14px; margin: 0 0 28px; }
+      h2 { font-size: 18px; margin: 32px 0 10px; color: var(--ink); padding-top: 6px; }
+      h2:first-of-type { margin-top: 8px; }
+      p { margin: 10px 0; }
+      ul { margin: 10px 0; padding-left: 22px; }
+      li { margin: 6px 0; }
+      a { color: var(--signal); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      strong { color: var(--ink); }
+      .lang-sep { margin: 48px 0 0; border: none; border-top: 1px dashed var(--line); }
+      .note { background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; font-size: 14px; color: var(--dim); }
+      footer { text-align: center; color: var(--dim); font-size: 13px; margin-top: 28px; }
+      @media (max-width: 560px) { .card { padding: 26px 20px 30px; } main { padding: 24px 14px 60px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <!-- ============================ 中文 ============================ -->
+        <h1>Agent Bridge 隐私政策</h1>
+        <p class="meta">生效日期：2026 年 6 月 22 日 · 最近更新：2026 年 6 月 22 日</p>
+
+        <p>
+          Agent Bridge 是一个浏览器扩展及配套服务：在你<strong>主动触发</strong>时读取当前网页内容，
+          交由 AI 生成「页面总结」或「与简历的匹配分析」，并把结果显示在页面上。本政策说明我们收集哪些数据、
+          如何使用与存储，以及你拥有的权利。
+        </p>
+
+        <h2>一、我们收集哪些信息</h2>
+        <ul>
+          <li>
+            <strong>网页内容（仅在你主动触发时）。</strong>只有当你点击本扩展的右键菜单项时，
+            扩展才会读取当前标签页的：网址（URL）、页面标题、你选中的文字、可见正文文本（至多约 20000 字）、
+            以及页面中图片的替代文字（alt / title / 图注）。扩展<strong>不会</strong>在后台或未经你操作时读取任何页面。
+          </li>
+          <li>
+            <strong>登录凭证（Token）。</strong>你在我们的网页端登录后，网页会把一个身份验证 token 推送给扩展，
+            扩展将其保存在<strong>浏览器本地</strong>（chrome.storage），用于向后端验证你的身份。我们不在扩展中收集你的密码。
+          </li>
+        </ul>
+        <p>
+          <strong>我们不收集：</strong>你的浏览历史列表、键盘/鼠标/滚动等操作行为、地理位置、健康信息，
+          扩展本身也不处理支付信息。
+        </p>
+
+        <h2>二、信息如何使用</h2>
+        <ul>
+          <li>把你触发时抓取的页面内容发送到 AI 后端 —— 即你<strong>自部署的本地网关</strong>，或我们的<strong>云端服务</strong>（browser.buildwithyang.com）—— 用于生成总结或简历匹配结果。</li>
+          <li>为生成结果，页面内容会被转发给后端所配置的<strong>大语言模型（LLM）服务</strong>进行处理。该服务可能由第三方 AI 提供商通过 OpenAI 兼容接口提供。</li>
+          <li>「与简历匹配」功能会将页面内容（如招聘信息）与你在账户中上传的简历进行比对。</li>
+          <li>数据<strong>仅用于实现上述分析功能本身</strong>，不用于无关目的，不用于广告画像，不用于信用评估或贷款。</li>
+        </ul>
+
+        <h2>三、数据存储与留存</h2>
+        <ul>
+          <li><strong>云端模式：</strong>你提交的页面内容与生成的结果<strong>仅用于实时生成本次结果，不会写入我们的数据库</strong>。处理过程中，页面内容会发送给上述 LLM 服务，该第三方可能依据其自身政策保留数据。</li>
+          <li><strong>简历：</strong>你主动上传的简历存储于对象存储服务，用于简历匹配，并可由你删除。</li>
+          <li><strong>登录 token</strong> 保存在你本地浏览器中，登出、解绑或过期后即被清除。</li>
+          <li><strong>自部署模式：</strong>若你把扩展指向自己运行的本地网关，相关数据存放在<strong>你自己的服务器</strong>上，我们无法访问。</li>
+          <li><strong>留存期限：</strong>我们不留存你的页面内容与结果；你的账户与简历数据保留至你请求删除为止。</li>
+        </ul>
+
+        <h2>四、数据共享</h2>
+        <p>
+          我们<strong>不出售</strong>你的个人数据，也不会出于已获批准用途之外的目的向第三方出售或转移数据。
+          仅为实现功能，会将必要的页面内容传给上述 LLM 服务处理。我们不会为确定信用度或实现贷款而使用或转移你的数据。
+        </p>
+
+        <h2>五、涉及的第三方服务</h2>
+        <ul>
+          <li><strong>身份认证：</strong>用于登录与账户管理。</li>
+          <li><strong>大语言模型服务：</strong>用于处理页面内容并生成分析结果。</li>
+          <li><strong>对象存储：</strong>用于存放你上传的简历（仅云端模式）。</li>
+        </ul>
+
+        <h2>六、你的权利</h2>
+        <p>
+          你可以随时：在扩展弹窗中切换网关地址或停止使用；在浏览器中卸载扩展以清除本地 token；
+          或联系我们访问、更正、删除你的账户与简历数据。
+        </p>
+
+        <h2>七、数据安全</h2>
+        <p>我们通过 HTTPS 传输数据，并采取合理的技术与管理措施保护数据。但请注意，没有任何系统能保证绝对安全。</p>
+
+        <h2>八、儿童</h2>
+        <p>本产品不面向 13 岁以下儿童，我们不会有意收集儿童的个人信息。</p>
+
+        <h2>九、政策变更</h2>
+        <p>我们可能不时更新本政策，更新后会修改本页顶部的「最近更新」日期。重大变更将通过服务内提示。</p>
+
+        <h2>十、联系我们</h2>
+        <p>
+          如对本政策或你的数据有任何疑问，请联系：
+          <a href="mailto:support@buildwithyang.com">support@buildwithyang.com</a>
+        </p>
+
+        <hr class="lang-sep" />
+
+        <!-- ============================ English ============================ -->
+        <h1 style="margin-top:40px">Agent Bridge Privacy Policy</h1>
+        <p class="meta">Effective: June 22, 2026 · Last updated: June 22, 2026</p>
+
+        <p>
+          Agent Bridge is a browser extension and companion service. <strong>Only when you explicitly trigger it</strong>,
+          it reads the content of the current web page and uses AI to produce a page summary or a
+          resume-match analysis, then shows the result on the page. This policy explains what we collect,
+          how we use and store it, and your rights.
+        </p>
+
+        <h2>1. Information we collect</h2>
+        <ul>
+          <li>
+            <strong>Page content (only when you trigger it).</strong> Only when you click this extension's
+            right-click menu item does it read the active tab's URL, page title, your selected text,
+            visible body text (up to ~20,000 characters), and the alternative text of images (alt / title / captions).
+            The extension does <strong>not</strong> read any page in the background or without your action.
+          </li>
+          <li>
+            <strong>Authentication token.</strong> After you sign in on our website, the site passes an
+            authentication token to the extension, which stores it <strong>locally in your browser</strong>
+            (chrome.storage) to authenticate you to the backend. We do not collect your password in the extension.
+          </li>
+        </ul>
+        <p>
+          <strong>We do NOT collect:</strong> your browsing history, keystroke/mouse/scroll activity,
+          location, or health data; the extension does not process payment information.
+        </p>
+
+        <h2>2. How we use information</h2>
+        <ul>
+          <li>The captured page content is sent to an AI backend — either <strong>your self-hosted local gateway</strong> or our <strong>cloud service</strong> (browser.buildwithyang.com) — to generate the summary or resume match.</li>
+          <li>To produce the result, the page content is forwarded to the configured <strong>large language model (LLM) service</strong>, which may be operated by a third-party AI provider via an OpenAI-compatible API.</li>
+          <li>The resume-match feature compares page content (e.g. a job posting) against the resume you uploaded to your account.</li>
+          <li>Data is used <strong>solely to provide these analysis features</strong> — not for unrelated purposes, advertising profiling, creditworthiness, or lending.</li>
+        </ul>
+
+        <h2>3. Storage & retention</h2>
+        <ul>
+          <li><strong>Cloud mode:</strong> the page content you submit and the generated result are used only to produce your result in real time and are <strong>not written to our database</strong>. During processing, the content is sent to the LLM service above, which may retain data under its own policy.</li>
+          <li><strong>Resumes:</strong> resumes you choose to upload are kept in object storage for resume matching and can be deleted by you.</li>
+          <li><strong>The token</strong> is stored locally in your browser and cleared on sign-out, unbind, or expiry.</li>
+          <li><strong>Self-hosted mode:</strong> if you point the extension at your own gateway, the data stays on <strong>your own server</strong> and we cannot access it.</li>
+          <li><strong>Retention:</strong> we do not retain your page content or results; your account and resume data are kept until you request deletion.</li>
+        </ul>
+
+        <h2>4. Data sharing</h2>
+        <p>
+          We do <strong>not sell</strong> your personal data, nor transfer it to third parties for purposes
+          beyond approved use cases. Only the page content needed to perform the feature is sent to the LLM service.
+          We do not use or transfer your data to determine creditworthiness or for lending.
+        </p>
+
+        <h2>5. Third-party services</h2>
+        <ul>
+          <li><strong>Authentication</strong> — sign-in and account management.</li>
+          <li><strong>LLM service</strong> — processes page content to generate results.</li>
+          <li><strong>Object storage</strong> — stores resumes you upload (cloud mode only).</li>
+        </ul>
+
+        <h2>6. Your rights</h2>
+        <p>
+          At any time you can switch or disable the gateway in the extension popup, uninstall the extension
+          to clear the local token, or contact us to access, correct, or delete your account and resume data.
+        </p>
+
+        <h2>7. Security</h2>
+        <p>We transmit data over HTTPS and apply reasonable technical and organizational safeguards. No system, however, can guarantee absolute security.</p>
+
+        <h2>8. Children</h2>
+        <p>This product is not directed to children under 13, and we do not knowingly collect their personal information.</p>
+
+        <h2>9. Changes</h2>
+        <p>We may update this policy from time to time and will revise the "Last updated" date above. Material changes will be surfaced in-product.</p>
+
+        <h2>10. Contact</h2>
+        <p>
+          Questions about this policy or your data? Contact
+          <a href="mailto:support@buildwithyang.com">support@buildwithyang.com</a>.
+        </p>
+      </div>
+      <footer>© 2026 Agent Bridge</footer>
+    </main>
+  </body>
+</html>

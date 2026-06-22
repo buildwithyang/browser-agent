@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# 把扩展打成一个 zip，用于：① 上传 Chrome Web Store；② 自部署者下载→解压→「加载已解压」。
+# 把扩展打成一个 zip。两种模式：
+#   ./package.sh          普通包：含 manifest 现有 key，用于①商店「更新」上传 ②本地 load-unpacked 调试
+#   ./package.sh --store  首发包：剥掉 manifest 的 key 字段，仅用于「+ New item」首次上传商店
+# Chrome 规定首次用「+ New item」上传时 manifest 带 key 会被拒（"key field not allowed in manifest"）。
+# 首发上传成功后，到 Dashboard 的 Package 标签复制商店分配的 public key，回填进 manifest.json 的 key 字段，
+# 之后一律用普通 ./package.sh（更新上传允许带 key，本地调试也靠这个 key 让 ID 与商店一致）。
 # 只打运行所需文件，排除测试 / 包管理 / 文档 / 私钥。
-#   用法：cd extension && ./package.sh   （或 npm run package）
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+STORE=0
+[[ "${1:-}" == "--store" ]] && STORE=1
+
 VERSION="$(node -p "require('./manifest.json').version")"
 OUT_DIR="dist"
-ZIP="${OUT_DIR}/agent-bridge-extension-${VERSION}.zip"
 
 # 打进 zip 的文件白名单（运行必需）。
 FILES=(
@@ -27,6 +33,23 @@ for f in "${FILES[@]}"; do
 done
 
 mkdir -p "${OUT_DIR}"
+
+if [[ "$STORE" == "1" ]]; then
+  # 暂存一份白名单文件，剥掉 manifest 的 key 字段后再打包（不动源文件 manifest.json）。
+  STAGE="$(mktemp -d)"
+  trap 'rm -rf "$STAGE"' EXIT
+  cp -R "${FILES[@]}" "$STAGE"/
+  node -e 'const fs=require("fs");const p=process.argv[1];const m=JSON.parse(fs.readFileSync(p));delete m.key;fs.writeFileSync(p,JSON.stringify(m,null,2)+"\n")' "$STAGE/manifest.json"
+  ZIP="${PWD}/${OUT_DIR}/agent-bridge-extension-${VERSION}-store-firstupload.zip"
+  rm -f "$ZIP"
+  ( cd "$STAGE" && zip -r -X "$ZIP" "${FILES[@]}" -x '*/.DS_Store' >/dev/null )
+  echo "首发包（已剥离 key，仅用于 + New item 首次上传）：${OUT_DIR}/agent-bridge-extension-${VERSION}-store-firstupload.zip"
+  echo "上传后记得：Package 标签 → View public key → 回填进 manifest.json 的 key 字段。"
+  unzip -l "$ZIP"
+  exit 0
+fi
+
+ZIP="${OUT_DIR}/agent-bridge-extension-${VERSION}.zip"
 rm -f "${ZIP}"
 
 # -r 递归 icons/；-X 不存 macOS 扩展属性；排除 .DS_Store。
