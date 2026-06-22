@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="index,follow" />
-    <title>隐私政策 · Agent Bridge / Privacy Policy</title>
+    <title>Privacy Policy · Agent Bridge / 隐私政策</title>
     <style>
       :root {
         --ink: #1b1e26; --text: #2c313c; --dim: #6b7280; --line: #e5e7eb;
@@ -37,88 +37,8 @@
   <body>
     <main>
       <div class="card">
-        <!-- ============================ 中文 ============================ -->
-        <h1>Agent Bridge 隐私政策</h1>
-        <p class="meta">生效日期：2026 年 6 月 22 日 · 最近更新：2026 年 6 月 22 日</p>
-
-        <p>
-          Agent Bridge 是一个浏览器扩展及配套服务：在你<strong>主动触发</strong>时读取当前网页内容，
-          交由 AI 生成「页面总结」或「与简历的匹配分析」，并把结果显示在页面上。本政策说明我们收集哪些数据、
-          如何使用与存储，以及你拥有的权利。
-        </p>
-
-        <h2>一、我们收集哪些信息</h2>
-        <ul>
-          <li>
-            <strong>网页内容（仅在你主动触发时）。</strong>只有当你点击本扩展的右键菜单项时，
-            扩展才会读取当前标签页的：网址（URL）、页面标题、你选中的文字、可见正文文本（至多约 20000 字）、
-            以及页面中图片的替代文字（alt / title / 图注）。扩展<strong>不会</strong>在后台或未经你操作时读取任何页面。
-          </li>
-          <li>
-            <strong>登录凭证（Token）。</strong>你在我们的网页端登录后，网页会把一个身份验证 token 推送给扩展，
-            扩展将其保存在<strong>浏览器本地</strong>（chrome.storage），用于向后端验证你的身份。我们不在扩展中收集你的密码。
-          </li>
-        </ul>
-        <p>
-          <strong>我们不收集：</strong>你的浏览历史列表、键盘/鼠标/滚动等操作行为、地理位置、健康信息，
-          扩展本身也不处理支付信息。
-        </p>
-
-        <h2>二、信息如何使用</h2>
-        <ul>
-          <li>把你触发时抓取的页面内容发送到 AI 后端 —— 即你<strong>自部署的本地网关</strong>，或我们的<strong>云端服务</strong>（browser.buildwithyang.com）—— 用于生成总结或简历匹配结果。</li>
-          <li>为生成结果，页面内容会被转发给后端所配置的<strong>大语言模型（LLM）服务</strong>进行处理。该服务可能由第三方 AI 提供商通过 OpenAI 兼容接口提供。</li>
-          <li>「与简历匹配」功能会将页面内容（如招聘信息）与你在账户中上传的简历进行比对。</li>
-          <li>数据<strong>仅用于实现上述分析功能本身</strong>，不用于无关目的，不用于广告画像，不用于信用评估或贷款。</li>
-        </ul>
-
-        <h2>三、数据存储与留存</h2>
-        <ul>
-          <li><strong>云端模式：</strong>你提交的页面内容与生成的结果<strong>仅用于实时生成本次结果，不会写入我们的数据库</strong>。处理过程中，页面内容会发送给上述 LLM 服务，该第三方可能依据其自身政策保留数据。</li>
-          <li><strong>简历：</strong>你主动上传的简历存储于对象存储服务，用于简历匹配，并可由你删除。</li>
-          <li><strong>登录 token</strong> 保存在你本地浏览器中，登出、解绑或过期后即被清除。</li>
-          <li><strong>自部署模式：</strong>若你把扩展指向自己运行的本地网关，相关数据存放在<strong>你自己的服务器</strong>上，我们无法访问。</li>
-          <li><strong>留存期限：</strong>我们不留存你的页面内容与结果；你的账户与简历数据保留至你请求删除为止。</li>
-        </ul>
-
-        <h2>四、数据共享</h2>
-        <p>
-          我们<strong>不出售</strong>你的个人数据，也不会出于已获批准用途之外的目的向第三方出售或转移数据。
-          仅为实现功能，会将必要的页面内容传给上述 LLM 服务处理。我们不会为确定信用度或实现贷款而使用或转移你的数据。
-        </p>
-
-        <h2>五、涉及的第三方服务</h2>
-        <ul>
-          <li><strong>身份认证：</strong>用于登录与账户管理。</li>
-          <li><strong>大语言模型服务：</strong>用于处理页面内容并生成分析结果。</li>
-          <li><strong>对象存储：</strong>用于存放你上传的简历（仅云端模式）。</li>
-        </ul>
-
-        <h2>六、你的权利</h2>
-        <p>
-          你可以随时：在扩展弹窗中切换网关地址或停止使用；在浏览器中卸载扩展以清除本地 token；
-          或联系我们访问、更正、删除你的账户与简历数据。
-        </p>
-
-        <h2>七、数据安全</h2>
-        <p>我们通过 HTTPS 传输数据，并采取合理的技术与管理措施保护数据。但请注意，没有任何系统能保证绝对安全。</p>
-
-        <h2>八、儿童</h2>
-        <p>本产品不面向 13 岁以下儿童，我们不会有意收集儿童的个人信息。</p>
-
-        <h2>九、政策变更</h2>
-        <p>我们可能不时更新本政策，更新后会修改本页顶部的「最近更新」日期。重大变更将通过服务内提示。</p>
-
-        <h2>十、联系我们</h2>
-        <p>
-          如对本政策或你的数据有任何疑问，请联系：
-          <a href="mailto:helloworldyong9@gmail.com">helloworldyong9@gmail.com</a>
-        </p>
-
-        <hr class="lang-sep" />
-
         <!-- ============================ English ============================ -->
-        <h1 style="margin-top:40px">Agent Bridge Privacy Policy</h1>
+        <h1>Agent Bridge Privacy Policy</h1>
         <p class="meta">Effective: June 22, 2026 · Last updated: June 22, 2026</p>
 
         <p>
@@ -197,6 +117,86 @@
         <p>
           Questions about this policy or your data? Contact
           <a href="mailto:helloworldyong9@gmail.com">helloworldyong9@gmail.com</a>.
+        </p>
+
+        <hr class="lang-sep" />
+
+        <!-- ============================ 中文 ============================ -->
+        <h1 style="margin-top:40px">Agent Bridge 隐私政策</h1>
+        <p class="meta">生效日期：2026 年 6 月 22 日 · 最近更新：2026 年 6 月 22 日</p>
+
+        <p>
+          Agent Bridge 是一个浏览器扩展及配套服务：在你<strong>主动触发</strong>时读取当前网页内容，
+          交由 AI 生成「页面总结」或「与简历的匹配分析」，并把结果显示在页面上。本政策说明我们收集哪些数据、
+          如何使用与存储，以及你拥有的权利。
+        </p>
+
+        <h2>一、我们收集哪些信息</h2>
+        <ul>
+          <li>
+            <strong>网页内容（仅在你主动触发时）。</strong>只有当你点击本扩展的右键菜单项时，
+            扩展才会读取当前标签页的：网址（URL）、页面标题、你选中的文字、可见正文文本（至多约 20000 字）、
+            以及页面中图片的替代文字（alt / title / 图注）。扩展<strong>不会</strong>在后台或未经你操作时读取任何页面。
+          </li>
+          <li>
+            <strong>登录凭证（Token）。</strong>你在我们的网页端登录后，网页会把一个身份验证 token 推送给扩展，
+            扩展将其保存在<strong>浏览器本地</strong>（chrome.storage），用于向后端验证你的身份。我们不在扩展中收集你的密码。
+          </li>
+        </ul>
+        <p>
+          <strong>我们不收集：</strong>你的浏览历史列表、键盘/鼠标/滚动等操作行为、地理位置、健康信息，
+          扩展本身也不处理支付信息。
+        </p>
+
+        <h2>二、信息如何使用</h2>
+        <ul>
+          <li>把你触发时抓取的页面内容发送到 AI 后端 —— 即你<strong>自部署的本地网关</strong>，或我们的<strong>云端服务</strong>（browser.buildwithyang.com）—— 用于生成总结或简历匹配结果。</li>
+          <li>为生成结果，页面内容会被转发给后端所配置的<strong>大语言模型（LLM）服务</strong>进行处理。该服务可能由第三方 AI 提供商通过 OpenAI 兼容接口提供。</li>
+          <li>「与简历匹配」功能会将页面内容（如招聘信息）与你在账户中上传的简历进行比对。</li>
+          <li>数据<strong>仅用于实现上述分析功能本身</strong>，不用于无关目的，不用于广告画像，不用于信用评估或贷款。</li>
+        </ul>
+
+        <h2>三、数据存储与留存</h2>
+        <ul>
+          <li><strong>云端模式：</strong>你提交的页面内容与生成的结果<strong>仅用于实时生成本次结果，不会写入我们的数据库</strong>。处理过程中，页面内容会发送给上述 LLM 服务，该第三方可能依据其自身政策保留数据。</li>
+          <li><strong>简历：</strong>你主动上传的简历存储于对象存储服务，用于简历匹配，并可由你删除。</li>
+          <li><strong>登录 token</strong> 保存在你本地浏览器中，登出、解绑或过期后即被清除。</li>
+          <li><strong>自部署模式：</strong>若你把扩展指向自己运行的本地网关，相关数据存放在<strong>你自己的服务器</strong>上，我们无法访问。</li>
+          <li><strong>留存期限：</strong>我们不留存你的页面内容与结果；你的账户与简历数据保留至你请求删除为止。</li>
+        </ul>
+
+        <h2>四、数据共享</h2>
+        <p>
+          我们<strong>不出售</strong>你的个人数据，也不会出于已获批准用途之外的目的向第三方出售或转移数据。
+          仅为实现功能，会将必要的页面内容传给上述 LLM 服务处理。我们不会为确定信用度或实现贷款而使用或转移你的数据。
+        </p>
+
+        <h2>五、涉及的第三方服务</h2>
+        <ul>
+          <li><strong>身份认证：</strong>用于登录与账户管理。</li>
+          <li><strong>大语言模型服务：</strong>用于处理页面内容并生成分析结果。</li>
+          <li><strong>对象存储：</strong>用于存放你上传的简历（仅云端模式）。</li>
+        </ul>
+
+        <h2>六、你的权利</h2>
+        <p>
+          你可以随时：在扩展弹窗中切换网关地址或停止使用；在浏览器中卸载扩展以清除本地 token；
+          或联系我们访问、更正、删除你的账户与简历数据。
+        </p>
+
+        <h2>七、数据安全</h2>
+        <p>我们通过 HTTPS 传输数据，并采取合理的技术与管理措施保护数据。但请注意，没有任何系统能保证绝对安全。</p>
+
+        <h2>八、儿童</h2>
+        <p>本产品不面向 13 岁以下儿童，我们不会有意收集儿童的个人信息。</p>
+
+        <h2>九、政策变更</h2>
+        <p>我们可能不时更新本政策，更新后会修改本页顶部的「最近更新」日期。重大变更将通过服务内提示。</p>
+
+        <h2>十、联系我们</h2>
+        <p>
+          如对本政策或你的数据有任何疑问，请联系：
+          <a href="mailto:helloworldyong9@gmail.com">helloworldyong9@gmail.com</a>
         </p>
       </div>
       <footer>© 2026 Agent Bridge</footer>

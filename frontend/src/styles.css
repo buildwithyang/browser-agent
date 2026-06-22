@@ -291,3 +291,20 @@ body {
 .badge-wait { background: var(--signal-soft); color: var(--signal); }
 .badge-fail { background: rgba(232, 132, 107, 0.15); color: var(--alert); }
 .badge-active { background: var(--signal); color: #1a1206; }
+
+/* ---- footer ---- */
+.footer {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid var(--hairline);
+  text-align: center;
+}
+.footer a {
+  color: var(--text-dim);
+  font-size: 13px;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.footer a:hover {
+  color: var(--signal);
+}

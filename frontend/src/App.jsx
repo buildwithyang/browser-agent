@@ -232,6 +232,10 @@ export default function App() {
           </>
         )}
       </main>
+
+      <footer className="footer">
+        <a href="/privacy" target="_blank" rel="noopener noreferrer">隐私政策</a>
+      </footer>
     </div>
   );
 }
