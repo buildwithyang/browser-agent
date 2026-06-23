@@ -4,8 +4,9 @@ import { issueExtensionToken } from "./api.js";
 import { EXT_STATE, probeThenAutoConnect, connect } from "./extensionConnect.js";
 
 // 扩展 ID 由 manifest 的固定 key 派生，对所有用户一致；自部署无需再设 VITE_EXTENSION_ID。
-// 上架 Chrome 商店后若分配了不同 ID，改这里的默认值（或用 VITE_EXTENSION_ID 覆盖）。
-const DEFAULT_EXT_ID = "njllhjolgnfainjapjekgimjbipigpja";
+// 此值即 Chrome 商店为本扩展分配的 ID，已与 manifest 的 key 对齐：
+// 商店安装版 与 自部署 load-unpacked 版 共用同一 ID（可用 VITE_EXTENSION_ID 覆盖）。
+const DEFAULT_EXT_ID = "cmajoaedbjinocbfdkebaedkdbkhbhai";
 const EXT_ID = import.meta.env.VITE_EXTENSION_ID || DEFAULT_EXT_ID;
 
 // 页面侧是否拿到了扩展通道（有匹配 externally_connectable 的扩展时才有 chrome.runtime.sendMessage）。
