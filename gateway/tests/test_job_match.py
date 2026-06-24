@@ -17,21 +17,48 @@ def make_task() -> TaskCreate:
     )
 
 
-def test_prompt_includes_cv_and_job():
+def test_default_prompt_has_analysis_only():
     agent = JobMatchAgent()
-    agent._cv_text = "我会 Go 和 Kubernetes,有 5 年后端经验。"  # bypass PDF read
+    agent._cv_text = "我会 Go 和 Kubernetes,有 5 年后端经验。"
 
     prompt = agent.build_prompt(make_task())
 
     assert "Go 和 Kubernetes" in prompt
     assert "Senior Go Engineer" in prompt
-    assert "We need Go, Kubernetes" in prompt
-    # 一次请求要求全部区块(含业务介绍)
+    # 默认右键只跑匹配分析三块
     assert "@@SECTION conclusion" in prompt
     assert "@@SECTION overview" in prompt
     assert "@@SECTION skills" in prompt
-    assert "@@SECTION cover_letter" in prompt
-    assert "@@SECTION resume_tips" in prompt
+    # 求职信/建议默认不生成
+    assert "@@SECTION cover_letter" not in prompt
+    assert "@@SECTION resume_tips" not in prompt
+
+
+def test_generation_order_puts_skills_before_conclusion():
+    agent = JobMatchAgent()
+    agent._cv_text = "Go / 5y backend"
+    prompt = agent.build_prompt(make_task())
+    assert prompt.index("@@SECTION skills") < prompt.index("@@SECTION conclusion")
+
+
+def test_build_sections_resorts_to_display_order():
+    agent = JobMatchAgent()
+    # 模型按生成顺序输出(skills 在 conclusion 前),展示应重排成 conclusion 置顶
+    raw = (
+        "@@SECTION skills\n- Go ✅\n"
+        "@@SECTION conclusion\n匹配度 60。\n"
+        "@@SECTION overview\n做支付。\n"
+    )
+    ids = [s.id for s in agent.build_sections(raw, "zh")]
+    assert ids == ["conclusion", "overview", "skills"]
+
+
+def test_conclusion_rubric_is_generic():
+    from app.agents.job_match import SECTION_INSTRUCTIONS
+    rubric = SECTION_INSTRUCTIONS["conclusion"]
+    assert "AI/LLM" not in rubric          # 不再写死具体技能
+    assert "65" in rubric                  # 保留通用评分锚点
+    assert "资历过高" in rubric
 
 
 def test_build_sections_parses_markers_and_flags():

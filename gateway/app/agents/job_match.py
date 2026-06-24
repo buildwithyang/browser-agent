@@ -33,49 +33,48 @@ SECTION_META = {
     "resume_tips": {"zh": "简历更新建议", "en": "Resume Update Tips", "copyable": True, "collapsible": True},
 }
 
-# 一次请求输出全部区块,按此顺序。
-SECTION_SPECS = [
-    (
-        "conclusion",
-        "用一句话【同时】给出两点:① 该职位所属的行业 + 具体业务;"
+# 区块生成指令(id -> instruction)。展示标题/复制/折叠见 SECTION_META。
+SECTION_INSTRUCTIONS = {
+    "conclusion": (
+        "用一句话同时给出两点:① 该职位所属的行业 + 具体业务;"
         "② 简历与该职位的匹配评分(0-100)。两者必须都出现在这一句里。"
-        "评分务必克制、真实,不给安慰分。先在心里对照该岗位的『硬性核心要求』"
-        "(即这个岗位之所以存在的根本目的,如本例的 AI/LLM/检索、知识图谱)再打分,"
-        "并使分数与后面『技能匹配』里的 ✅/⚠️/❌ 自洽。评分锚点:"
-        "核心要求出现 ❌ 缺失时不应高于 65;有多项 ⚠️/❌ 时不应高于 75;"
-        "核心要求基本命中、仅边角有缺口才给 80+;几乎完美匹配才给 90+。"
-        "通用基础技能(如某门后端语言)再强也无法补偿核心领域的缺失;"
-        "若经验年限远超岗位要求(如 12 年 vs 要求 1-3 年),也要在这句里点明可能被视为『资历过高』。"
-        "例:『面向 AI Agent 的记忆与上下文平台,但核心的 AI/检索经验缺失,与你的背景匹配度约 60』。"
-        "只要这一句,精炼直给。",
+        "评分务必克制、真实,不给安慰分,并与后面『技能匹配』里的 ✅/⚠️/❌ 自洽。"
+        "先识别该岗位『反复强调、决定能否胜任的硬性核心要求』(而非人人都有的通用项),"
+        "按核心要求命中情况打分:核心要求出现 ❌ 缺失 → 不应高于 65;"
+        "多项核心要求仅 ⚠️ 部分满足 → 不应高于 75;核心要求基本命中、仅边角缺口 → 80+;"
+        "几乎全部命中 → 90+。通用基础技能再突出也不能补偿核心要求的缺失;"
+        "若经验年限明显超出岗位要求,也要在这句里点明可能被视为『资历过高』。只要这一句,精炼直给。"
     ),
-    (
-        "overview",
+    "overview": (
         "用 2-4 句话客观介绍:这家公司/产品到底在做什么业务、面向什么市场,"
         "以及这个岗位主要负责什么。目的是让用户快速判断自己是否对这个业务方向感兴趣。"
-        "只描述,不评价匹配度。",
+        "只描述,不评价匹配度。"
     ),
-    (
-        "skills",
+    "skills": (
         "站在招聘方筛选的角度,列出该职位要求的关键技能/经验,逐项标注简历是否命中:"
         "✅ 具备 / ⚠️ 部分 / ❌ 缺失,各附一句简要依据。"
-        "⚠️/❌ 正是 HR 会质疑的点,可顺带点一句如何弥补或扬长避短。用 Markdown 表格或列表。",
+        "⚠️/❌ 正是 HR 会质疑的点,可顺带点一句如何弥补或扬长避短。用 Markdown 表格或列表。"
     ),
-    (
-        "cover_letter",
+    "cover_letter": (
         "用 HR/招聘官的阅读习惯,写一封可直接发送、前两句就抓住对方的求职信:"
         "① 开头用一句有冲击力的『钩子』直接点出你最匹配该岗位的核心价值(尽量带量化成果),不要客套寒暄;"
         "② 主体用 2-3 个最相关的匹配点,尽量量化(数字、规模、结果)并呼应 JD 关键词;"
-        "③ 结尾给出清晰、自信的下一步意向。全文精炼(约 200-250 字),只要信件正文,不要额外解释或标题。",
+        "③ 结尾给出清晰、自信的下一步意向。全文精炼(约 200-250 字),只要信件正文,不要额外解释或标题。"
     ),
-    (
-        "resume_tips",
+    "resume_tips": (
         "以 HR『6 秒扫一眼』的视角,给出让这份简历瞬间显得『对口』的具体修改建议:"
         "① 哪些与 JD 吻合的关键词/技能要前置、加粗或放到简历靠前位置(兼顾 ATS 关键词筛选);"
         "② 哪些经历应改写成可量化成果——给出『改前 → 改后』的示例措辞;"
-        "③ 哪些与该岗位无关的内容可弱化或删减。条理清晰、可直接照做。",
+        "③ 哪些与该岗位无关的内容可弱化或删减。条理清晰、可直接照做。"
     ),
-]
+}
+
+# 右键默认只跑匹配分析三块;求职信/建议按需生成。
+DEFAULT_SECTIONS = ["conclusion", "overview", "skills"]
+# 喂给模型的顺序:skills 在 conclusion 之前,使评分被技能匹配锚定。
+GENERATION_ORDER = ["overview", "skills", "conclusion", "cover_letter", "resume_tips"]
+# 回前端的展示顺序:conclusion 置顶(前端把它当 lede)。
+DISPLAY_ORDER = ["conclusion", "overview", "skills", "cover_letter", "resume_tips"]
 
 # 简历路径,相对网关运行目录(gateway/)。可用环境变量覆盖。
 DEFAULT_CV_PATH = os.environ.get("AGENT_BRIDGE_CV_PATH", "data/cv/cv.pdf")
@@ -135,13 +134,23 @@ class JobMatchAgent(OpenAIChatAgent):
                 "请打开完整的招聘职位页面,或选中职位描述文字后再试。"
             )
 
+    def _requested_sections(self, task: TaskCreate) -> list[str]:
+        """请求的区块集合(过滤未知 id);空则回默认分析集。顺序无关,拼 prompt 时按 GENERATION_ORDER 排。"""
+        requested = task.sections or DEFAULT_SECTIONS
+        valid = [s for s in requested if s in SECTION_INSTRUCTIONS]
+        return valid or DEFAULT_SECTIONS
+
+    def _section_request_lines(self, sections: list[str]) -> list[str]:
+        lines = ["请按顺序输出以下区块:"]
+        for sid in GENERATION_ORDER:
+            if sid in sections:
+                lines.append(f"@@SECTION {sid} — {SECTION_INSTRUCTIONS[sid]}")
+        return lines
+
     def build_prompt(self, task: TaskCreate, cv_text: str | None = None) -> str:
         # 兜底:任何路径构造 prompt 前都先校验,确保模型不会在稀疏内容上瞎编。
         self.validate(task)
-        section_lines = ["请按顺序输出以下区块:"]
-        for sid, instruction in SECTION_SPECS:
-            section_lines.append(f"@@SECTION {sid} — {instruction}")
-
+        section_lines = self._section_request_lines(self._requested_sections(task))
         return "\n".join(
             [
                 *section_lines,
@@ -198,4 +207,7 @@ class JobMatchAgent(OpenAIChatAgent):
                     collapsible=bool(meta.get("collapsible", True)),
                 )
             )
+        # 生成顺序(skills 先于 conclusion)≠ 展示顺序;按 DISPLAY_ORDER 重排,未知 id 稳定排末尾。
+        order = {sid: i for i, sid in enumerate(DISPLAY_ORDER)}
+        sections.sort(key=lambda s: order.get(s.id, len(DISPLAY_ORDER)))
         return sections
