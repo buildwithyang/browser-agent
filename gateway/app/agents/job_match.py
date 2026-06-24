@@ -125,8 +125,11 @@ class JobMatchAgent(OpenAIChatAgent):
     def validate(self, task: TaskCreate) -> None:
         """内容太少就直接失败,避免模型凭空编造职位/匹配。
 
+        续跑(有 prior_result)时已有阶段一分析,无需页面正文,跳过该检查。
         由 TaskService 在调用模型前预检(抛 ValueError -> API 返回 400,且不耗 token)。
         """
+        if task.prior_result and task.prior_result.strip():
+            return
         job_chars = max(len(task.page_text.strip()), len(task.selected_text.strip()))
         if job_chars < MIN_JOB_CONTENT_CHARS:
             raise ValueError(
@@ -151,12 +154,28 @@ class JobMatchAgent(OpenAIChatAgent):
         # 兜底:任何路径构造 prompt 前都先校验,确保模型不会在稀疏内容上瞎编。
         self.validate(task)
         section_lines = self._section_request_lines(self._requested_sections(task))
+        cv = self._resolve_cv_text(cv_text)[:MAX_CV_CHARS]
+        if task.prior_result and task.prior_result.strip():
+            # 续跑:基于阶段一分析 + 简历生成,不带页面正文。
+            # 去掉 @@SECTION 标记行,避免模型把阶段一内容当新输出区块。
+            prior_text = _SECTION_RE.sub("", task.prior_result).strip()
+            return "\n".join(
+                [
+                    *section_lines,
+                    "",
+                    "# 我的简历",
+                    cv,
+                    "",
+                    "# 前序匹配分析(基于它来写,不要重复输出它)",
+                    prior_text,
+                ]
+            )
         return "\n".join(
             [
                 *section_lines,
                 "",
                 "# 我的简历",
-                self._resolve_cv_text(cv_text)[:MAX_CV_CHARS],
+                cv,
                 "",
                 "# 当前招聘职位页面",
                 "标题:",
@@ -175,7 +194,12 @@ class JobMatchAgent(OpenAIChatAgent):
     def run(self, task: TaskCreate, cv_text: str | None = None) -> str:
         system = self.system_prompt + "\n\n" + language_directive(task.lang)
         prompt = self.build_prompt(task, cv_text=cv_text)
-        return self.complete(system, prompt, tier=self._router.pick(len(prompt)))
+        output = self.complete(system, prompt, tier=self._router.pick(len(prompt)))
+        if task.prior_result and task.prior_result.strip():
+            # 把阶段二输出拼到阶段一分析之后,使返回值即「合并全量文本」;
+            # service/build_sections 因此无需感知 prior_result。
+            return task.prior_result.rstrip() + "\n\n" + output
+        return output
 
     def build_sections(self, result: str, lang: str) -> list[Section]:
         """Split the model output on `@@SECTION <id>` markers into renderable blocks."""

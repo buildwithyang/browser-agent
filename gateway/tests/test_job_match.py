@@ -144,3 +144,56 @@ def test_build_prompt_rejects_sparse_content():
     agent._cv_text = "Go / 5y backend"  # 即便有简历,内容太少也不该构造 prompt
     with pytest.raises(ValueError):
         agent.build_prompt(TaskCreate(url="https://x.com/j", title="Job", page_text="hi"))
+
+
+def make_continue_task() -> TaskCreate:
+    return TaskCreate(
+        url="https://example.com/jobs/9",
+        title="Senior Go Engineer",
+        sections=["cover_letter", "resume_tips"],
+        priorResult="@@SECTION conclusion\n金融科技,匹配度 82。\n@@SECTION skills\n- Go ✅\n",
+    )
+
+
+def test_continuation_prompt_uses_prior_result_not_page_text():
+    agent = JobMatchAgent()
+    agent._cv_text = "Go / Kubernetes / 5y backend"
+    prompt = agent.build_prompt(make_continue_task())
+    assert "@@SECTION cover_letter" in prompt
+    assert "@@SECTION resume_tips" in prompt
+    assert "@@SECTION conclusion" not in prompt        # 续跑不重生成分析
+    assert "金融科技,匹配度 82" in prompt              # 带入阶段一分析
+    assert "Go / Kubernetes" in prompt                 # 带入简历
+
+
+def test_validate_allows_empty_page_when_prior_result_present():
+    agent = JobMatchAgent()
+    agent._cv_text = "Go"
+    # page_text 为空但有 prior_result -> 不抛
+    agent.validate(make_continue_task())
+
+
+def test_run_continuation_prepends_prior_result():
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="@@SECTION cover_letter\nDear Hiring Manager\n"))]
+        )
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+    )
+    agent = JobMatchAgent(client=fake_client, model="gpt-4o-mini")
+    agent._cv_text = "Go / 5y"
+
+    result = agent.run(make_continue_task())
+
+    assert result.startswith("@@SECTION conclusion")   # 前序分析在前
+    assert "@@SECTION cover_letter" in result          # 模型输出在后
+    # 合并文本切块得到全量区块、按展示顺序
+    ids = [s.id for s in agent.build_sections(result, "zh")]
+    assert ids[0] == "conclusion"
+    assert "cover_letter" in ids
