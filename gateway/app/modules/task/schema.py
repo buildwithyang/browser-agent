@@ -39,6 +39,10 @@ class TaskCreate(BaseModel):
     page_text: str = Field("", alias="pageText", max_length=PAGE_TEXT_MAX_CHARS)
     # 图片文字线索(alt / caption / aria-label),纯文本,不含图片本身。
     image_text: str = Field("", alias="imageText", max_length=IMAGE_TEXT_MAX_CHARS)
+    # 按需分阶段:job_match 用。省略=默认分析集;非空=只生成被点名的区块。
+    sections: list[str] | None = None
+    # 续跑时回传的阶段一 result 文本(求职信/建议基于它生成,无需重传页面正文)。
+    prior_result: str | None = Field(default=None, alias="priorResult", max_length=50_000)
     intent: str = "Summarize this page."
     agent: AgentName = "summary_page"
     # 输出语言:"zh"/"en" 强制;"auto" 跟随页面语言。扩展通常已把用户偏好解析为 zh/en。
@@ -59,6 +63,14 @@ class Section(BaseModel):
     collapsible: bool = True
 
 
+class Action(BaseModel):
+    """结果上可触发的后续动作。后端声明,前端照单渲染按钮(未来新动作纯后端添加)。"""
+
+    id: str
+    label: str
+    sections: list[str]
+
+
 class TaskResponse(BaseModel):
     """返回给扩展的完整结果。不含 prompt（含简历/页面正文，无需回传客户端）。"""
 
@@ -71,6 +83,7 @@ class TaskResponse(BaseModel):
     result: str = ""
     result_html: str = ""
     sections: list[Section] = Field(default_factory=list)
+    actions: list[Action] = Field(default_factory=list)
     error: str = ""
     started_at: datetime | None = None
     finished_at: datetime | None = None
