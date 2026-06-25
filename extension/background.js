@@ -1,5 +1,6 @@
 import {
   buildAuthHeaders,
+  buildTaskBody,
   taskUrl,
   shouldClearToken,
   handleExternalMessage,
@@ -126,74 +127,125 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   );
   showResult(tabId, { state: "loading", source: message.payload && message.payload.url });
 
-  // Abort if the gateway never responds, so the panel can't get stuck forever.
+  resolveLang().then((lang) =>
+    dispatchTask({
+      tabId,
+      lang,
+      agent,
+      source: (message.payload && message.payload.url) || "",
+      body: (token) =>
+        buildTaskBody(payload, { agent, lang }),
+    })
+  );
+});
+
+// Shared task dispatch: builds the request, handles token/timeout/keep-alive,
+// renders the result panel. Used by both the stage-one context flow and the
+// on-demand continuation flow. `opts.body(token)` returns the JSON body object.
+function dispatchTask({ tabId, lang, agent, source, body, onError }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
+  const keepAlive = setInterval(
+    () => chrome.runtime.getPlatformInfo(() => {}),
+    20000
+  );
+  const done = () => {
+    clearTimeout(timeout);
+    clearInterval(keepAlive);
+  };
 
-  // Chrome kills an MV3 service worker after ~30s of inactivity, and an
-  // in-flight fetch does NOT reset that idle timer — agent runs longer than
-  // 30s would die silently and leave the panel stuck on "loading". Calling
-  // any extension API resets the timer, so poke one every 20s until the
-  // request settles.
-  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
-
-  Promise.all([resolveLang(), getGatewayConfig()])
-    .then(([lang, { base, token }]) => {
-      console.log("[Agent Bridge] lang:", lang);
-      return fetch(taskUrl(base), {
+  return getGatewayConfig()
+    .then(({ base, token }) =>
+      fetch(taskUrl(base), {
         method: "POST",
         headers: buildAuthHeaders(token),
-        body: JSON.stringify({ ...payload, agent, lang }),
-        signal: controller.signal
-      });
-    })
-    .then((response) => {
-      console.log("[Agent Bridge] gateway responded:", response.status);
-      if (shouldClearToken(response.status)) {
-        // token 过期 / 被吊销：清掉本地 token，提示去网页端重新连接。
-        chrome.storage.local.remove([TOKEN_KEY, EXPIRES_KEY]);
-        clearTimeout(timeout);
-        clearInterval(keepAlive);
-        showResult(tabId, {
-          state: "error",
-          source: message.payload && message.payload.url,
-          errorHint: "登录已过期或扩展被解绑,请在网页端重新登录并连接扩展。",
-          text: "Agent Bridge: 请在网页端重新登录并连接扩展。"
-        });
-        return null;
-      }
-      return response.json();
-    })
+        body: JSON.stringify(body(token)),
+        signal: controller.signal,
+      }).then((response) => {
+        if (shouldClearToken(response.status)) {
+          chrome.storage.local.remove([TOKEN_KEY, EXPIRES_KEY]);
+          done();
+          showResult(tabId, {
+            state: "error",
+            source,
+            errorHint:
+              "登录已过期或扩展被解绑,请在网页端重新登录并连接扩展。",
+            text: "Agent Bridge: 请在网页端重新登录并连接扩展。",
+          });
+          return null;
+        }
+        return response.json();
+      })
+    )
     .then((task) => {
-      if (!task) return; // 401 已在上一步处理
-      clearTimeout(timeout);
-      clearInterval(keepAlive);
-      console.log("[Agent Bridge] task:", task.status, task.duration_ms + "ms");
+      if (!task) return false; // 401 已处理
+      done();
       showResult(tabId, {
         state: "result",
         html: task.result_html,
         sections: task.sections || [],
+        actions: task.actions || [],
+        agent,
+        lang,
+        result: task.result || "",
         text: task.result || task.detail || "(no result)",
-        source: (task.request && task.request.url) || (message.payload && message.payload.url),
-        durationMs: task.duration_ms
+        source: (task.request && task.request.url) || source,
+        durationMs: task.duration_ms,
       });
+      return true;
     })
     .catch((error) => {
-      clearTimeout(timeout);
-      clearInterval(keepAlive);
+      done();
       console.error("[Agent Bridge] gateway request failed:", error);
+      if (onError) {
+        onError(error);
+        return false;
+      }
       const hint =
         error.name === "AbortError"
           ? "请求超时,网关无响应。"
           : "无法连接网关 (" + error.message + ")。";
       showResult(tabId, {
         state: "error",
-        source: message.payload && message.payload.url,
+        source,
         errorHint: hint,
         errorCmd: "./dev-start backend",
-        text: "Agent Bridge 出错:" + hint
+        text: "Agent Bridge 出错:" + hint,
       });
+      return false;
     });
+}
+
+// On-demand follow-up (e.g. 生成求职信). The panel button sends the stage-1
+// raw result back as priorResult; we re-POST /tasks for the named sections and
+// re-render the full merged panel. On failure we reply {ok:false} so the page
+// re-enables its button and keeps the stage-1 result visible.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type !== "AGENT_BRIDGE_CONTINUE" || !sender.tab) return;
+  const tabId = sender.tab.id;
+
+  dispatchTask({
+    tabId,
+    lang: message.lang,
+    agent: message.agent,
+    source: message.url || "",
+    body: () =>
+      buildTaskBody(
+        { url: message.url || "" },
+        {
+          agent: message.agent,
+          lang: message.lang,
+          sections: message.sections,
+          priorResult: message.priorResult,
+        }
+      ),
+    onError: () => sendResponse({ ok: false }),
+  }).then((ok) => {
+    if (ok) sendResponse({ ok: true });
+    else sendResponse({ ok: false });
+  });
+
+  return true; // async sendResponse
 });
 
 // Render the agent result in an overlay panel injected into the originating page.
@@ -411,6 +463,12 @@ function renderPanel(payload) {
     .sec-body > :first-child { margin-top: .2em; }
     .sec-body > :last-child { margin-bottom: 0; }
 
+    .ab-actions { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .ab-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 12px; background: var(--signal-soft); color: var(--signal); border: 1px solid var(--signal); border-radius: 8px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+    .ab-action:hover { filter: brightness(1.12); }
+    .ab-action:disabled { opacity: .6; cursor: default; }
+    .ab-action-err { margin-top: 8px; color: var(--alert); font-size: 12.5px; }
+
     /* error: name what broke and hand over the fix. */
     .error-head { display: flex; align-items: center; gap: 7px; color: var(--alert); font-weight: 600; font-size: 13.5px; margin-bottom: 9px; }
     .error-msg { margin: 0; color: var(--text); }
@@ -521,6 +579,46 @@ function renderPanel(payload) {
     body.append(wrap);
   } else if (payload.sections && payload.sections.length) {
     renderSections(body, payload.sections);
+    if (payload.actions && payload.actions.length) {
+      const actionsWrap = el("div", "ab-actions");
+      payload.actions.forEach((action) => {
+        const btn = el("button", "ab-action");
+        btn.type = "button";
+        btn.textContent = action.label;
+        const err = el("div", "ab-action-err");
+        err.style.display = "none";
+        btn.addEventListener("click", () => {
+          btn.disabled = true;
+          const original = action.label;
+          btn.textContent = payload.lang === "en" ? "Generating…" : "生成中…";
+          err.style.display = "none";
+          chrome.runtime.sendMessage(
+            {
+              type: "AGENT_BRIDGE_CONTINUE",
+              sections: action.sections,
+              priorResult: payload.result,
+              lang: payload.lang,
+              url: payload.source,
+              agent: payload.agent,
+            },
+            (resp) => {
+              // 成功时后台已整面板重渲染,这里不必处理;失败时恢复按钮并提示。
+              if (!resp || !resp.ok) {
+                btn.disabled = false;
+                btn.textContent = original;
+                err.textContent =
+                  payload.lang === "en"
+                    ? "Generation failed, please retry."
+                    : "生成失败,请重试。";
+                err.style.display = "block";
+              }
+            }
+          );
+        });
+        actionsWrap.append(btn, err);
+      });
+      body.append(actionsWrap);
+    }
   } else if (payload.html) {
     body.innerHTML = payload.html; // sanitized by the gateway before it reaches here
     const firstP = body.querySelector("p");
