@@ -16,6 +16,15 @@ export function taskUrl(base) {
   return `${root}/tasks`;
 }
 
+// Build the JSON body for a /tasks request. `opts.sections` / `opts.priorResult`
+// are the on-demand follow-up fields (omitted entirely for the stage-one request).
+export function buildTaskBody(payload, { agent, lang, sections, priorResult } = {}) {
+  const body = { ...payload, agent, lang };
+  if (sections) body.sections = sections;
+  if (priorResult) body.priorResult = priorResult;
+  return body;
+}
+
 export function shouldClearToken(status) {
   return status === 401;
 }

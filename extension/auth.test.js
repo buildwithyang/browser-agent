@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildAuthHeaders,
+  buildTaskBody,
   taskUrl,
   shouldClearToken,
   handleExternalMessage,
@@ -74,4 +75,26 @@ test("AUTH_TOKEN stores token+expiry and acks", async () => {
 test("unknown message returns undefined", async () => {
   assert.equal(await handleExternalMessage({ type: "NOPE" }, { store: fakeStore(), now: 1 }), undefined);
   assert.equal(await handleExternalMessage(null, { store: fakeStore(), now: 1 }), undefined);
+});
+
+test("buildTaskBody sets agent/lang and spreads payload", () => {
+  const body = buildTaskBody(
+    { url: "u", pageText: "p" },
+    { agent: "job_match", lang: "zh" }
+  );
+  assert.equal(body.url, "u");
+  assert.equal(body.pageText, "p");
+  assert.equal(body.agent, "job_match");
+  assert.equal(body.lang, "zh");
+  assert.equal("sections" in body, false);
+  assert.equal("priorResult" in body, false);
+});
+
+test("buildTaskBody includes sections and priorResult when given", () => {
+  const body = buildTaskBody(
+    { url: "u" },
+    { agent: "job_match", lang: "en", sections: ["cover_letter", "resume_tips"], priorResult: "ANALYSIS" }
+  );
+  assert.deepEqual(body.sections, ["cover_letter", "resume_tips"]);
+  assert.equal(body.priorResult, "ANALYSIS");
 });
