@@ -211,9 +211,20 @@ def test_actions_offers_cover_letter_on_stage_one():
 def test_actions_label_english():
     agent = JobMatchAgent()
     acts = agent.actions(make_task(), "en")
+    assert len(acts) == 1
     assert "cover letter" in acts[0].label.lower()
 
 
 def test_actions_empty_on_continuation():
     agent = JobMatchAgent()
     assert agent.actions(make_continue_task(), "zh") == []
+
+
+def test_actions_empty_when_cover_letter_already_requested():
+    agent = JobMatchAgent()
+    task = TaskCreate(
+        url="https://x.com/j",
+        title="Job",
+        sections=["cover_letter", "skills"],
+    )
+    assert agent.actions(task, "zh") == []
