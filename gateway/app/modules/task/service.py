@@ -91,6 +91,11 @@ class TaskService:
             else:
                 result_html = render_markdown(result)
 
+            actions = (
+                agent.actions(task, task.lang)
+                if hasattr(agent, "actions")
+                else []
+            )
             response = TaskResponse(
                 id=rid,
                 created_at=started_at,
@@ -101,6 +106,7 @@ class TaskService:
                 result=result,
                 result_html=result_html,
                 sections=sections,
+                actions=actions,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
                 duration_ms=duration_ms,
