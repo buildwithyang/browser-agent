@@ -133,16 +133,15 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       lang,
       agent,
       source: (message.payload && message.payload.url) || "",
-      body: (token) =>
-        buildTaskBody(payload, { agent, lang }),
+      body: () => buildTaskBody(payload, { agent, lang }),
     })
   );
 });
 
 // Shared task dispatch: builds the request, handles token/timeout/keep-alive,
 // renders the result panel. Used by both the stage-one context flow and the
-// on-demand continuation flow. `opts.body(token)` returns the JSON body object.
-function dispatchTask({ tabId, lang, agent, source, body, onError }) {
+// on-demand continuation flow. `opts.body()` returns the JSON body object.
+function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
   const keepAlive = setInterval(
@@ -159,7 +158,7 @@ function dispatchTask({ tabId, lang, agent, source, body, onError }) {
       fetch(taskUrl(base), {
         method: "POST",
         headers: buildAuthHeaders(token),
-        body: JSON.stringify(body(token)),
+        body: JSON.stringify(body()),
         signal: controller.signal,
       }).then((response) => {
         if (shouldClearToken(response.status)) {
@@ -197,10 +196,7 @@ function dispatchTask({ tabId, lang, agent, source, body, onError }) {
     .catch((error) => {
       done();
       console.error("[Agent Bridge] gateway request failed:", error);
-      if (onError) {
-        onError(error);
-        return false;
-      }
+      if (suppressErrorPanel) return false; // caller handles failure inline (keeps stage-1 panel)
       const hint =
         error.name === "AbortError"
           ? "请求超时,网关无响应。"
@@ -239,11 +235,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           priorResult: message.priorResult,
         }
       ),
-    onError: () => sendResponse({ ok: false }),
-  }).then((ok) => {
-    if (ok) sendResponse({ ok: true });
-    else sendResponse({ ok: false });
-  });
+    suppressErrorPanel: true,
+  }).then((ok) => sendResponse({ ok: !!ok }));
 
   return true; // async sendResponse
 });
