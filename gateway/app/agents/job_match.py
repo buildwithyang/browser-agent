@@ -5,7 +5,7 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from app.agents.base import OpenAIChatAgent, language_directive
-from app.modules.task.schema import Section, TaskCreate
+from app.modules.task.schema import Action, Section, TaskCreate
 from app.render import render_markdown
 
 SYSTEM_PROMPT = (
@@ -235,3 +235,19 @@ class JobMatchAgent(OpenAIChatAgent):
         order = {sid: i for i, sid in enumerate(DISPLAY_ORDER)}
         sections.sort(key=lambda s: order.get(s.id, len(DISPLAY_ORDER)))
         return sections
+
+    def actions(self, task: TaskCreate, lang: str) -> list[Action]:
+        """阶段一结果上提供「生成求职信」按钮;续跑/已点名 cover_letter 时不提供。"""
+        if task.prior_result and task.prior_result.strip():
+            return []
+        requested = task.sections or DEFAULT_SECTIONS
+        if "cover_letter" in requested:
+            return []
+        label = "✍️ Write cover letter" if lang == "en" else "✍️ 生成求职信"
+        return [
+            Action(
+                id="generate_cover_letter",
+                label=label,
+                sections=["cover_letter", "resume_tips"],
+            )
+        ]

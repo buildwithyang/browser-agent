@@ -197,3 +197,23 @@ def test_run_continuation_prepends_prior_result():
     ids = [s.id for s in agent.build_sections(result, "zh")]
     assert ids[0] == "conclusion"
     assert "cover_letter" in ids
+
+
+def test_actions_offers_cover_letter_on_stage_one():
+    agent = JobMatchAgent()
+    acts = agent.actions(make_task(), "zh")
+    assert len(acts) == 1
+    assert acts[0].id == "generate_cover_letter"
+    assert acts[0].sections == ["cover_letter", "resume_tips"]
+    assert "求职信" in acts[0].label
+
+
+def test_actions_label_english():
+    agent = JobMatchAgent()
+    acts = agent.actions(make_task(), "en")
+    assert "cover letter" in acts[0].label.lower()
+
+
+def test_actions_empty_on_continuation():
+    agent = JobMatchAgent()
+    assert agent.actions(make_continue_task(), "zh") == []
