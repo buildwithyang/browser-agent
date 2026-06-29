@@ -78,6 +78,13 @@ def me(request: Request, auth_service: AuthService = Depends(get_auth_service)):
 
 @router.post("/logout", response_model=ApiResponse[AuthMeData])
 def logout(request: Request, auth_service: AuthService = Depends(get_auth_service)):
+    # 登出时一并吊销该用户的扩展 bearer token，否则扩展凭独立 token 仍可访问网关。
+    # token 服务用 getattr 软依赖：缺失也不能让登出失败（登出必须永远能清掉 session）。
+    user_id = auth_service.session_user_id(request.session)
+    if user_id:
+        token_service = getattr(request.app.state, "extension_token_service", None)
+        if token_service is not None:
+            token_service.revoke_all_for_user(user_id)
     auth_service.logout(request.session)
     return ApiResponse(data=AuthMeData(user=None))
 

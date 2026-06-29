@@ -73,3 +73,9 @@ class ExtensionTokenService:
         if self._repository is None:
             return False
         return self._repository.revoke(user_id=user_id, token_id=token_id)
+
+    def revoke_all_for_user(self, user_id: str) -> int:
+        # 登出联动：吊销该用户全部扩展 token，使其 resolve() 立即失效。
+        if self._repository is None:
+            return 0
+        return self._repository.revoke_all_for_user(user_id)

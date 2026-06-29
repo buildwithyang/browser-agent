@@ -136,3 +136,20 @@ class ExtensionTokenRepository:
                 return True
         except SQLAlchemyError as exc:
             raise RuntimeError(f"Failed to revoke extension token: {exc}") from exc
+
+    def revoke_all_for_user(self, user_id: str) -> int:
+        # 登出时一次吊销该用户全部未吊销 token；返回新吊销条数（已吊销的不重复计）。
+        stmt = select(ExtensionTokenModel).where(
+            ExtensionTokenModel.user_id == user_id,
+            ExtensionTokenModel.revoked.is_(False),
+        )
+        try:
+            with self._session_factory() as db:
+                rows = list(db.execute(stmt).scalars().all())
+                for row in rows:
+                    row.revoked = True
+                if rows:
+                    db.commit()
+                return len(rows)
+        except SQLAlchemyError as exc:
+            raise RuntimeError(f"Failed to revoke extension tokens: {exc}") from exc

@@ -67,3 +67,15 @@ def test_revoke_only_owned(tmp_path):
     assert repo.get_by_hash("a").revoked is False
     assert repo.revoke(user_id=USER, token_id=tid) is True
     assert repo.get_by_hash("a").revoked is True
+
+
+def test_revoke_all_for_user(tmp_path):
+    repo = _repo(tmp_path)
+    _insert(repo, token_hash="a")
+    _insert(repo, token_hash="b")
+    _insert(repo, user_id=OTHER, token_hash="c")
+    # 登出时一次性吊销该用户全部 token；返回实际新吊销的条数，他人 token 不受影响。
+    assert repo.revoke_all_for_user(USER) == 2
+    assert repo.get_by_hash("a").revoked is True
+    assert repo.get_by_hash("b").revoked is True
+    assert repo.get_by_hash("c").revoked is False

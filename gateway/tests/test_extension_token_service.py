@@ -51,6 +51,16 @@ def test_resolve_rejects_unknown_expired_revoked(tmp_path):
     assert svc.resolve(token) is None
 
 
+def test_revoke_all_for_user_invalidates_resolve(tmp_path):
+    # 登出后,该用户之前签发的所有扩展 token 都应再也解析不出 user_id。
+    svc = _service(tmp_path)
+    t1 = svc.issue(user_id=USER).token
+    t2 = svc.issue(user_id=USER).token
+    assert svc.revoke_all_for_user(USER) == 2
+    assert svc.resolve(t1) is None
+    assert svc.resolve(t2) is None
+
+
 def test_list_for_user_hides_secret(tmp_path):
     svc = _service(tmp_path)
     svc.issue(user_id=USER)

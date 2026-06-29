@@ -79,6 +79,11 @@ class AuthService:
             return None
         return self.to_auth_user(user)
 
+    def session_user_id(self, session: dict[str, Any]) -> str | None:
+        # 仅从 session 取登录用户 id（不查库）；登出时用它联动吊销扩展 token。
+        user_id = session.get(self.SESSION_USER_ID_KEY)
+        return user_id if isinstance(user_id, str) and user_id else None
+
     def logout(self, session: dict[str, Any]) -> None:
         session.clear()
 

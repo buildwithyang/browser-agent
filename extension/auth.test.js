@@ -5,6 +5,7 @@ import {
   buildAuthHeaders,
   buildTaskBody,
   taskUrl,
+  webBaseUrl,
   shouldClearToken,
   handleExternalMessage,
   TOKEN_KEY,
@@ -36,6 +37,13 @@ test("taskUrl trims trailing slash and appends /tasks", () => {
   assert.equal(taskUrl("http://127.0.0.1:17321"), "http://127.0.0.1:17321/tasks");
   assert.equal(taskUrl("https://x.com/api/"), "https://x.com/api/tasks");
   assert.equal(taskUrl(""), `${DEFAULT_GATEWAY}/tasks`);
+});
+
+test("webBaseUrl strips trailing /api and slashes", () => {
+  assert.equal(webBaseUrl("https://browser.buildwithyang.com/api"), "https://browser.buildwithyang.com");
+  assert.equal(webBaseUrl("https://browser.buildwithyang.com/api/"), "https://browser.buildwithyang.com");
+  assert.equal(webBaseUrl("http://127.0.0.1:17321"), "http://127.0.0.1:17321");
+  assert.equal(webBaseUrl(""), DEFAULT_GATEWAY.replace(/\/api$/, ""));
 });
 
 test("shouldClearToken only on 401", () => {

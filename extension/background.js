@@ -2,6 +2,7 @@ import {
   buildAuthHeaders,
   buildTaskBody,
   taskUrl,
+  webBaseUrl,
   shouldClearToken,
   handleExternalMessage,
   TOKEN_KEY,
@@ -164,12 +165,13 @@ function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) 
         if (shouldClearToken(response.status)) {
           chrome.storage.local.remove([TOKEN_KEY, EXPIRES_KEY]);
           done();
+          const loginUrl = webBaseUrl(base);
           showResult(tabId, {
             state: "error",
             source,
-            errorHint:
-              "登录已过期或扩展被解绑,请在网页端重新登录并连接扩展。",
-            text: "Agent Bridge: 请在网页端重新登录并连接扩展。",
+            errorHint: "未登录或登录已过期,请前往网页端登录:",
+            loginUrl,
+            text: "Agent Bridge: 请前往 " + loginUrl + " 登录。",
           });
           return null;
         }
@@ -466,6 +468,8 @@ function renderPanel(payload) {
     .error-head { display: flex; align-items: center; gap: 7px; color: var(--alert); font-weight: 600; font-size: 13.5px; margin-bottom: 9px; }
     .error-msg { margin: 0; color: var(--text); }
     .error-sub { margin: 12px 0 7px; color: var(--text-dim); font-size: 12.5px; }
+    .login-link { display: inline-block; margin-top: 12px; padding: 9px 14px; background: var(--signal-soft); color: var(--signal); border: 1px solid var(--signal); border-radius: 8px; font-family: var(--mono); font-size: 12.5px; font-weight: 600; text-decoration: none; word-break: break-all; }
+    .login-link:hover { filter: brightness(1.12); }
     .cmd { display: flex; align-items: flex-start; gap: 8px; background: var(--ink-sunken); border: 1px solid var(--hairline); border-radius: 8px; padding: 9px 10px; }
     .cmd code { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all; line-height: 1.55; font-family: var(--mono); font-size: 11.5px; color: #C9CDD6; }
     .cmd-copy { flex-shrink: 0; margin-top: 1px; background: var(--signal-soft); color: var(--signal); border: none; border-radius: 6px; padding: 5px 9px; font-size: 11px; font-weight: 600; cursor: pointer; }
@@ -547,10 +551,21 @@ function renderPanel(payload) {
   } else if (state === "error") {
     const wrap = el("div", "error");
     const eh = el("div", "error-head");
-    eh.innerHTML = ICON_ALERT + "<span>连接失败</span>";
+    // 401 给出登录入口时,标题不是"连接失败"而是"需要登录"。
+    const errTitle = payload.loginUrl ? "需要登录" : "连接失败";
+    eh.innerHTML = ICON_ALERT + "<span>" + errTitle + "</span>";
     const msg = el("p", "error-msg");
     msg.textContent = payload.errorHint || payload.text || "发生未知错误。";
     wrap.append(eh, msg);
+    if (payload.loginUrl) {
+      // 直接给出可点击的登录地址,在新标签页打开;网页端登录后自动回连扩展。
+      const link = el("a", "login-link");
+      link.href = payload.loginUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = payload.loginUrl;
+      wrap.append(link);
+    }
     if (payload.errorCmd) {
       const sub = el("p", "error-sub");
       sub.textContent = "请确认本地网关正在运行:";

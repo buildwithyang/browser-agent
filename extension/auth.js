@@ -16,6 +16,13 @@ export function taskUrl(base) {
   return `${root}/tasks`;
 }
 
+// 从网关基址推导网页端地址：去掉末尾的 /api（云端 https://host/api -> https://host）。
+// 用于 401 时给用户一个可点击的登录入口；网页端登录后会自动回连扩展。
+export function webBaseUrl(base) {
+  const root = (base || DEFAULT_GATEWAY).replace(/\/+$/, "");
+  return root.replace(/\/api$/, "");
+}
+
 // Build the JSON body for a /tasks request. `opts.sections` / `opts.priorResult`
 // are the on-demand follow-up fields (omitted entirely for the stage-one request).
 export function buildTaskBody(payload, { agent, lang, sections, priorResult } = {}) {
