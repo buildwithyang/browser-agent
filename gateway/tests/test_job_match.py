@@ -2,15 +2,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agents.job_match import JobMatchAgent
+from app.agents.job_match import MIN_JOB_CONTENT_CHARS, JobMatchAgent
 from app.modules.task.schema import TaskCreate
 
 
 def make_task() -> TaskCreate:
+    # JD 来自用户选中的文字(page_text 不再参与匹配)。
     return TaskCreate(
         url="https://example.com/jobs/9",
         title="Senior Go Engineer",
-        page_text=(
+        selected_text=(
             "We need Go, Kubernetes, distributed systems, and 5 years of backend "
             "experience for our Dubai fintech payments platform."
         ),
@@ -125,11 +126,15 @@ def test_missing_cv_raises(tmp_path):
         agent.build_prompt(make_task())
 
 
-def test_validate_rejects_sparse_content():
+def test_validate_rejects_long_page_without_selection():
     agent = JobMatchAgent()
-    sparse = TaskCreate(url="https://x.com/j", title="Job", page_text="Go")
+    # 像在 ChatGPT/任意网页右键:页面正文很长,但没选中职位描述 -> 必须拒绝,
+    # 不能再凭页面正文瞎编职位(这正是历史上的误匹配根因)。
+    junk = "Skip to content Chat history ChatGPT New chat Search chats " * 30
+    task = TaskCreate(url="https://chatgpt.com/c/x", title="ChatGPT", page_text=junk)
+    assert len(junk) > MIN_JOB_CONTENT_CHARS  # 页面正文远超阈值
     with pytest.raises(ValueError):
-        agent.validate(sparse)
+        agent.validate(task)
 
 
 def test_validate_passes_when_selection_has_enough():
@@ -228,3 +233,23 @@ def test_actions_empty_when_cover_letter_already_requested():
         sections=["cover_letter", "skills"],
     )
     assert agent.actions(task, "zh") == []
+
+
+def test_prompt_omits_page_text():
+    agent = JobMatchAgent()
+    agent._cv_text = "Go / 5y backend"
+    task = TaskCreate(
+        url="https://x.com/j",
+        title="Senior Go Engineer",
+        selected_text="We need Go, Kubernetes and 5 years of distributed backend experience for our platform.",
+        page_text="UNRELATED PAGE NOISE should never reach the model",
+    )
+    prompt = agent.build_prompt(task)
+    assert "We need Go, Kubernetes" in prompt        # 选中的 JD 进入 prompt
+    assert "UNRELATED PAGE NOISE" not in prompt       # 页面正文不再发给模型
+
+
+def test_system_prompt_guards_non_job_pages():
+    from app.agents.job_match import SYSTEM_PROMPT
+    # 模型端兼防:选中的是非招聘内容时,提示词要求拒绝而不是编造匹配。
+    assert "不是招聘职位页面" in SYSTEM_PROMPT

@@ -31,7 +31,7 @@ def job_task() -> TaskCreate:
     return TaskCreate(
         url="https://x.com/j",
         title="Senior Go Engineer",
-        page_text="We need Go, Kubernetes and 5 years of distributed systems backend engineering experience.",
+        selected_text="We need Go, Kubernetes and 5 years of distributed systems backend engineering experience.",
         agent="job_match",
     )
 

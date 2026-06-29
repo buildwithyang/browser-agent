@@ -20,7 +20,11 @@ SYSTEM_PROMPT = (
     "严格按要求输出若干区块:每个区块以单独一行 `@@SECTION <id>` 开头,"
     "紧接着是该区块的 Markdown 内容。只输出被要求的区块,顺序一致,"
     "不要在 `@@SECTION` 行加任何别的文字,不要输出额外说明。"
-    "只依据所给材料,不要编造简历或职位中没有的信息。"
+    "只依据所给材料,不要编造简历或职位中没有的信息。\n"
+    "重要:如果『当前招聘职位页面』明显不是招聘职位页面(例如是聊天记录、文档、"
+    "搜索结果、代码或其它与招聘无关的内容),绝对不要编造职位或匹配结果。"
+    "此时【只】输出一个 `@@SECTION conclusion`,内容为:这不是招聘职位页面,"
+    "无法进行简历匹配,请打开完整的招聘职位页面或选中职位描述后再试;并且不要输出任何其它区块。"
 )
 
 # 各区块的展示标题(按语言切换)、是否提供"复制"按钮、是否允许折叠。
@@ -83,8 +87,9 @@ DISPLAY_ORDER = ["conclusion", "overview", "skills", "cover_letter", "resume_tip
 # 简历路径,相对网关运行目录(gateway/)。可用环境变量覆盖。
 DEFAULT_CV_PATH = os.environ.get("AGENT_BRIDGE_CV_PATH", "data/cv/cv.pdf")
 MAX_CV_CHARS = 15000
-# 职位内容(页面正文或选中文字,取较长者)少于该字符数时直接失败,
-# 避免在几乎没内容的页面上让模型凭空编造职位/匹配结果。
+# 选中的职位描述少于该字符数就直接失败:历史数据里真实匹配的选中文本都 >2000 字,
+# 误匹配(在聊天/空白页右键)都 <80 字。只看选中文本即可干净区分,不再用页面正文兜底
+# (页面正文恰恰是误匹配的来源——长的非招聘页面会让模型凭空编造职位)。
 MIN_JOB_CONTENT_CHARS = 80
 
 _SECTION_RE = re.compile(r"^@@SECTION\s+(\w+)\s*$", re.MULTILINE)
@@ -127,18 +132,19 @@ class JobMatchAgent(OpenAIChatAgent):
         return text
 
     def validate(self, task: TaskCreate) -> None:
-        """内容太少就直接失败,避免模型凭空编造职位/匹配。
+        """没有选中足够的职位描述就直接失败,避免模型凭空编造职位/匹配。
 
-        续跑(有 prior_result)时已有阶段一分析,无需页面正文,跳过该检查。
-        由 TaskService 在调用模型前预检(抛 ValueError -> API 返回 400,且不耗 token)。
+        只看 selected_text,不再用 page_text 兜底:历史数据显示真实匹配的选中文本
+        都远超阈值,而误匹配(在聊天/空白页右键)选中文本都极短——页面正文恰是误匹配
+        的来源。续跑(有 prior_result)时跳过该检查。由 TaskService 在调用模型前预检
+        (抛 ValueError -> API 返回 400,且不耗 token)。
         """
         if task.prior_result and task.prior_result.strip():
             return
-        job_chars = max(len(task.page_text.strip()), len(task.selected_text.strip()))
-        if job_chars < MIN_JOB_CONTENT_CHARS:
+        if len(task.selected_text.strip()) < MIN_JOB_CONTENT_CHARS:
             raise ValueError(
-                "这个页面没抓到足够的职位内容,无法进行简历匹配。"
-                "请打开完整的招聘职位页面,或选中职位描述文字后再试。"
+                "没有选中足够的职位描述,无法进行简历匹配。"
+                "请在招聘页面上选中职位描述(JD)文字后再试。"
             )
 
     def _requested_sections(self, task: TaskCreate) -> list[str]:
@@ -181,15 +187,13 @@ class JobMatchAgent(OpenAIChatAgent):
                 "# 我的简历",
                 cv,
                 "",
-                "# 当前招聘职位页面",
+                "# 当前招聘职位(用户在页面上选中的内容)",
                 "标题:",
                 task.title,
                 "链接:",
                 task.url,
-                "选中文本:",
-                task.selected_text.strip() or "(无)",
-                "页面内容:",
-                task.page_text.strip() or "(无)",
+                "职位描述(选中文字):",
+                task.selected_text.strip(),
                 "图片线索(alt/说明):",
                 task.image_text.strip() or "(无)",
             ]
