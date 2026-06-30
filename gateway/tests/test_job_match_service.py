@@ -27,11 +27,22 @@ def make_service(content: str) -> tuple[TaskService, JobMatchAgent]:
     return svc, agent
 
 
+# 门控要求选中的 JD >= 1000 字;用一段足够长的职位描述。
+LONG_JD = (
+    "Senior Backend Engineer — we are hiring. Responsibilities: design and operate "
+    "high-throughput distributed systems; build gRPC and REST APIs; own reliability, "
+    "on-call, and performance tuning for a global consumer-facing platform serving "
+    "millions of daily active users. Requirements: 5+ years backend engineering; "
+    "expert in Go; solid Kubernetes, message queues, databases, caching, and "
+    "observability; proven track record scaling production services under load. "
+) * 3
+
+
 def job_task() -> TaskCreate:
     return TaskCreate(
         url="https://x.com/j",
         title="Senior Go Engineer",
-        selected_text="We need Go, Kubernetes and 5 years of distributed systems backend engineering experience.",
+        selected_text=LONG_JD,
         agent="job_match",
     )
 

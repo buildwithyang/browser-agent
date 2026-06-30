@@ -6,15 +6,28 @@ from app.agents.job_match import MIN_JOB_CONTENT_CHARS, JobMatchAgent
 from app.modules.task.schema import TaskCreate
 
 
+# 真实 JD 通常上千字;门控要求选中内容 >= MIN_JOB_CONTENT_CHARS(1000)字。
+LONG_JD = (
+    "Senior Backend Engineer — we are hiring. Responsibilities: design and operate "
+    "high-throughput distributed systems; build and maintain gRPC and REST APIs; "
+    "own reliability, on-call rotations, and performance tuning for a global, "
+    "consumer-facing platform serving millions of daily active users; collaborate "
+    "across teams on architecture and capacity planning. Requirements: 5+ years of "
+    "professional backend engineering; expert in Go; solid Kubernetes, message "
+    "queues, databases, caching, and observability; proven track record scaling "
+    "production services under heavy load. Nice to have: payments, IoT, or "
+    "real-time messaging experience. We offer competitive compensation, remote "
+    "flexibility, and an engineering culture focused on ownership and impact. "
+) * 2
+assert len(LONG_JD) >= MIN_JOB_CONTENT_CHARS  # 守护:该 fixture 必须越过门控
+
+
 def make_task() -> TaskCreate:
     # JD 来自用户选中的文字(page_text 不再参与匹配)。
     return TaskCreate(
         url="https://example.com/jobs/9",
         title="Senior Go Engineer",
-        selected_text=(
-            "We need Go, Kubernetes, distributed systems, and 5 years of backend "
-            "experience for our Dubai fintech payments platform."
-        ),
+        selected_text=LONG_JD,
     )
 
 
@@ -139,9 +152,20 @@ def test_validate_rejects_long_page_without_selection():
 
 def test_validate_passes_when_selection_has_enough():
     agent = JobMatchAgent()
-    # 页面正文为空,但选中了足够长的职位描述 -> 通过。
-    sel = "We need a senior Go engineer with Kubernetes and distributed systems experience."
-    agent.validate(TaskCreate(url="https://x.com/j", title="Job", selectedText=sel))
+    # 选中了足够长的完整职位描述 -> 通过。
+    agent.validate(TaskCreate(url="https://x.com/j", title="Job", selectedText=LONG_JD))
+
+
+def test_validate_rejects_short_non_job_selection():
+    agent = JobMatchAgent()
+    # 这正是误匹配的根因:选中了一段短产品文档/技术介绍(非 JD),长度不足 1000 字 -> 拒绝。
+    product_doc = (
+        "通过部署全球边缘计算节点与智能路由技术,系统现已支持全球范围内的极速就近接入。"
+        "您无需再根据服务器物理位置手动切换或配置不同地域的节点,所有网络环境下的请求均统一使用我们的全局主端点。"
+    )
+    assert 80 <= len(product_doc) < MIN_JOB_CONTENT_CHARS  # 越过旧的 80 门控,但仍属"资料太少"
+    with pytest.raises(ValueError):
+        agent.validate(TaskCreate(url="https://doczh.x.ai/d", title="Base URL", selectedText=product_doc))
 
 
 def test_build_prompt_rejects_sparse_content():
@@ -241,12 +265,12 @@ def test_prompt_omits_page_text():
     task = TaskCreate(
         url="https://x.com/j",
         title="Senior Go Engineer",
-        selected_text="We need Go, Kubernetes and 5 years of distributed backend experience for our platform.",
+        selected_text=LONG_JD,
         page_text="UNRELATED PAGE NOISE should never reach the model",
     )
     prompt = agent.build_prompt(task)
-    assert "We need Go, Kubernetes" in prompt        # 选中的 JD 进入 prompt
-    assert "UNRELATED PAGE NOISE" not in prompt       # 页面正文不再发给模型
+    assert "Senior Backend Engineer" in prompt        # 选中的 JD 进入 prompt
+    assert "UNRELATED PAGE NOISE" not in prompt        # 页面正文不再发给模型
 
 
 def test_system_prompt_guards_non_job_pages():

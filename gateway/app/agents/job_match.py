@@ -87,10 +87,11 @@ DISPLAY_ORDER = ["conclusion", "overview", "skills", "cover_letter", "resume_tip
 # 简历路径,相对网关运行目录(gateway/)。可用环境变量覆盖。
 DEFAULT_CV_PATH = os.environ.get("AGENT_BRIDGE_CV_PATH", "data/cv/cv.pdf")
 MAX_CV_CHARS = 15000
-# 选中的职位描述少于该字符数就直接失败:历史数据里真实匹配的选中文本都 >2000 字,
-# 误匹配(在聊天/空白页右键)都 <80 字。只看选中文本即可干净区分,不再用页面正文兜底
-# (页面正文恰恰是误匹配的来源——长的非招聘页面会让模型凭空编造职位)。
-MIN_JOB_CONTENT_CHARS = 80
+# 选中的职位描述少于该字符数就直接失败。真实 JD 通常上千字(历史数据里真实匹配的选中
+# 文本都 >2000 字);而误匹配(把产品文档/聊天记录等当岗位)的选中文本都很短(≤约 100 字)。
+# 阈值取 1000 留足余量:过短即判定 JD 资料不足,让用户去选完整职位描述,而不是让模型硬凑。
+# 只看选中文本,不用页面正文兜底(页面正文恰是长的非招聘页误匹配的来源)。
+MIN_JOB_CONTENT_CHARS = 1000
 
 _SECTION_RE = re.compile(r"^@@SECTION\s+(\w+)\s*$", re.MULTILINE)
 
@@ -143,8 +144,8 @@ class JobMatchAgent(OpenAIChatAgent):
             return
         if len(task.selected_text.strip()) < MIN_JOB_CONTENT_CHARS:
             raise ValueError(
-                "没有选中足够的职位描述,无法进行简历匹配。"
-                "请在招聘页面上选中职位描述(JD)文字后再试。"
+                f"选中的职位描述太少(不足 {MIN_JOB_CONTENT_CHARS} 字),JD 资料不足以可靠匹配。"
+                "请在招聘页面选中完整的职位描述(JD)后再试。"
             )
 
     def _requested_sections(self, task: TaskCreate) -> list[str]:
