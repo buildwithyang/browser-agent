@@ -56,24 +56,17 @@
 ## 安装
 
 扩展 manifest 内置了固定 `key`,因此**所有人安装后扩展 ID 都一致**:
-`njllhjolgnfainjapjekgimjbipigpja`。网页端据此推送登录 token,无需任何人再手动配 ID。
+`cmajoaedbjinocbfdkebaedkdbkhbhai`。网页端据此推送登录 token,无需任何人再手动配 ID。
 
-### 方式 A:Chrome 应用商店(云端用户,最省事)
+### 方式 A:Chrome 应用商店(推荐,所有用户)
 
-1. 在 Chrome 应用商店点「添加至 Chrome」(上架后补链接)。
-2. 打开网页端登录,在「浏览器扩展」卡片点「连接扩展」即可。
+1. 打开 [Chrome 应用商店页面](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai) 点「添加至 Chrome」。
+2. 云端用户:打开网页端登录,在「浏览器扩展」卡片点「连接扩展」即可。
+3. 自部署用户:点扩展图标,在 popup 把网关地址填成 `http://127.0.0.1:17321`(`REQUIRE_AUTH=false` 匿名直连,无需登录)。
 
-### 方式 B:下载 zip 离线安装(自部署 / 未上架时)
+### 方式 B:从源码加载(开发者 / 改源码)
 
-1. 从 Release 下载 `agent-bridge-extension-<版本>.zip`,解压到一个目录。
-2. 打开 `chrome://extensions` → 右上角开「开发者模式」→ 点「加载已解压的扩展程序」→ 选解压后的目录。
-3. 自部署:点扩展图标,在 popup 把网关地址填成 `http://127.0.0.1:17321`(`REQUIRE_AUTH=false` 匿名直连,无需登录)。
-
-> zip 由 `npm run package` 生成(见下「打包」)。
-
-### 开发者(改源码)
-
-直接「加载已解压」本 `extension/` 目录;改动后到 `chrome://extensions` 点扩展卡片的刷新图标重新加载。
+打开 `chrome://extensions` → 右上角开「开发者模式」→ 点「加载已解压的扩展程序」→ 选本 `extension/` 目录。因 manifest 含固定 key,加载后的 ID 与商店版一致。改动后到 `chrome://extensions` 点扩展卡片的刷新图标重新加载。
 
 ## 打包
 
@@ -82,8 +75,9 @@ cd extension
 npm run package        # 产出 dist/agent-bridge-extension-<版本>.zip
 ```
 
-同一个 zip 两用:上传 Chrome 应用商店,或给自部署者「加载已解压」。打包只含运行所需文件,
-排除测试 / `package.json` / 本说明 / 私钥。
+zip 用于上传 Chrome 应用商店发布更新(`Dashboard → Package → Upload new package`,需先在 `manifest.json`
+递增 `version`)。打包只含运行所需文件,排除测试 / `package.json` / 本说明 / 私钥。
+自部署 / 改源码无需打包,直接「方式 B」加载本 `extension/` 目录即可。
 
 > 固定 ID 由 `manifest.json` 的 `key`(公钥)派生;对应私钥在 `extension/key.pem`,**不入库**
 > (仅日后签 `.crx` 时才需要)。上架商店后若分配了不同 ID,需把新 `key` 回填到 `manifest.json`

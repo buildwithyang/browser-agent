@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { issueExtensionToken } from "./api.js";
+import { issueExtensionToken, extensionStoreUrl } from "./api.js";
 import { EXT_STATE, probeThenAutoConnect, connect } from "./extensionConnect.js";
 import { useI18n } from "./i18n.jsx";
 
@@ -110,8 +110,8 @@ export default function ExtensionCard() {
       {state !== EXT_STATE.CONNECTED && state !== EXT_STATE.DETECTING && (
         <p className="muted">
           {t("ext.installQuestion")}
-          <a href="/download/agent-bridge-extension.zip" download>{t("ext.installDownload")}</a>
-          {t("ext.installStepsBefore")}<code>chrome://extensions</code>{t("ext.installStepsAfter")}
+          <a href={extensionStoreUrl} target="_blank" rel="noreferrer">{t("ext.installStore")}</a>
+          {t("ext.installStoreAfter")}
         </p>
       )}
     </section>

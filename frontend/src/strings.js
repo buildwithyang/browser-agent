@@ -106,10 +106,8 @@ export const messages = {
       diagnoseIdMismatch:
         "扩展已安装但 ID 不匹配：当前扩展 ID 与前端期望的 {extId} 不一致（多见于装了未含 manifest key 的旧版扩展，或商店分配了不同 ID）。请安装含固定 key 的版本，或用 VITE_EXTENSION_ID 覆盖。",
       installQuestion: "还没安装？",
-      installDownload: "下载扩展 zip",
-      installStepsBefore: "，解压后在 ",
-      installStepsAfter:
-        " 开启「开发者模式」→「加载已解压」选择该目录，再回来点「连接扩展」。",
+      installStore: "前往 Chrome 应用商店安装",
+      installStoreAfter: "，安装后回来点「连接扩展」。",
     },
   },
 
@@ -217,10 +215,8 @@ export const messages = {
       diagnoseIdMismatch:
         "The extension is installed but its ID doesn't match: the current extension ID differs from the {extId} the frontend expects (usually an older build without the manifest key, or a different ID assigned by the store). Install the build with the fixed key, or override it with VITE_EXTENSION_ID.",
       installQuestion: "Not installed yet?",
-      installDownload: "Download extension zip",
-      installStepsBefore: ", unzip it, then in ",
-      installStepsAfter:
-        " enable “Developer mode” → “Load unpacked” and select that folder, then come back and click “Connect extension”.",
+      installStore: "Install from the Chrome Web Store",
+      installStoreAfter: " then come back and click “Connect extension”.",
     },
   },
 };

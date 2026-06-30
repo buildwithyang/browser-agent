@@ -1,8 +1,8 @@
 # AGENTS.md
 
 ## Rules
-
-- 信息不足先问用户；回答保持简洁高效。
+- 使用 superpowers 技能开发，任何改动要保持更新 docs/superpowes 下的文档。
+- 回答保持简洁高效。
 - 修改前先看相关模块的 `README.md`。
 - 保持 `README.md` / `README.zh-CN.md` / `extension/README.md` 面向用户；工程约束放在这里。
 - 面向云端、多租户

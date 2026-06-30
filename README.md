@@ -271,7 +271,9 @@ The backend is fully swappable via a single env var, `AGENT_BRIDGE_MODELS` — a
 * Each value is `{url, key, model}`, so different length bands can point at **different vendors** (e.g. a cheap fast model for short pages, a long-context model for big ones). `url`/`key` may be empty for endpoints that need no key (e.g. local Ollama).
 * Minimal setup is just `default`; add numeric tiers only to optimize specific length bands. See [gateway/.env.example](gateway/.env.example) for a worked example.
 
-Load the Chrome extension:
+Install the Chrome extension. Most users should install from the [Chrome Web Store](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai), then set the gateway URL to `http://127.0.0.1:17321` from the extension popup.
+
+To load it from source instead (for development or self-hosting):
 
 1. Open `chrome://extensions`
 2. Enable Developer Mode

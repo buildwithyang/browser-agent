@@ -60,16 +60,14 @@ docker compose ps        # 三个服务应为 running / healthy
 
 浏览器打开 `http://<host>:17321`，点登录走完 Casdoor，回到简历管理页即成功。
 
-### 5. 安装浏览器扩展（自托管下载）
+### 5. 安装浏览器扩展（Chrome 应用商店）
 
-web 镜像在构建时已自动打好扩展 zip 并由 nginx 提供下载，无需额外操作：
+扩展已上架 Chrome 应用商店，所有用户（含自托管）统一从商店安装，自动更新、无启动警告：
 
-- 固定下载链接：`http://<host>:17321/download/agent-bridge-extension.zip`
-- 前端「浏览器扩展」卡片在未连接时也会显示「下载扩展 zip」按钮。
+1. 打开 [Chrome 应用商店页面](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai) → 「添加至 Chrome」。
+2. 回网页点「连接扩展」即可（前端「浏览器扩展」卡片未安装时也会给出商店链接）。
 
-用户：下载 → 解压 → `chrome://extensions` 开「开发者模式」→「加载已解压」选该目录 → 回网页点「连接扩展」。
-
-> 这是 Chrome 商店上架前的过渡方案：商店只允许从商店一键装，自托管 zip 只能走「加载已解压」（有启动警告、不自动更新）。商店审核通过后，把前端按钮换成「添加至 Chrome」即可平滑切换。
+> 改扩展源码做开发调试时，才需要 `chrome://extensions` 开「开发者模式」→「加载已解压」选仓库 `extension/` 目录；因 manifest 含固定 key，加载后的 ID 与商店版一致。
 
 ## 常用运维命令
 
