@@ -6,6 +6,10 @@ const GATEWAY = (import.meta.env.VITE_GATEWAY_URL || "/api").replace(/\/+$/, "")
 // 登录是整页跳转（要经 Casdoor 再跳回），同样走同源 /api，cookie 才落在前端这边。
 export const loginUrl = `${GATEWAY}/auth/login`;
 
+// Chrome 应用商店地址（已去掉跟踪参数）；落地页「添加到 Chrome」按钮用。
+export const extensionStoreUrl =
+  "https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai";
+
 async function call(path, { method = "GET", body } = {}) {
   const res = await fetch(`${GATEWAY}${path}`, {
     method,

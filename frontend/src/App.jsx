@@ -5,22 +5,23 @@ import {
   deleteResume,
   fetchMe,
   listResumes,
-  loginUrl,
   logout,
   uploadResume,
 } from "./api.js";
 import ExtensionCard from "./ExtensionCard.jsx";
+import Landing from "./Landing.jsx";
+import { useI18n, LanguageToggle } from "./i18n.jsx";
 
 const PARSE_LABEL = {
-  0: { text: "解析中", cls: "badge-wait" },
-  1: { text: "可用", cls: "badge-ok" },
-  2: { text: "解析失败", cls: "badge-fail" },
+  0: { key: "app.badge.wait", cls: "badge-wait" },
+  1: { key: "app.badge.ok", cls: "badge-ok" },
+  2: { key: "app.badge.fail", cls: "badge-fail" },
 };
 
 const UPLOAD_STAGE = {
-  signing: "申请上传地址…",
-  uploading: "上传到云端…",
-  parsing: "解析简历文本…",
+  signing: "app.upload.stageSigning",
+  uploading: "app.upload.stageUploading",
+  parsing: "app.upload.stageParsing",
 };
 
 function formatSize(bytes) {
@@ -30,25 +31,23 @@ function formatSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function formatDate(iso) {
+function formatDate(iso, lang) {
   if (!iso) return "";
   try {
-    return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+    return new Date(iso).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", { hour12: false });
   } catch {
     return iso;
   }
 }
 
 export default function App() {
+  const { t, lang } = useI18n();
   const [me, setMe] = useState(undefined); // undefined=加载中 / null=未登录 / object=已登录
   const [resumes, setResumes] = useState([]);
   const [stage, setStage] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const fileInput = useRef(null);
-  // 区分「从未登录 / 会话失效」与「用户主动退出」：前者自动跳转 Casdoor，
-  // 后者停在已退出页面，避免退出后被 Casdoor SSO 立刻静默登录回来。
-  const justLoggedOut = useRef(false);
 
   const refreshResumes = useCallback(async () => {
     try {
@@ -68,15 +67,6 @@ export default function App() {
       .catch(() => setMe(null));
   }, [refreshResumes]);
 
-  // 未登录时直接跳转到 Casdoor，省去点击「使用 Casdoor 登录」按钮。
-  // 主动退出(justLoggedOut)不跳，否则会被 SSO 立刻登录回来。
-  // 用 replace 不留历史记录，避免「后退」回到这个跳转中的空白页。
-  useEffect(() => {
-    if (me === null && !justLoggedOut.current) {
-      window.location.replace(loginUrl);
-    }
-  }, [me]);
-
   const onPick = () => fileInput.current?.click();
 
   const onFile = async (event) => {
@@ -84,7 +74,7 @@ export default function App() {
     event.target.value = ""; // 允许再次选同一文件
     if (!file) return;
     if (file.type && file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      setError("目前仅支持 PDF 简历。");
+      setError(t("app.upload.errPdfOnly"));
       return;
     }
     setError("");
@@ -93,9 +83,9 @@ export default function App() {
       const resume = await uploadResume(file, setStage);
       setStage(null);
       if (resume.parse_status === 2) {
-        setError(resume.parse_error || "简历解析失败，请换一份可复制文本的 PDF。");
+        setError(resume.parse_error || t("app.upload.errParse"));
       } else {
-        setNotice("上传成功，已设为当前生效简历。");
+        setNotice(t("app.upload.ok"));
       }
       await refreshResumes();
     } catch (err) {
@@ -127,10 +117,12 @@ export default function App() {
 
   const onLogout = async () => {
     await logout().catch(() => {});
-    justLoggedOut.current = true; // 退出后停在已退出页面，不自动跳回登录
     setMe(null);
     setResumes([]);
   };
+
+  // 未登录 -> 落地页(自带导航/页脚,负责拉新与登录入口)。
+  if (me === null) return <Landing />;
 
   return (
     <div className="page">
@@ -138,43 +130,30 @@ export default function App() {
         <div className="brand">
           <span className="mark" aria-hidden="true">⌁</span>
           <span className="wordmark">AGENT BRIDGE</span>
-          <span className="subtitle">简历管理</span>
+          <span className="subtitle">{t("app.brandSubtitle")}</span>
         </div>
+        <LanguageToggle />
         {me && (
           <div className="user">
-            <span className="user-name">{me.display_name || me.username || me.email || "已登录"}</span>
-            <button className="btn-ghost" onClick={onLogout}>退出登录</button>
+            <span className="user-name">{me.display_name || me.username || me.email || t("app.loggedInFallback")}</span>
+            <button className="btn-ghost" onClick={onLogout}>{t("nav.logout")}</button>
           </div>
         )}
       </header>
 
       <main className="content">
-        {me === undefined && <p className="muted">加载中…</p>}
-
-        {me === null && (
-          <section className="card signin">
-            {justLoggedOut.current ? (
-              <>
-                <h1>已退出登录</h1>
-                <p className="muted">你已安全退出。</p>
-                <a className="btn-primary" href={loginUrl}>重新登录</a>
-              </>
-            ) : (
-              <p className="muted">正在跳转到登录…</p>
-            )}
-          </section>
-        )}
+        {me === undefined && <p className="muted">{t("app.loading")}</p>}
 
         {me && (
           <>
             <section className="card uploader">
               <div className="uploader-head">
                 <div>
-                  <h2>上传简历</h2>
-                  <p className="muted">支持 PDF；上传成功的最新简历会自动设为「生效」，匹配时使用它。</p>
+                  <h2>{t("app.upload.title")}</h2>
+                  <p className="muted">{t("app.upload.desc")}</p>
                 </div>
                 <button className="btn-primary" onClick={onPick} disabled={!!stage}>
-                  {stage ? UPLOAD_STAGE[stage] : "选择 PDF 上传"}
+                  {stage ? t(UPLOAD_STAGE[stage]) : t("app.upload.pick")}
                 </button>
               </div>
               <input
@@ -193,9 +172,9 @@ export default function App() {
             {notice && <div className="alert alert-ok">{notice}</div>}
 
             <section className="card list">
-              <h2>我的简历 <span className="count">{resumes.length}</span></h2>
+              <h2>{t("app.list.title")} <span className="count">{resumes.length}</span></h2>
               {resumes.length === 0 ? (
-                <p className="muted empty">还没有简历，点上方按钮上传第一份。</p>
+                <p className="muted empty">{t("app.list.empty")}</p>
               ) : (
                 <ul className="resume-list">
                   {resumes.map((r) => {
@@ -204,14 +183,14 @@ export default function App() {
                       <li key={r.id} className={r.is_active ? "resume active" : "resume"}>
                         <div className="resume-main">
                           <span className="resume-name" title={r.filename || r.id}>
-                            {r.filename || "未命名简历"}
+                            {r.filename || t("app.list.unnamed")}
                           </span>
                           <div className="resume-meta">
-                            <span className={`badge ${badge.cls}`}>{badge.text}</span>
-                            {r.is_active && <span className="badge badge-active">生效中</span>}
+                            <span className={`badge ${badge.cls}`}>{t(badge.key)}</span>
+                            {r.is_active && <span className="badge badge-active">{t("app.badge.active")}</span>}
                             <span className="muted">{formatSize(r.file_size)}</span>
-                            <span className="muted">{r.text_chars} 字</span>
-                            <span className="muted">{formatDate(r.created_at)}</span>
+                            <span className="muted">{t("app.list.chars", { n: r.text_chars })}</span>
+                            <span className="muted">{formatDate(r.created_at, lang)}</span>
                           </div>
                           {r.parse_status === 2 && r.parse_error && (
                             <p className="resume-error">{r.parse_error}</p>
@@ -219,9 +198,9 @@ export default function App() {
                         </div>
                         <div className="resume-actions">
                           {r.parse_status === 1 && !r.is_active && (
-                            <button className="btn-ghost" onClick={() => onActivate(r.id)}>设为生效</button>
+                            <button className="btn-ghost" onClick={() => onActivate(r.id)}>{t("app.list.setActive")}</button>
                           )}
-                          <button className="btn-ghost danger" onClick={() => onDelete(r.id)}>删除</button>
+                          <button className="btn-ghost danger" onClick={() => onDelete(r.id)}>{t("app.list.delete")}</button>
                         </div>
                       </li>
                     );
@@ -234,7 +213,7 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        <a href="/privacy" target="_blank" rel="noopener noreferrer">隐私政策</a>
+        <a href="/privacy" target="_blank" rel="noopener noreferrer">{t("app.footerPrivacy")}</a>
       </footer>
     </div>
   );

@@ -10,6 +10,8 @@
   --signal-glow: rgba(245, 181, 68, 0.4);
   --ok: #6fcf97;
   --alert: #e8846b;
+  /* 冷蓝:落地页里只用于「职位」端点,与暖色「简历/信号」端形成两端对照。 */
+  --cool: #8fb6ff;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC",
     "Microsoft YaHei", sans-serif;
@@ -168,6 +170,27 @@ body {
   background: rgba(232, 132, 107, 0.1);
 }
 
+/* 中 / EN 语言切换:窄按钮,等宽字体,与 .btn-ghost 同一视觉语言。 */
+.lang-toggle {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 7px 12px;
+  min-width: 42px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.lang-toggle:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+  background: var(--signal-soft);
+}
+
 /* ---- uploader ---- */
 .uploader-head {
   display: flex;
@@ -307,4 +330,517 @@ body {
 }
 .footer a:hover {
   color: var(--signal);
+}
+
+/* =====================================================================
+   Landing page (登出态首页) — 全部 lp- 前缀,复用 .brand/.btn-* 等。
+   主视觉「signature」: 一座桥连接 职位 ●━━◦━━● 简历 两端,信号穿过后
+   落出匹配评分——取自扩展加载动画的同一隐喻。
+   ===================================================================== */
+.lp {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 统一容器:左右内边距 + 居中,纵向间距各 section 单独给,避免相互覆盖。 */
+.lp-topbar,
+.lp-hero,
+.lp-steps,
+.lp-features,
+.lp-close,
+.lp-footer {
+  width: 100%;
+  max-width: 1080px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+/* ---- topbar ---- */
+.lp-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 20px;
+  padding-bottom: 20px;
+}
+.lp-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.lp-nav .btn-ghost {
+  text-decoration: none;
+}
+
+/* ---- hero ---- */
+.lp-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  align-items: center;
+  gap: 56px;
+  padding-top: 56px;
+  padding-bottom: 72px;
+}
+/* hero 右上角的暖色辉光,落在仪表盘后面。 */
+.lp-hero::before {
+  content: "";
+  position: absolute;
+  top: -40px;
+  right: -60px;
+  width: 460px;
+  height: 460px;
+  background: radial-gradient(circle, var(--signal-soft) 0%, transparent 62%);
+  pointer-events: none;
+  z-index: 0;
+}
+.lp-hero-copy,
+.lp-hero-art {
+  position: relative;
+  z-index: 1;
+}
+.lp-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--text-dim);
+}
+.lp-eyebrow::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--signal);
+  box-shadow: 0 0 10px var(--signal-glow);
+}
+.lp-h1 {
+  margin: 0;
+  font-size: clamp(34px, 5vw, 56px);
+  line-height: 1.28;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.lp-h1 em {
+  font-style: normal;
+  color: var(--signal);
+}
+.lp-sub {
+  max-width: 52ch;
+  margin: 22px 0 0;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1.7;
+}
+.lp-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 30px;
+}
+.lp-cta-main {
+  padding: 14px 24px;
+  font-size: 15px;
+  border-radius: 10px;
+}
+.lp-cta-alt {
+  color: var(--text-dim);
+  font-size: 13.5px;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.lp-cta-alt:hover {
+  color: var(--text);
+  border-bottom-color: var(--text-dim);
+}
+.lp-trust {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 24px 0 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.lp-trust::before {
+  content: "✓";
+  color: var(--ok);
+}
+
+/* ---- hero instrument (signature) ---- */
+.lp-inst {
+  max-width: 420px;
+  margin: 0 auto;
+  background: var(--ink-raised);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 30px 70px -24px rgba(0, 0, 0, 0.65),
+    0 1px 0 0 rgba(255, 255, 255, 0.03) inset;
+}
+.lp-inst-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--hairline);
+  background: linear-gradient(180deg, var(--ink-raised), var(--ink));
+}
+.lp-inst-head .mark {
+  color: var(--signal);
+  font-size: 15px;
+  text-shadow: 0 0 12px var(--signal-glow);
+}
+.lp-inst-head .wordmark {
+  font-size: 11px;
+}
+.lp-inst-body {
+  padding: 22px 20px 24px;
+}
+.lp-bridge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.lp-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.lp-end i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.lp-end-job i {
+  background: var(--cool);
+  box-shadow: 0 0 9px rgba(143, 182, 255, 0.6);
+}
+.lp-end-cv i {
+  background: var(--signal);
+  box-shadow: 0 0 9px var(--signal-glow);
+}
+.lp-rail {
+  position: relative;
+  flex: 1;
+  height: 2px;
+  background: var(--hairline);
+  border-radius: 2px;
+}
+.lp-pulse {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  border-radius: 50%;
+  background: var(--signal);
+  box-shadow: 0 0 10px 1px var(--signal-glow);
+  transform: translateY(-50%);
+  animation: lp-travel 2.4s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+@keyframes lp-travel {
+  0%, 8% { left: 0; }
+  50% { left: 100%; }
+  92%, 100% { left: 0; }
+}
+.lp-readout {
+  text-align: center;
+  margin: 24px 0 20px;
+}
+.lp-score {
+  display: inline-flex;
+  align-items: baseline;
+  font-family: var(--mono);
+}
+.lp-score-num {
+  font-size: 66px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-shadow: 0 0 26px var(--signal-glow);
+}
+.lp-score-unit {
+  margin-left: 5px;
+  font-size: 16px;
+  color: var(--text-dim);
+}
+.lp-score-label {
+  margin-top: 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.lp-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lp-chip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: var(--ink-sunken);
+  border: 1px solid var(--hairline);
+  border-left-width: 2px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.lp-chip span {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.lp-chip-ok {
+  border-left-color: var(--ok);
+}
+.lp-chip-ok span {
+  background: rgba(111, 207, 151, 0.15);
+  color: var(--ok);
+}
+.lp-chip-gap {
+  border-left-color: var(--alert);
+}
+.lp-chip-gap span {
+  background: rgba(232, 132, 107, 0.15);
+  color: var(--alert);
+}
+
+/* ---- section eyebrow ---- */
+.lp-section-eyebrow {
+  margin: 0 0 22px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+}
+
+/* ---- steps (真实顺序 -> 编号合理) ---- */
+.lp-steps {
+  padding-top: 28px;
+  padding-bottom: 28px;
+}
+.lp-steps-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.lp-step {
+  padding: 22px 20px;
+  background: var(--ink-raised);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  transition: border-color 0.15s, transform 0.5s ease, opacity 0.5s ease;
+}
+.lp-step:hover {
+  border-color: var(--text-dim);
+}
+.lp-step-n {
+  display: block;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--signal);
+}
+.lp-step-n::after {
+  content: "";
+  display: block;
+  width: 26px;
+  height: 2px;
+  margin-top: 11px;
+  border-radius: 2px;
+  background: var(--signal);
+  box-shadow: 0 0 8px var(--signal-glow);
+}
+.lp-step-title {
+  margin: 14px 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.lp-step-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ---- features (非顺序 -> 用 ▸ 标签,不编号) ---- */
+.lp-features {
+  padding-top: 28px;
+  padding-bottom: 28px;
+}
+.lp-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.lp-feature {
+  padding: 18px;
+  background: var(--ink-raised);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  transition: border-color 0.15s, transform 0.5s ease, opacity 0.5s ease;
+}
+.lp-feature:hover {
+  border-color: var(--text-dim);
+}
+.lp-feature-tag {
+  display: block;
+  margin-bottom: 9px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--signal);
+}
+.lp-feature-tag::before {
+  content: "▸ ";
+  color: var(--text-dim);
+}
+.lp-feature-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+/* ---- closing CTA ---- */
+.lp-close {
+  margin-top: 36px;
+  padding-top: 56px;
+  padding-bottom: 28px;
+  border-top: 1px solid var(--hairline);
+  text-align: center;
+}
+.lp-close-h {
+  margin: 0 0 24px;
+  font-size: clamp(24px, 3.4vw, 34px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* ---- footer ---- */
+.lp-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 22px;
+  padding-bottom: 44px;
+  border-top: 1px solid var(--hairline);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.lp-footer a {
+  color: var(--text-dim);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.lp-footer a:hover {
+  color: var(--signal);
+}
+
+/* ---- scroll reveal ---- */
+.lp-steps .lp-step,
+.lp-features .lp-feature {
+  opacity: 0;
+  transform: translateY(16px);
+}
+.lp-steps.in .lp-step,
+.lp-features.in .lp-feature {
+  opacity: 1;
+  transform: none;
+}
+.lp-steps.in .lp-step:nth-child(2),
+.lp-features.in .lp-feature:nth-child(2) {
+  transition-delay: 0.07s;
+}
+.lp-steps.in .lp-step:nth-child(3),
+.lp-features.in .lp-feature:nth-child(3) {
+  transition-delay: 0.14s;
+}
+.lp-features.in .lp-feature:nth-child(4) {
+  transition-delay: 0.21s;
+}
+.lp-close {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.lp-close.in {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---- responsive ---- */
+@media (max-width: 860px) {
+  .lp-hero {
+    grid-template-columns: 1fr;
+    gap: 36px;
+    padding-top: 36px;
+    padding-bottom: 48px;
+  }
+  .lp-hero-art {
+    order: 2;
+  }
+  .lp-feature-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 560px) {
+  .lp-steps-grid,
+  .lp-feature-grid {
+    grid-template-columns: 1fr;
+  }
+  .lp-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .lp-nav .btn-ghost {
+    display: none; /* 窄屏隐藏「登录」,保留主 CTA */
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-pulse {
+    animation: none;
+    left: 50%;
+  }
+  .lp-step,
+  .lp-feature,
+  .lp-close {
+    opacity: 1;
+    transform: none;
+    transition: border-color 0.15s;
+  }
+  .lp-score-num {
+    text-shadow: none;
+  }
 }
