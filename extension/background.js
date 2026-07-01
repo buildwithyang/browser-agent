@@ -3,6 +3,7 @@ import {
   buildTaskBody,
   taskUrl,
   webBaseUrl,
+  loginStrings,
   shouldClearToken,
   handleExternalMessage,
   TOKEN_KEY,
@@ -39,6 +40,27 @@ function browserLang() {
   const ui = (chrome.i18n.getUILanguage() || "en").toLowerCase();
   return ui.startsWith("zh") ? "zh" : "en";
 }
+
+// 错误文案只有 zh/en 两版；"auto"/"browser" 等偏好在这里归一化到界面语言。
+function errLang(lang) {
+  return lang === "zh" || lang === "en" ? lang : browserLang();
+}
+
+// 打开登录页；3 秒内同一地址只开一次，避免倒计时结束和手动点击重复开标签。
+let lastLoginOpen = { url: "", at: 0 };
+function openLoginTab(url) {
+  const now = Date.now();
+  if (url === lastLoginOpen.url && now - lastLoginOpen.at < 3000) return;
+  lastLoginOpen = { url, at: now };
+  chrome.tabs.create({ url });
+}
+
+// 面板倒计时结束时发消息回来打开登录页(面板在页面上下文，开不了标签页)。
+chrome.runtime.onMessage.addListener((message) => {
+  if (message && message.type === "AGENT_BRIDGE_OPEN_LOGIN" && message.url) {
+    openLoginTab(message.url);
+  }
+});
 
 // 网关基址可配置：cloud 填 https://browser.buildwithyang.com/api，自部署默认本地。
 function getGatewayConfig() {
@@ -166,12 +188,20 @@ function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) 
           chrome.storage.local.remove([TOKEN_KEY, EXPIRES_KEY]);
           done();
           const loginUrl = webBaseUrl(base);
+          const s = loginStrings(errLang(lang));
+          // 不立刻开标签页：面板里先跑倒计时，让用户明白将要发生什么，避免以为中招。
+          // 倒计时结束(或用户点按钮)后由面板发消息回来打开登录页。
           showResult(tabId, {
             state: "error",
             source,
-            errorHint: "未登录或登录已过期,请前往网页端登录:",
+            errorTitle: s.title,
+            errorHint: s.hint,
             loginUrl,
-            text: "Agent Bridge: 请前往 " + loginUrl + " 登录。",
+            loginLabel: s.button,
+            loginCountdownTpl: s.countdownTpl,
+            loginCountdown: 5,
+            loginOpened: s.opened,
+            text: s.text(loginUrl),
           });
           return null;
         }
@@ -468,8 +498,9 @@ function renderPanel(payload) {
     .error-head { display: flex; align-items: center; gap: 7px; color: var(--alert); font-weight: 600; font-size: 13.5px; margin-bottom: 9px; }
     .error-msg { margin: 0; color: var(--text); }
     .error-sub { margin: 12px 0 7px; color: var(--text-dim); font-size: 12.5px; }
-    .login-link { display: inline-block; margin-top: 12px; padding: 9px 14px; background: var(--signal-soft); color: var(--signal); border: 1px solid var(--signal); border-radius: 8px; font-family: var(--mono); font-size: 12.5px; font-weight: 600; text-decoration: none; word-break: break-all; }
-    .login-link:hover { filter: brightness(1.12); }
+    .login-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; padding: 10px 16px; background: var(--signal); color: var(--ink); border: 1px solid var(--signal); border-radius: 8px; font-size: 13.5px; font-weight: 600; text-decoration: none; }
+    .login-link:hover { filter: brightness(1.08); }
+    .login-note { margin-top: 10px; font-size: 12.5px; color: var(--text-dim); }
     .cmd { display: flex; align-items: flex-start; gap: 8px; background: var(--ink-sunken); border: 1px solid var(--hairline); border-radius: 8px; padding: 9px 10px; }
     .cmd code { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all; line-height: 1.55; font-family: var(--mono); font-size: 11.5px; color: #C9CDD6; }
     .cmd-copy { flex-shrink: 0; margin-top: 1px; background: var(--signal-soft); color: var(--signal); border: none; border-radius: 6px; padding: 5px 9px; font-size: 11px; font-weight: 600; cursor: pointer; }
@@ -551,20 +582,51 @@ function renderPanel(payload) {
   } else if (state === "error") {
     const wrap = el("div", "error");
     const eh = el("div", "error-head");
-    // 401 给出登录入口时,标题不是"连接失败"而是"需要登录"。
-    const errTitle = payload.loginUrl ? "需要登录" : "连接失败";
+    // 401 给出登录入口时,标题不是"连接失败"而是"需要登录"(文案已按语言本地化)。
+    const errTitle =
+      payload.errorTitle || (payload.loginUrl ? "需要登录" : "连接失败");
     eh.innerHTML = ICON_ALERT + "<span>" + errTitle + "</span>";
     const msg = el("p", "error-msg");
     msg.textContent = payload.errorHint || payload.text || "发生未知错误。";
     wrap.append(eh, msg);
     if (payload.loginUrl) {
-      // 直接给出可点击的登录地址,在新标签页打开;网页端登录后自动回连扩展。
+      // 醒目的登录按钮(手动点立即在新标签页打开)。
       const link = el("a", "login-link");
       link.href = payload.loginUrl;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      link.textContent = payload.loginUrl;
+      link.textContent = payload.loginLabel || payload.loginUrl;
       wrap.append(link);
+
+      // 倒计时后自动打开,先告诉用户接下来会发生什么;手动点按钮或关面板则取消。
+      if (payload.loginCountdownTpl) {
+        const note = el("div", "login-note");
+        let remaining = payload.loginCountdown || 5;
+        let timer = null;
+        const stop = () => {
+          if (timer) {
+            clearInterval(timer);
+            timer = null;
+          }
+        };
+        note.textContent = payload.loginCountdownTpl.replace("{n}", remaining);
+        timer = setInterval(() => {
+          remaining -= 1;
+          if (remaining > 0) {
+            note.textContent = payload.loginCountdownTpl.replace("{n}", remaining);
+            return;
+          }
+          stop();
+          note.textContent = payload.loginOpened || "";
+          chrome.runtime.sendMessage({
+            type: "AGENT_BRIDGE_OPEN_LOGIN",
+            url: payload.loginUrl,
+          });
+        }, 1000);
+        link.addEventListener("click", stop); // 手动点了就别再自动开一个
+        close.addEventListener("click", stop); // 关掉面板即视为取消
+        wrap.append(note);
+      }
     }
     if (payload.errorCmd) {
       const sub = el("p", "error-sub");

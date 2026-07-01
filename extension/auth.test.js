@@ -6,6 +6,8 @@ import {
   buildTaskBody,
   taskUrl,
   webBaseUrl,
+  loginStrings,
+  LOCAL_WEB_URL,
   shouldClearToken,
   handleExternalMessage,
   TOKEN_KEY,
@@ -42,8 +44,31 @@ test("taskUrl trims trailing slash and appends /tasks", () => {
 test("webBaseUrl strips trailing /api and slashes", () => {
   assert.equal(webBaseUrl("https://browser.buildwithyang.com/api"), "https://browser.buildwithyang.com");
   assert.equal(webBaseUrl("https://browser.buildwithyang.com/api/"), "https://browser.buildwithyang.com");
-  assert.equal(webBaseUrl("http://127.0.0.1:17321"), "http://127.0.0.1:17321");
+  assert.equal(webBaseUrl("http://localhost:5173/api"), "http://localhost:5173");
   assert.equal(webBaseUrl(""), DEFAULT_GATEWAY.replace(/\/api$/, ""));
+});
+
+test("webBaseUrl maps a bare local gateway to the frontend (gateway ≠ web origin)", () => {
+  assert.equal(webBaseUrl("http://127.0.0.1:17321"), LOCAL_WEB_URL);
+  assert.equal(webBaseUrl("http://127.0.0.1:17321/"), LOCAL_WEB_URL);
+  assert.equal(webBaseUrl("http://localhost:17321"), LOCAL_WEB_URL);
+});
+
+test("loginStrings returns localized zh/en copy", () => {
+  const zh = loginStrings("zh");
+  assert.equal(zh.title, "需要登录");
+  assert.match(zh.button, /登录/);
+  assert.equal(zh.countdownTpl.replace("{n}", 5), "5 秒后自动打开登录页…");
+  assert.equal(zh.text("http://x"), "Agent Bridge: 请前往 http://x 登录。");
+
+  const en = loginStrings("en");
+  assert.equal(en.title, "Sign-in required");
+  assert.match(en.button, /sign-in/i);
+  assert.match(en.countdownTpl.replace("{n}", 3), /Opening the sign-in page in 3s/);
+  assert.match(en.text("http://x"), /sign in at http:\/\/x/);
+
+  // 非 zh/en 归一化由调用方处理；这里默认走中文。
+  assert.equal(loginStrings("auto").title, "需要登录");
 });
 
 test("shouldClearToken only on 401", () => {

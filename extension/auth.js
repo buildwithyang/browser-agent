@@ -16,11 +16,42 @@ export function taskUrl(base) {
   return `${root}/tasks`;
 }
 
-// 从网关基址推导网页端地址：去掉末尾的 /api（云端 https://host/api -> https://host）。
-// 用于 401 时给用户一个可点击的登录入口；网页端登录后会自动回连扩展。
+// 本地开发前端(Vite)地址；自部署裸网关(127.0.0.1:17321)与前端不同源，按此约定跳转。
+export const LOCAL_WEB_URL = "http://localhost:5173";
+
+// 从网关基址推导网页端(前端)地址，用于 401 时给用户一个登录入口；登录后自动回连扩展。
+//   云端         https://host/api            -> https://host
+//   Vite 代理    http://localhost:5173/api   -> http://localhost:5173
+//   裸网关(本地) http://127.0.0.1:17321      -> http://localhost:5173（网关≠前端，按约定映射）
+//   其他无 /api 的地址原样返回（尽力而为）。
 export function webBaseUrl(base) {
   const root = (base || DEFAULT_GATEWAY).replace(/\/+$/, "");
-  return root.replace(/\/api$/, "");
+  if (/\/api$/.test(root)) return root.replace(/\/api$/, "");
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(root)) return LOCAL_WEB_URL;
+  return root;
+}
+
+// 401 面板文案（zh/en）。纯函数便于单测；background 传入已归一化为 zh/en 的值。
+// text() 接收登录地址，返回纯文本兜底（无 DOM 时使用）。
+export function loginStrings(lang) {
+  if (lang === "en") {
+    return {
+      title: "Sign-in required",
+      hint: "Your session has expired. Sign in on the web to reconnect the extension:",
+      button: "Go to sign-in →",
+      countdownTpl: "Opening the sign-in page in {n}s…",
+      opened: "Sign-in page opened.",
+      text: (url) => "Agent Bridge: please sign in at " + url,
+    };
+  }
+  return {
+    title: "需要登录",
+    hint: "登录已过期，请在网页端重新登录以重连扩展：",
+    button: "去登录 →",
+    countdownTpl: "{n} 秒后自动打开登录页…",
+    opened: "已为你打开登录页。",
+    text: (url) => "Agent Bridge: 请前往 " + url + " 登录。",
+  };
 }
 
 // Build the JSON body for a /tasks request. `opts.sections` / `opts.priorResult`
