@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-把任何网页变成可执行的 AI 上下文。
+用户关注什么，Agent 就帮助完成什么。
 
 > 📦 安装与配置请看 **[安装说明](deploy/INSTALL.zh-CN.md)**(含截图和环境变量配置)。
 
