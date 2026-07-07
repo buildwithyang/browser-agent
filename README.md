@@ -2,7 +2,7 @@ Agent Bridge
 
 English | [中文](README.zh-CN.md)
 
-Turn any webpage into actionable AI context.
+Attention in. Action out.
 
 > 📦 Installation guide with screenshots and environment variable setup: [安装说明 (Chinese)](deploy/INSTALL.zh-CN.md)
 
