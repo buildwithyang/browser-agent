@@ -31,17 +31,17 @@ function formatSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function formatDate(iso, lang) {
+function formatDate(iso, locale) {
   if (!iso) return "";
   try {
-    return new Date(iso).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", { hour12: false });
+    return new Date(iso).toLocaleString(locale, { hour12: false });
   } catch {
     return iso;
   }
 }
 
 export default function App() {
-  const { t, lang } = useI18n();
+  const { t, locale } = useI18n();
   const [me, setMe] = useState(undefined); // undefined=加载中 / null=未登录 / object=已登录
   const [resumes, setResumes] = useState([]);
   const [stage, setStage] = useState(null);
@@ -190,7 +190,7 @@ export default function App() {
                             {r.is_active && <span className="badge badge-active">{t("app.badge.active")}</span>}
                             <span className="muted">{formatSize(r.file_size)}</span>
                             <span className="muted">{t("app.list.chars", { n: r.text_chars })}</span>
-                            <span className="muted">{formatDate(r.created_at, lang)}</span>
+                            <span className="muted">{formatDate(r.created_at, locale)}</span>
                           </div>
                           {r.parse_status === 2 && r.parse_error && (
                             <p className="resume-error">{r.parse_error}</p>

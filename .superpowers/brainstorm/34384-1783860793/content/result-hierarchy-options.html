@@ -1,0 +1,89 @@
+<style>
+  .design-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-top:26px; }
+  .design { cursor:pointer; border:1px solid #303641; border-radius:16px; overflow:hidden; background:#111318; transition:.18s ease; }
+  .design:hover { transform:translateY(-2px); border-color:#6d7481; }
+  .design.selected { border-color:#f5b544; box-shadow:0 0 0 2px rgba(245,181,68,.18); }
+  .panel { min-height:500px; padding:14px; color:#e6e8ee; background:radial-gradient(circle at 85% 0,rgba(245,181,68,.08),transparent 32%),#14161b; font:13px/1.55 system-ui,sans-serif; }
+  .bar { display:flex; align-items:center; justify-content:space-between; padding-bottom:11px; border-bottom:1px solid #2a2e39; }
+  .brand { color:#f5b544; font:700 10px/1 ui-monospace,monospace; letter-spacing:.15em; }
+  .x { color:#777f8e; font-size:15px; }
+  .score-card { display:grid; grid-template-columns:auto 1fr; gap:14px; align-items:center; padding:18px 0 15px; }
+  .score { color:#f5b544; font:750 48px/.85 ui-monospace,monospace; letter-spacing:-.07em; }
+  .outof { color:#777f8e; font:11px ui-monospace,monospace; letter-spacing:0; }
+  .verdict { display:inline-block; padding:3px 8px; border-radius:5px; background:rgba(111,207,151,.13); color:#6fcf97; font:650 10px ui-monospace,monospace; letter-spacing:.05em; }
+  .reason { margin:8px 0 0; color:#d9dce4; font-weight:560; line-height:1.45; }
+  .reason.muted { color:#969cab; font-weight:450; }
+  .section { margin:0 0 10px; padding:13px; border:1px solid #2a2e39; border-radius:10px; background:#1b1e26; }
+  .section h4 { margin:0 0 8px; color:#f2f3f6; font-size:12px; }
+  .section p { margin:0; color:#969cab; font-size:11.5px; }
+  .facts { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:9px; }
+  .fact { padding:9px; border-radius:7px; background:#0e1014; }
+  .fact b { display:block; margin-bottom:3px; color:#777f8e; font:650 9px ui-monospace,monospace; letter-spacing:.08em; text-transform:uppercase; }
+  .fact span { color:#e6e8ee; font-size:11px; }
+  .signal { height:5px; overflow:hidden; border-radius:9px; background:#292d36; margin:10px 0 5px; }
+  .signal i { display:block; width:87%; height:100%; background:#f5b544; box-shadow:0 0 10px rgba(245,181,68,.45); }
+  .mini-title { margin:13px 0 7px; color:#969cab; font:650 10px ui-monospace,monospace; letter-spacing:.1em; text-transform:uppercase; }
+  .row { display:flex; gap:7px; padding:7px 0; border-bottom:1px solid #242833; color:#c9cdd6; font-size:11px; }
+  .row:last-child { border:0; }
+  .ok { color:#6fcf97; } .warn { color:#f5b544; }
+  .copy { padding:16px; border-top:1px solid #303641; }
+  .copy h3 { margin:0 0 5px; font-size:15px; }
+  .copy p { margin:0; color:#9299a7; font-size:12px; }
+  .recommend { display:inline-flex; margin-top:8px; padding:3px 8px; border-radius:99px; background:rgba(245,181,68,.14); color:#f5b544; font-size:10px; font-weight:700; }
+  @media(max-width:980px){.design-grid{grid-template-columns:1fr}.panel{min-height:auto}}
+</style>
+
+<h2>匹配结果应该怎样分层？</h2>
+<p class="subtitle">三种方案都把“公司业务 + 行业背景 + 岗位描述”合并成一个「岗位概览」。点击你偏好的方案。</p>
+
+<div class="design-grid">
+  <div class="design" data-choice="a" onclick="toggleSelect(this)">
+    <div class="panel">
+      <div class="bar"><span class="brand">⌁ AGENT BRIDGE</span><span class="x">×</span></div>
+      <div class="score-card">
+        <div class="score">87<span class="outof">/100</span></div>
+        <div><div class="verdict">HIGH MATCH</div><p class="reason">技术栈高度匹配，值得申请。</p></div>
+      </div>
+      <div class="section">
+        <h4>岗位概览</h4>
+        <p>金融科技 · B2B 支付平台。负责核心交易服务、系统稳定性和跨团队交付。</p>
+      </div>
+      <div class="section"><h4>技能匹配</h4><div class="row"><span class="ok">●</span> Go 与分布式系统经验</div><div class="row"><span class="warn">●</span> 支付行业经验偏少</div></div>
+    </div>
+    <div class="copy"><h3>A · 极简结论</h3><p>数字与结论最醒目，但缺少解释评分依据的位置。</p></div>
+  </div>
+
+  <div class="design" data-choice="b" onclick="toggleSelect(this)">
+    <div class="panel">
+      <div class="bar"><span class="brand">⌁ AGENT BRIDGE</span><span class="x">×</span></div>
+      <div class="score-card">
+        <div class="score">87<span class="outof">/100</span></div>
+        <div><div class="verdict">值得申请</div><p class="reason">核心技术要求基本命中，仅缺少直接支付行业经验。</p></div>
+      </div>
+      <div class="signal"><i></i></div>
+      <div class="mini-title">岗位概览</div>
+      <div class="section">
+        <div class="facts"><div class="fact"><b>行业与业务</b><span>金融科技 · B2B 支付</span></div><div class="fact"><b>岗位核心</b><span>交易平台后端</span></div></div>
+        <p>构建高可用交易服务，负责性能、稳定性及跨团队交付。</p>
+      </div>
+      <div class="section"><h4>技能匹配</h4><div class="row"><span class="ok">●</span> Go、微服务、高并发均命中</div><div class="row"><span class="warn">●</span> 支付行业知识需补强</div></div>
+    </div>
+    <div class="copy"><h3>B · 决策卡</h3><p>数字、建议和核心依据同时可见；岗位概览内部仍有清晰标签。</p><span class="recommend">推荐</span></div>
+  </div>
+
+  <div class="design" data-choice="c" onclick="toggleSelect(this)">
+    <div class="panel">
+      <div class="bar"><span class="brand">⌁ AGENT BRIDGE</span><span class="x">×</span></div>
+      <div class="mini-title">申请建议</div>
+      <div class="section">
+        <div style="display:flex;justify-content:space-between;align-items:center"><div><div class="verdict">值得申请</div><p class="reason">优势明显</p></div><div class="score" style="font-size:37px">87</div></div>
+        <div class="signal"><i></i></div>
+      </div>
+      <div class="mini-title">岗位概览</div>
+      <div class="section"><p><b style="color:#e6e8ee">金融科技 · B2B 支付</b><br>交易平台后端岗位，负责高并发服务、稳定性和跨团队交付。</p></div>
+      <div class="mini-title">为什么是 87</div>
+      <div class="section"><div class="row"><span class="ok">✓</span> 3 项核心要求命中</div><div class="row"><span class="warn">△</span> 1 项部分满足</div><div class="row"><span style="color:#e8846b">×</span> 0 项核心缺失</div></div>
+    </div>
+    <div class="copy"><h3>C · 可解释评分</h3><p>解释最完整，但与下方技能匹配存在信息重复，面板更长。</p></div>
+  </div>
+</div>

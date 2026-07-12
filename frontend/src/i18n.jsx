@@ -10,19 +10,39 @@ import {
 import { messages } from "./strings.js";
 
 const STORAGE_KEY = "ab_lang";
-const SUPPORTED = ["zh", "en"];
+export const LANGUAGES = {
+  zh: { label: "中文", htmlLang: "zh-CN", locale: "zh-CN" },
+  en: { label: "English", htmlLang: "en", locale: "en-US" },
+  fr: { label: "Français", htmlLang: "fr", locale: "fr-FR" },
+};
+const SUPPORTED = Object.keys(LANGUAGES);
 
-// 首选语言:已保存的选择优先,否则按浏览器语言猜(zh* -> 中文,其余 -> 英文)。
-function detectLang() {
-  if (typeof window === "undefined") return "zh";
+function languageCode(value) {
+  const code = String(value || "").toLowerCase().split("-")[0];
+  return SUPPORTED.includes(code) ? code : null;
+}
+
+// 首选语言:已保存的选择优先,再匹配浏览器语言列表,无法匹配时回退英文。
+export function detectLang(storage, browserLanguages = []) {
   try {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
+    const saved = storage?.getItem(STORAGE_KEY);
     if (saved && SUPPORTED.includes(saved)) return saved;
   } catch {
     /* localStorage 不可用时忽略 */
   }
-  const nav = (navigator.language || navigator.userLanguage || "").toLowerCase();
-  return nav.startsWith("zh") ? "zh" : "en";
+  for (const browserLang of browserLanguages) {
+    const matched = languageCode(browserLang);
+    if (matched) return matched;
+  }
+  return "en";
+}
+
+function detectBrowserLang() {
+  if (typeof window === "undefined") return "en";
+  const browserLanguages = navigator.languages?.length
+    ? navigator.languages
+    : [navigator.language || navigator.userLanguage];
+  return detectLang(window.localStorage, browserLanguages);
 }
 
 // 按点号路径取值:resolve(obj, "a.b.c")。
@@ -30,13 +50,24 @@ function resolve(obj, path) {
   return path.split(".").reduce((acc, key) => (acc == null ? acc : acc[key]), obj);
 }
 
-const LanguageContext = createContext(null);
+export function resolveMessage(lang, key, catalogs = messages) {
+  const fallbackOrder = lang === "fr" ? ["fr", "en", "zh"] : [lang, "zh", "en"];
+  for (const candidate of fallbackOrder) {
+    const value = resolve(catalogs[candidate], key);
+    if (value !== undefined) return value;
+  }
+  return key;
+}
+
+export const LanguageContext = createContext(null);
 
 export function LanguageProvider({ children }) {
-  const [lang, setLangState] = useState(detectLang);
+  const [lang, setLangState] = useState(detectBrowserLang);
 
   useEffect(() => {
-    if (typeof document !== "undefined") document.documentElement.lang = lang;
+    if (typeof document !== "undefined") {
+      document.documentElement.lang = LANGUAGES[lang].htmlLang;
+    }
   }, [lang]);
 
   const setLang = useCallback((next) => {
@@ -49,12 +80,10 @@ export function LanguageProvider({ children }) {
     }
   }, []);
 
-  // t("区块.键", vars?) -> 当前语言文案;缺失回退中文,再缺失回显 key。
+  // t("区块.键", vars?) -> 当前语言文案;法语缺失时先回退英文。
   const t = useCallback(
     (key, vars) => {
-      let val = resolve(messages[lang], key);
-      if (val === undefined) val = resolve(messages.zh, key);
-      if (val === undefined) return key;
+      const val = resolveMessage(lang, key);
       if (typeof val === "string" && vars) {
         return val.replace(/\{(\w+)\}/g, (m, name) =>
           vars[name] != null ? String(vars[name]) : m
@@ -65,7 +94,10 @@ export function LanguageProvider({ children }) {
     [lang]
   );
 
-  const value = useMemo(() => ({ lang, setLang, t }), [lang, setLang, t]);
+  const value = useMemo(
+    () => ({ lang, locale: LANGUAGES[lang].locale, setLang, t }),
+    [lang, setLang, t]
+  );
   return (
     <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>
   );
@@ -77,19 +109,19 @@ export function useI18n() {
   return ctx;
 }
 
-// 中 / EN 切换按钮:显示目标语言,点一下切过去。
+// 三语原生选择器:保留键盘、屏幕阅读器和移动端原生交互。
 export function LanguageToggle({ className = "" }) {
-  const { lang, setLang } = useI18n();
-  const next = lang === "zh" ? "en" : "zh";
-  const label = lang === "zh" ? "EN" : "中";
+  const { lang, setLang, t } = useI18n();
   return (
-    <button
-      type="button"
-      className={`lang-toggle ${className}`.trim()}
-      onClick={() => setLang(next)}
-      aria-label={lang === "zh" ? "Switch to English" : "切换到中文"}
+    <select
+      className={`lang-toggle lang-select ${className}`.trim()}
+      value={lang}
+      onChange={(event) => setLang(event.target.value)}
+      aria-label={t("nav.language")}
     >
-      {label}
-    </button>
+      {Object.entries(LANGUAGES).map(([code, meta]) => (
+        <option key={code} value={code}>{meta.label}</option>
+      ))}
+    </select>
   );
 }

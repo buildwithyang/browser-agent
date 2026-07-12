@@ -170,7 +170,7 @@ body {
   background: rgba(232, 132, 107, 0.1);
 }
 
-/* 中 / EN 语言切换:窄按钮,等宽字体,与 .btn-ghost 同一视觉语言。 */
+/* 三语选择器:原生 select 保留键盘与移动端交互,外观延续工业化细边框。 */
 .lang-toggle {
   background: transparent;
   color: var(--text-dim);
@@ -189,6 +189,20 @@ body {
   color: var(--text);
   border-color: var(--text-dim);
   background: var(--signal-soft);
+}
+.lang-select {
+  min-width: 104px;
+  padding-right: 28px;
+  color-scheme: dark;
+}
+.lang-select:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-color: var(--signal);
+}
+.lang-select option {
+  color: var(--text);
+  background: var(--ink-raised);
 }
 
 /* ---- uploader ---- */
@@ -825,6 +839,13 @@ body {
   }
   .lp-nav .btn-ghost {
     display: none; /* 窄屏隐藏「登录」,保留主 CTA */
+  }
+  .lp-nav {
+    gap: 8px;
+  }
+  .lang-select {
+    min-width: 92px;
+    max-width: 104px;
   }
 }
 
