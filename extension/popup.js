@@ -1,5 +1,3 @@
-import { GATEWAY_KEY, DEFAULT_GATEWAY } from "./auth.js";
-
 // Language preference popup. Stored value:
 //   "browser" (default) -> resolved to zh/en from the browser UI language at send time
 //   "zh" / "en"         -> forced language
@@ -41,18 +39,4 @@ document.getElementById("options").addEventListener("change", (event) => {
   chrome.storage.sync.set({ langPref: pref });
   markChecked();
   updateHint(pref);
-});
-
-// 网关地址（chrome.storage.local.gatewayUrl）；GATEWAY_KEY / DEFAULT_GATEWAY 与
-// background.js 共用 auth.js 中的同一份定义，避免默认值在两处漂移。
-const gatewayInput = document.getElementById("gateway");
-
-chrome.storage.local.get({ [GATEWAY_KEY]: DEFAULT_GATEWAY }).then((cfg) => {
-  gatewayInput.value = cfg[GATEWAY_KEY];
-});
-
-gatewayInput.addEventListener("change", () => {
-  const value = gatewayInput.value.trim() || DEFAULT_GATEWAY;
-  chrome.storage.local.set({ [GATEWAY_KEY]: value });
-  gatewayInput.value = value;
 });
