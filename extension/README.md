@@ -1,6 +1,6 @@
 # Agent Bridge 浏览器扩展
 
-把当前网页的上下文一键发给网关,由内置 agent(摘要 / 简历匹配)分析后,结果直接以浮层面板显示在页面右上角。
+把当前网页的上下文一键发给网关,由后端 Browser Agent 选择合适的分析方式,结果直接以浮层面板显示在页面右上角。
 
 ## 工作流程
 
@@ -17,11 +17,10 @@ popup 只控制输出语言,普通用户不能配置 `gatewayUrl`。从源码加
 
 ## 功能
 
-- **两个右键菜单项**(页面任意处或选中文字后右键):
-  - `Agent Bridge: 总结此页面` → `summary_page` agent
-  - `Agent Bridge: 分析与简历匹配` → `job_match` agent(对比 `gateway/data/cv/cv.pdf`)
+- **一个右键菜单项**:页面任意处或选中文字后右键,选择 `Browser Agent`。扩展始终发送 `agent="browser_agent"`,不自行判断站点或任务类型。
+- **后端上下文路由**:网关将支持的 LinkedIn / Indeed 职位页分流到 `job_match`,其他页面回退到 `summary_page`。路由规则在后端更新,无需重新发布扩展。
 - **语言切换**:点扩展图标弹出 `popup`,可选 `跟随浏览器(默认)` / `中文` / `English`,偏好存在 `chrome.storage.sync`,每次请求实时生效。
-- **结果面板**:Shadow DOM 隔离(不被页面 CSS 污染),渲染网关返回的、已净化的 Markdown→HTML,支持复制、关闭。
+- **结果面板**:Shadow DOM 隔离(不被页面 CSS 污染),根据网关返回的结构化 Quick Insight 渲染岗位决策卡或通用摘要,支持复制、关闭。
 
 ## 扩展采集 / 发送的数据
 
@@ -36,7 +35,7 @@ popup 只控制输出语言,普通用户不能配置 `gatewayUrl`。从源码加
 | `imageText` | `img[alt]` / `img[title]` / `figcaption` / `[aria-label]` | **图片的文字线索**(去重、最多 40 条、截断到 4000 字符) |
 
 `background.js` 再附加两个字段后 POST:
-- `agent`:由点击的菜单项决定(`summary_page` / `job_match`)
+- `agent`:固定为 `browser_agent`;具体任务由后端路由
 - `lang`:由弹窗偏好解析得到(`跟随浏览器` → `zh`/`en`)
 
 > 关于 `imageText`:这是"方案2"——不传图片本身,只抓图片的 alt/说明文字,让纯文本模型也能感知"页面上有哪些图、大致讲什么",零额外成本。若需要真正"看图/看图表",才需要截图 + vision 模型(尚未实现)。
@@ -46,7 +45,8 @@ popup 只控制输出语言,普通用户不能配置 `gatewayUrl`。从源码加
 | 文件 | 作用 |
 |---|---|
 | `manifest.json` | MV3 清单;固定 `key`(定 ID)、`icons`、权限、`action` 弹窗、`host_permissions`、`externally_connectable` |
-| `background.js` | service worker:建右键菜单、解析语言、POST 网关、把结果注入页面面板、收外部推送的 token |
+| `background.js` | service worker:建立唯一 Browser Agent 菜单、解析语言、POST 网关、把结果注入页面面板、收外部推送的 token |
+| `quick-insight.js` | 把后端的 typed Quick Insight / actions 归一化为浮层视图数据,并过滤不可用 action |
 | `content.js` | 注入到页面,抓取上下文(含图片文字线索)并回传 |
 | `popup.html` / `popup.js` | 扩展图标弹窗:只管理语言偏好 |
 | `config.js` | 源码与打包产物的本地/云端网关选择 |
@@ -86,9 +86,9 @@ zip 用于上传 Chrome 应用商店发布更新(`Dashboard → Package → Uplo
 ## 使用
 
 1. 从源码加载时,先在仓库根目录运行 `./dev-start backend`(仅网关)或 `./dev-start`(网关 + 前端);商店版无需启动本地网关。
-2. 打开任意网页(简历匹配请在招聘职位页),需要时选中文字。
-3. 右键 → 选 `总结此页面` 或 `分析与简历匹配`。
-4. 结果出现在页面右上角的浮层面板里。
+2. 打开任意网页,需要时选中文字。
+3. 右键 → 选 `Browser Agent`。
+4. 后端根据页面上下文选择岗位匹配或通用摘要,结果出现在页面右上角的浮层面板里。
 
 ## 调试
 
