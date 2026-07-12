@@ -22,6 +22,8 @@ popup 只控制输出语言,普通用户不能配置 `gatewayUrl`。从源码加
 - **语言切换**:点扩展图标弹出 `popup`,可选 `跟随浏览器(默认)` / `中文` / `English`,偏好存在 `chrome.storage.sync`,每次请求实时生效。
 - **结果面板**:Shadow DOM 隔离(不被页面 CSS 污染),根据网关返回的结构化 Quick Insight 渲染岗位决策卡或通用摘要,支持复制、关闭。
 
+当前里程碑的 Quick Insight 是网页内浮层;可持续交互的 Side Panel Current Task 属于下一里程碑,尚未实现。
+
 ## 扩展采集 / 发送的数据
 
 `content.js` 只发送**纯文本**,不发送图片像素、HTML、CSS、脚本:
