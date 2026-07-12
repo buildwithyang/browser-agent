@@ -69,3 +69,55 @@ def test_continuation_response_has_no_actions():
     # 返回的是合并后的全量区块
     assert [s.id for s in resp.sections][0] == "conclusion"
     assert any(s.id == "cover_letter" for s in resp.sections)
+
+
+def test_browser_agent_job_route_returns_insight_without_actions_and_injects_cv():
+    captured = {}
+    insight_result = (
+        '@@INSIGHT\n{"score":87,"recommendation":"apply",'
+        '"reason":"Core requirements match.",'
+        '"industry_business":"Fintech","role_focus":"Backend",'
+        '"summary":"Build payment services.",'
+        '"top_strength":"Go","top_gap":"Payments"}'
+    )
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content=insight_result))
+            ]
+        )
+
+    class FakeResumeService:
+        def active_resume_text(self, *, user_id: str) -> str:
+            assert user_id == "user-1"
+            return "INJECTED USER CV: Go and Kubernetes"
+
+    agent = JobMatchAgent(
+        client=SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        ),
+        model="m",
+    )
+    svc = TaskService(
+        agents={"job_match": agent},
+        repository=None,
+        resume_service=FakeResumeService(),
+        default_model="m",
+    )
+    task = TaskCreate(
+        url="https://www.linkedin.com/jobs/view/123",
+        title="Senior Go Engineer",
+        selected_text=LONG_JD,
+        agent="browser_agent",
+    )
+
+    response = svc.run(task, user_id="user-1")
+
+    assert response.request.agent == "job_match"
+    assert response.request.intent == "quick_insight"
+    assert response.actions == []
+    assert response.insight is not None
+    assert response.insight.score == 87
+    assert "INJECTED USER CV" in captured["messages"][1]["content"]

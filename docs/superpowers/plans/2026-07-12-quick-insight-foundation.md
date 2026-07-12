@@ -20,6 +20,9 @@
 - Match score is a typed integer from 0 through 100, never parsed from rendered HTML.
 - Quick Insight renders at most one top strength and one top gap.
 - Unimplemented actions are omitted from the UI; do not show dead or “coming soon” controls.
+- `job_match` Quick Insight responses return no actions in Milestone 1; explicit legacy
+  stage-one `job_match` requests still expose `generate_cover_letter`, while continuation
+  responses remain action-free.
 - Production gateway is `https://browser.buildwithyang.com/api`; local development gateway is `http://127.0.0.1:17321`.
 - Do not log page body, CV text, prompts, tokens, or full external responses.
 - Run gateway tests from `gateway/` with `uv run pytest`; run extension tests from `extension/` with `npm test`.

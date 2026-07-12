@@ -244,6 +244,15 @@ def test_actions_label_english():
     assert "cover letter" in acts[0].label.lower()
 
 
+def test_actions_empty_for_quick_insight():
+    agent = JobMatchAgent()
+    task = make_task().model_copy(
+        update={"agent": "job_match", "intent": "quick_insight"}
+    )
+
+    assert agent.actions(task, "en") == []
+
+
 def test_actions_empty_on_continuation():
     agent = JobMatchAgent()
     assert agent.actions(make_continue_task(), "zh") == []
@@ -309,6 +318,36 @@ def test_build_insight_rejects_non_integer_score(score):
     agent = JobMatchAgent()
     raw = f'''@@INSIGHT
 {{"score":{score},"recommendation":"apply","reason":"match","industry_business":"fintech","role_focus":"backend","summary":"payments","top_strength":"Go","top_gap":"payments"}}'''
+    with pytest.raises(ValueError, match="Quick Insight"):
+        agent.build_insight(raw, "en")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '@@INSIGHT\n{"score":87,"recommendation":"apply"}',
+        '@@INSIGHT\n{"score":87,"recommendation":"maybe","reason":"match",'
+        '"industry_business":"fintech","role_focus":"backend",'
+        '"summary":"payments","top_strength":"Go","top_gap":"payments"}',
+        '@@INSIGHT\n{"score":101,"recommendation":"apply","reason":"match",'
+        '"industry_business":"fintech","role_focus":"backend",'
+        '"summary":"payments","top_strength":"Go","top_gap":"payments"}',
+        'preface\n@@INSIGHT\n{"score":87}',
+        '@@INSIGHT\n{"score":87,"recommendation":"apply","reason":"match",'
+        '"industry_business":"fintech","role_focus":"backend",'
+        '"summary":"payments","top_strength":"Go","top_gap":"payments"}\nextra',
+    ],
+    ids=[
+        "missing_fields",
+        "invalid_recommendation",
+        "score_out_of_range",
+        "prefix_text",
+        "trailing_text",
+    ],
+)
+def test_build_insight_rejects_non_contract_output(raw):
+    agent = JobMatchAgent()
+
     with pytest.raises(ValueError, match="Quick Insight"):
         agent.build_insight(raw, "en")
 

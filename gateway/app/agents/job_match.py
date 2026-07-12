@@ -311,7 +311,9 @@ class JobMatchAgent(OpenAIChatAgent):
             raise ValueError("Quick Insight response is invalid") from exc
 
     def actions(self, task: TaskCreate, lang: str) -> list[Action]:
-        """阶段一结果上提供「生成求职信」按钮;续跑/已点名 cover_letter 时不提供。"""
+        """旧版阶段一提供「生成求职信」;Quick Insight/续跑时不提供。"""
+        if task.intent == "quick_insight":
+            return []
         if task.prior_result and task.prior_result.strip():
             return []
         requested = task.sections or DEFAULT_SECTIONS
