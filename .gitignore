@@ -1,3 +1,6 @@
+.superpowers/
+graphify-out/
+
 # Python
 __pycache__/
 *.py[cod]
