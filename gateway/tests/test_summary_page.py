@@ -70,3 +70,21 @@ def test_run_returns_model_text_and_passes_model():
     # system prompt is index 0).
     user_text = captured["messages"][1]["content"]
     assert "Senior Golang Engineer" in user_text
+
+
+def test_summary_builds_generic_quick_insight():
+    agent = SummaryPageAgent()
+    insight = agent.build_insight("**Release:** Version 2.0 ships Friday.", "en")
+    assert insight.type == "summary"
+    assert insight.title == "Page Summary"
+    assert "<strong>Release:</strong>" in insight.summary_html
+    assert insight.score is None
+
+
+def test_summary_declares_ask_more_for_next_milestone_but_disabled():
+    agent = SummaryPageAgent()
+    actions = agent.actions(full_page_task(), "en")
+    assert len(actions) == 1
+    assert actions[0].id == "ask_more"
+    assert actions[0].task_type == "ask_more"
+    assert actions[0].enabled is False

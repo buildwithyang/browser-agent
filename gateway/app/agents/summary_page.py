@@ -1,5 +1,6 @@
 from app.agents.base import OpenAIChatAgent
-from app.modules.task.schema import TaskCreate
+from app.modules.task.schema import Action, QuickInsight, TaskCreate
+from app.render import render_markdown
 
 SYSTEM_PROMPT = (
     "你是 Agent Bridge 的网页摘要助手。用户会把当前正在浏览的网页内容发给你,"
@@ -59,3 +60,20 @@ class SummaryPageAgent(OpenAIChatAgent):
                 task.image_text.strip() or "(none)",
             ]
         )
+
+    def build_insight(self, result: str, lang: str) -> QuickInsight:
+        return QuickInsight(
+            type="summary",
+            title="Page Summary" if lang == "en" else "页面摘要",
+            summary_html=render_markdown(result),
+        )
+
+    def actions(self, task: TaskCreate, lang: str) -> list[Action]:
+        return [
+            Action(
+                id="ask_more",
+                label="Ask more" if lang == "en" else "继续提问",
+                task_type="ask_more",
+                enabled=False,
+            )
+        ]
