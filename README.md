@@ -1,292 +1,127 @@
-Agent Bridge
+# Agent Bridge
 
 English | [中文](README.zh-CN.md)
 
-Turn any webpage into actionable AI context.
+Turn a LinkedIn or Indeed job post into a tailored application.
 
-> 📦 Installation guide with screenshots and environment variable setup: [安装说明 (Chinese)](deploy/INSTALL.zh-CN.md)
+> 📦 For installation, screenshots, and environment setup, see the [Chinese installation guide](deploy/INSTALL.zh-CN.md).
 
-Overview
+## Vision
 
-Agent Bridge is a browser extension and local gateway that allows users to send the content they are currently viewing to a local AI agent.
+**Respect the user's attention and make AI part of the workflow.**
 
-The goal is simple:
+For a long time, people will still use the browser to discover and understand information. When a user reads an article, reviews a job post, checks a GitHub issue, or opens an email, Agent Bridge should understand what currently has their attention and help immediately.
 
-Read
+AI should do more than answer questions. It should apply computing power directly where the user is already focused.
+
+## Mission
+
+**Start with one small, real need: help people understand and match job descriptions.**
+
+Agent Bridge is not trying to become a universal agent on day one. The first goal is to complete one workflow that job seekers repeat every day:
+
+```text
+Right-click a LinkedIn / Indeed job post
   ↓
-Send To Agent
+Analyze the role and CV match
   ↓
-Get Result
+Tailor the CV
+  ↓
+Generate a Cover Letter
+  ↓
+Track the application
+  ↓
+Prepare for interviews
+  ↓
+Offer
+```
 
-Without:
+The near-term goal is simple: help the user get their first offer. Once this workflow works end to end, Agent Bridge can expand to other browser-based scenarios.
 
-Copy
-Paste
-Switch Window
-Repeat Context
-Problem
+## What Agent Bridge Does
 
-Today users constantly move information between:
+Agent Bridge combines a Chrome extension, a gateway, and AI agents. On a LinkedIn or Indeed job page, the user explicitly sends the visible job description to the agent.
 
-LinkedIn
-GitHub
-Jira
-Notion
-Technical Documentation
-ChatGPT
-Claude
-
-Typical workflow:
-
-Read content
-    ↓
-Copy
-    ↓
-Open ChatGPT
-    ↓
-Paste
-    ↓
-Ask question
-
-Or:
-
-Read content
-    ↓
-Copy
-    ↓
-Open terminal
-    ↓
-Paste
-    ↓
-Execute
-
-The work is repetitive and inefficient.
-
-Solution
-
-Agent Bridge lets users explicitly send browser context to an AI agent.
-
-Browser
-    ↓
+```text
+LinkedIn / Indeed job page
+  ↓ right-click
 Agent Bridge
-    ↓
-Local Gateway
-    ↓
-Agent
-    ↓
-Result
-    ↓
-Browser
+  ↓
+Job description + active CV
+  ↓
+Match analysis, tailored application content
+  ↓
+Result displayed on the current page
+```
 
-The browser becomes the source of context.
+No copying and pasting. No switching between the job page and a chatbot. The user's current page becomes the context, and the agent turns it into action.
 
-The agent becomes the processor.
+## Current Capabilities
 
-Core Principle
+- Capture the current job page's URL, title, selected text, and visible content.
+- Compare a LinkedIn or Indeed job description with the user's active CV.
+- Explain the company's business and the role's responsibilities.
+- Produce a restrained match score grounded in core job requirements.
+- Show matched, partial, and missing skills with evidence.
+- Generate a job-specific Cover Letter on demand.
+- Suggest concrete CV changes, including ATS keywords and achievement rewrites.
+- Manage multiple CVs in a multi-tenant web application and choose the active CV.
+- Display results directly inside the current page.
 
-Agent Bridge is NOT browser automation.
+> Tailored CV generation, application tracking, and interview simulation are part of the product direction and are not yet complete end-to-end features.
 
-Agent Bridge is NOT a Playwright replacement.
+## How It Works
 
-Agent Bridge is a context delivery system.
+1. Upload one or more CVs and select the active CV.
+2. Open a job post on LinkedIn, Indeed, or another recruitment site.
+3. Right-click and choose **Match against my resume**.
+4. Review the conclusion, role overview, and skill-by-skill match.
+5. If the role is worth pursuing, click **Write cover letter**.
+6. Use the generated Cover Letter and CV recommendations to prepare the application.
 
-The user decides:
+The initial analysis is generated first. Cover Letter and CV recommendations are generated only when requested, which saves time and model usage for roles the user does not want to pursue.
 
-This content matters.
-Send it to the agent.
+## Product Principles
 
-This explicit signal is more valuable than continuously monitoring webpages.
+- **User-directed attention:** the user decides which page deserves AI assistance.
+- **Workflow over chat:** results appear where the work is happening.
+- **Truthful matching:** missing core requirements must lower the score; the agent should not give comfort scores.
+- **User data isolation:** CVs and application data are scoped to the signed-in user.
+- **Privacy by default:** page content, CV text, and full prompts are sensitive; long-term storage should favor operational metrics over raw content.
+- **Vendor-neutral models:** the gateway supports OpenAI-compatible model endpoints and prompt-length routing.
 
-Use Cases
-LinkedIn Job Analysis
+## Architecture
 
-Current page:
+```text
+Chrome Extension
+  ↓
+FastAPI Gateway
+  ├─ Auth and session
+  ├─ CV management
+  ├─ Task orchestration
+  └─ Job-match agent
+       ↓
+OpenAI-compatible model
+```
 
-Senior Golang Engineer
-Remote
-Dubai
+The cloud architecture is designed for multiple users. The gateway keeps API, service, repository, and database responsibilities separated, while the job agents remain stateless and receive user-specific CV data for each request.
 
-User:
+## Local Development
 
-Right Click
-↓
-Send To Agent
+Requirements and detailed setup are documented in the [installation guide](deploy/INSTALL.zh-CN.md).
 
-Agent returns:
-
-Job summary
-Resume match score
-Potential risks
-Interview preparation notes
-Suggested salary range
-GitHub Issue Analysis
-
-Current page:
-
-Fix OpenIM login timeout issue
-
-User:
-
-Send To Agent
-
-Agent returns:
-
-Problem summary
-Possible root causes
-Suggested implementation approach
-Technical Documentation
-
-Current page:
-
-Quectel 5G License Guide
-
-User:
-
-Send To Agent
-
-Agent returns:
-
-Key implementation steps
-Risks
-Suggested development tasks
-ChatGPT / Claude Conversation
-
-Current page contains an AI-generated plan.
-
-User:
-
-Send To Agent
-
-Agent returns:
-
-Critical review
-Missing considerations
-Improvement suggestions
-MVP Scope
-Browser Extension
-
-Collect:
-
-URL
-Page Title
-Selected Text
-Visible Page Content
-
-Actions:
-
-Send To Agent
-Local Gateway
-
-Receive browser context.
-
-Expose:
-
-POST /analyze
-
-Request:
-
-{
-  "url": "...",
-  "title": "...",
-  "selection": "...",
-  "content": "..."
-}
-Internal Agent
-
-MVP uses a built-in LLM backend.
-
-Responsibilities:
-
-Analyze
-Summarize
-Extract
-Generate
-Execute cmd
-Future Roadmap
-Phase 1
-Browser
-    ↓
-Internal Agent
-    ↓
-Result Popup
-
-Validate demand.
-
-Phase 2
-Browser
-    ↓
-Gateway
-    ↓
-Agent
-    ↓
-Result
-    ↓
-Current Webpage
-
-Allow results to be inserted into:
-
-ChatGPT
-Claude
-LinkedIn Messages
-Jira Comments
-Any Web Input
-Vision
-
-Any webpage can become an AI task.
-
-Any Webpage
-    ↓
-Send To Agent
-    ↓
-Analyze
-    ↓
-Return Result
-
-No copy-paste.
-
-No context switching.
-
-Just context → action.
-
-## Local MVP
-
-The first implementation uses:
-
-* Chrome Extension for explicit page capture and in-page result display
-* Python FastAPI gateway on `127.0.0.1:17321`
-* A built-in `SimpleAgent` backed by an OpenAI-compatible model (no external agent install required)
-* JSONL task storage at `gateway/data/tasks.jsonl`
-
-Configure your model(s) and run the gateway:
+Start the gateway:
 
 ```bash
 cd gateway
-export AGENT_BRIDGE_MODELS='{"default": {"url": "https://api.openai.com/v1", "key": "sk-...", "model": "gpt-4o-mini"}}'
+cp .env.example .env
+uv sync
 uv run uvicorn app.main:app --host 127.0.0.1 --port 17321
 ```
 
-The backend is fully swappable via a single env var, `AGENT_BRIDGE_MODELS` — a JSON map that routes each request to a model **by prompt length**:
+The model backend is configured through `AGENT_BRIDGE_MODELS`, a JSON map that routes requests by prompt length. The minimal configuration needs only a `default` model. See [gateway/.env.example](gateway/.env.example).
 
-* Each key is the max prompt length (in characters) that tier handles; `"default"` is the required fallback (no upper bound).
-* Each value is `{url, key, model}`, so different length bands can point at **different vendors** (e.g. a cheap fast model for short pages, a long-context model for big ones). `url`/`key` may be empty for endpoints that need no key (e.g. local Ollama).
-* Minimal setup is just `default`; add numeric tiers only to optimize specific length bands. See [gateway/.env.example](gateway/.env.example) for a worked example.
-
-Install the Chrome extension. Most users should install from the [Chrome Web Store](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai), then set the gateway URL to `http://127.0.0.1:17321` from the extension popup.
-
-To load it from source instead (for development or self-hosting):
-
-1. Open `chrome://extensions`
-2. Enable Developer Mode
-3. Click `Load unpacked`
-4. Select the `extension/` directory
-
-Use it:
-
-1. Open a webpage
-2. Select text if needed
-3. Right click
-4. Pick an action from the Agent Bridge menu (`Summarize this page` or `Match against my resume`)
-5. Read the result in the overlay panel that appears in the page
+Install the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai), or load `extension/` from `chrome://extensions` in Developer Mode.
 
 Run the gateway tests:
 
@@ -294,3 +129,34 @@ Run the gateway tests:
 cd gateway
 uv run pytest
 ```
+
+Run the extension tests:
+
+```bash
+cd extension
+npm test
+```
+
+## Roadmap
+
+### Now — Understand and Match
+
+- LinkedIn / Indeed job-page capture
+- CV-to-JD match analysis
+- Role and company overview
+- Skill gaps and realistic scoring
+- On-demand Cover Letter and CV improvement suggestions
+
+### Next — Apply
+
+- Generate a tailored CV from verified user experience
+- Save jobs and application records
+- Keep generated CV and Cover Letter versions together
+
+### Later — Win the Offer
+
+- Interview questions based on the JD and the user's CV
+- Mock interviews and feedback
+- Follow-up and application-stage assistance
+
+The long-term vision remains broader: any browser page can become an AI task. Job seeking is the first complete workflow through which Agent Bridge will prove that vision.

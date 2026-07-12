@@ -2,239 +2,160 @@
 
 [English](README.md) | 中文
 
-把任何网页变成可执行的 AI 上下文。
+把 LinkedIn、Indeed 岗位页面直接变成一份定制化求职申请。
 
-> 📦 安装与配置请看 **[安装说明](deploy/INSTALL.zh-CN.md)**(含截图和环境变量配置)。
+> 📦 安装、截图与环境变量配置请看 [安装说明](deploy/INSTALL.zh-CN.md)。
 
-## 概述
+## 大愿景（Vision）
 
-Agent Bridge 是一个浏览器扩展 + 本地网关,让用户把当前正在浏览的内容发送给本地 AI Agent。
+**尊重用户的注意力，让 AI 成为工作流的一部分。**
 
-目标很简单:
+我们相信，未来很长一段时间，人类仍然需要通过浏览器获取信息。当用户阅读一篇文章、查看一个岗位、浏览一个 GitHub Issue、阅读一封邮件时，Agent Bridge 能够理解用户当前关注的内容，并立即提供帮助。
 
-```
-阅读
+AI 不再只是回答问题。AI 将真正把算力应用到用户关注的地方。
+
+## 小愿景（Mission）
+
+**从解决一个小需求开始：帮助用户阅读并匹配 JD。**
+
+我们不会一开始就做一个万能 Agent，而是先完成一个真实、完整、每天都会发生的求职工作流：
+
+```text
+浏览 LinkedIn / Indeed 岗位并右键
   ↓
-发送给 Agent
+分析岗位与简历匹配度
   ↓
-得到结果
-```
-
-不需要:
-
-- 复制
-- 粘贴
-- 切换窗口
-- 重复提供上下文
-
-## 问题
-
-今天用户不断地在这些地方之间搬运信息:
-
-- LinkedIn
-- GitHub
-- Jira
-- Notion
-- 技术文档
-- ChatGPT
-- Claude
-
-典型的工作流:
-
-```
-阅读内容 → 复制 → 打开 ChatGPT → 粘贴 → 提问
-```
-
-或者:
-
-```
-阅读内容 → 复制 → 打开终端 → 粘贴 → 执行
-```
-
-重复且低效。
-
-## 解决方案
-
-Agent Bridge 让用户显式地把浏览器上下文发送给 AI Agent:
-
-```
-浏览器
+生成定制化 CV
   ↓
+生成 Cover Letter
+  ↓
+记录投递
+  ↓
+模拟面试
+  ↓
+Offer
+```
+
+近期目标很明确：让 AI 真正帮助用户拿到第一份 Offer。当这条工作流跑通之后，再逐步扩展到更多浏览器场景。
+
+## Agent Bridge 做什么
+
+Agent Bridge 由 Chrome 扩展、网关和 AI Agent 组成。用户在 LinkedIn、Indeed 等招聘网站查看岗位时，可以明确地把当前 JD 交给 Agent：
+
+```text
+LinkedIn / Indeed 岗位页面
+  ↓ 右键
 Agent Bridge
   ↓
-本地网关
+岗位 JD + 用户当前生效的 CV
   ↓
-Agent
+岗位匹配分析 + 定制化申请材料
   ↓
-结果
+直接在当前页面展示结果
+```
+
+不用复制粘贴，不用在岗位页面和聊天工具之间来回切换。当前页面就是上下文，Agent 负责把上下文变成行动。
+
+## 当前能力
+
+- 采集当前岗位页面的 URL、标题、选中文本和可见正文。
+- 将 LinkedIn、Indeed 岗位 JD 与用户当前生效的 CV 对比。
+- 解释公司业务、目标市场和岗位职责。
+- 根据岗位核心要求给出克制、真实的匹配分。
+- 逐项展示已匹配、部分匹配和缺失的技能及依据。
+- 用户确认岗位值得投递后，按需生成定制化 Cover Letter。
+- 给出具体 CV 修改建议，包括 ATS 关键词、内容前置和成果量化改写。
+- 在面向云端、多租户的网页端管理多份 CV，并选择当前生效版本。
+- 在当前岗位页面内直接展示结果。
+
+> 定制化 CV 文件生成、投递记录和模拟面试属于产品方向，目前还没有形成完整的端到端能力。
+
+## 使用流程
+
+1. 在网页端上传一份或多份 CV，并选择当前生效的 CV。
+2. 打开 LinkedIn、Indeed 或其他招聘网站的岗位详情页。
+3. 右键选择 **分析与简历匹配**。
+4. 查看匹配结论、业务介绍和逐项技能匹配。
+5. 判断岗位值得投递后，点击 **生成求职信**。
+6. 使用生成的 Cover Letter 和 CV 修改建议准备申请材料。
+
+系统会先生成岗位匹配分析；只有用户明确需要时，才继续生成 Cover Letter 和 CV 建议，避免在不合适的岗位上浪费时间与模型调用。
+
+## 产品原则
+
+- **尊重用户注意力：** 由用户决定哪一个页面值得 AI 介入。
+- **工作流优先：** 结果直接出现在工作发生的页面，而不是停留在聊天窗口。
+- **真实匹配：** 核心要求缺失就应降低评分，不给安慰分。
+- **用户数据隔离：** CV 和申请数据始终按登录用户隔离。
+- **隐私优先：** 页面正文、CV 原文和完整 Prompt 都属于敏感数据；长期存储默认优先保留运营指标，而不是原文。
+- **模型可替换：** 网关支持 OpenAI 兼容模型，并可按 Prompt 长度路由到不同模型。
+
+## 架构
+
+```text
+Chrome 扩展
   ↓
-浏览器
+FastAPI 网关
+  ├─ 登录与会话
+  ├─ CV 管理
+  ├─ 任务编排
+  └─ 岗位匹配 Agent
+       ↓
+OpenAI 兼容模型
 ```
 
-浏览器成为上下文的来源,Agent 成为处理器。
+项目面向云端、多租户设计。网关遵循 API、Service、Repository、DB 分层；岗位 Agent 保持无状态，每次请求由调用方注入当前用户的 CV，避免跨用户缓存数据。
 
-## 核心原则
+## 本地开发
 
-- Agent Bridge **不是**浏览器自动化工具。
-- Agent Bridge **不是** Playwright 的替代品。
-- Agent Bridge 是一个**上下文投递系统**。
+完整配置见 [安装说明](deploy/INSTALL.zh-CN.md)。
 
-由用户来决定:
-
-> 这段内容有价值,发给 Agent。
-
-这种显式信号,比持续监控网页更有价值。
-
-## 使用场景
-
-### LinkedIn 职位分析
-
-当前页面:
-
-```
-Senior Golang Engineer / Remote / Dubai
-```
-
-用户:右键 → 发送给 Agent。
-
-Agent 返回:职位摘要、简历匹配度、潜在风险、面试准备要点、建议薪资范围。
-
-### GitHub Issue 分析
-
-当前页面:
-
-```
-Fix OpenIM login timeout issue
-```
-
-用户:发送给 Agent。
-
-Agent 返回:问题摘要、可能的根因、建议的实现方案。
-
-### 技术文档
-
-当前页面:
-
-```
-Quectel 5G License Guide
-```
-
-用户:发送给 Agent。
-
-Agent 返回:关键实现步骤、风险、建议的开发任务。
-
-### ChatGPT / Claude 对话
-
-当前页面包含一份 AI 生成的方案。
-
-用户:发送给 Agent。
-
-Agent 返回:批判性评审、遗漏的考虑点、改进建议。
-
-## MVP 范围
-
-### 浏览器扩展
-
-采集:URL、页面标题、选中文本、页面可见内容。
-
-操作:发送给 Agent。
-
-### 本地网关
-
-接收浏览器上下文,暴露:
-
-```
-POST /analyze
-```
-
-请求体:
-
-```json
-{
-  "url": "...",
-  "title": "...",
-  "selection": "...",
-  "content": "..."
-}
-```
-
-### 内置 Agent
-
-MVP 使用内置的 LLM 后端,负责:分析、总结、提取、生成、执行命令。
-
-## 路线图
-
-### 阶段一
-
-```
-浏览器 → 内置 Agent → 结果弹层
-```
-
-验证需求。
-
-### 阶段二
-
-```
-浏览器 → 网关 → Agent → 结果 → 回写当前网页
-```
-
-允许把结果插入到:ChatGPT、Claude、LinkedIn 私信、Jira 评论、任意网页输入框。
-
-## 愿景
-
-任何网页都可以变成一个 AI 任务:
-
-```
-任意网页 → 发送给 Agent → 分析 → 返回结果
-```
-
-不用复制粘贴,不用切换上下文,只有 上下文 → 行动。
-
-## 本地 MVP
-
-第一个实现包含:
-
-- Chrome 扩展,显式采集页面并在页内展示结果
-- Python FastAPI 网关,监听 `127.0.0.1:17321`
-- 内置 `SimpleAgent`,基于 OpenAI 兼容模型(无需额外安装外部 Agent)
-- JSONL 任务存储,位于 `gateway/data/tasks.jsonl`
-
-### 快速开始
-
-完整步骤(含截图和环境变量说明)见 **[安装说明](deploy/INSTALL.zh-CN.md)**,简要流程:
-
-启动网关:
+启动网关：
 
 ```bash
 cd gateway
-cp .env.example .env   # 填入 API Key 等配置
+cp .env.example .env
+uv sync
 uv run uvicorn app.main:app --host 127.0.0.1 --port 17321
 ```
 
-后端通过单个环境变量 `AGENT_BRIDGE_MODELS` 随意切换 —— 一个按 **prompt 长度** 路由的 JSON map:
+模型通过 `AGENT_BRIDGE_MODELS` 配置。它是一个按 Prompt 长度路由的 JSON Map，最小配置只需要 `default` 模型，示例见 [gateway/.env.example](gateway/.env.example)。
 
-- 键 = 该层能容纳的最大 prompt 字符数;`"default"` = 兜底层(无上限,必填)。
-- 值 = `{url, key, model}`,不同长度区间可指向 **不同厂家**(短页面走便宜快的、大页面走长上下文)。无需 key 的端点(如本地 Ollama)`url`/`key` 可留空。
-- 最小只配 `default`;按需再加数字层优化特定长度。示例见 [gateway/.env.example](gateway/.env.example)。
+扩展可以从 [Chrome 应用商店](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai)安装，也可以在 `chrome://extensions` 开启开发者模式后加载 `extension/` 目录。
 
-加载 Chrome 扩展:
-
-1. 打开 `chrome://extensions`
-2. 开启开发者模式
-3. 点击「加载未打包的扩展程序」
-4. 选择 `extension/` 目录
-
-使用:
-
-1. 打开一个网页
-2. 需要的话选中文字
-3. 右键
-4. 在 Agent Bridge 子菜单中选择动作(`总结此页面` 或 `分析与简历匹配`)
-5. 在页面弹出的浮层面板中查看结果
-
-运行网关测试:
+运行网关测试：
 
 ```bash
 cd gateway
 uv run pytest
 ```
+
+运行扩展测试：
+
+```bash
+cd extension
+npm test
+```
+
+## 路线图
+
+### 现在：读懂并匹配岗位
+
+- LinkedIn / Indeed 岗位页面采集
+- CV 与 JD 匹配分析
+- 公司业务与岗位介绍
+- 技能差距与真实评分
+- 按需生成 Cover Letter 和 CV 修改建议
+
+### 下一步：完成投递
+
+- 基于用户真实经历生成定制化 CV
+- 收藏岗位并记录投递进度
+- 关联保存每次投递使用的 CV 和 Cover Letter
+
+### 之后：赢得 Offer
+
+- 根据 JD 和用户 CV 生成面试问题
+- 模拟面试与反馈
+- 跟进提醒和申请阶段辅助
+
