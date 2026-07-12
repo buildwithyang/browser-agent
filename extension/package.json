@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "package": "bash package.sh"
+    "package": "bash package.sh",
+    "test:package": "npm run package && unzip -p dist/agent-bridge-extension.zip config.js | grep -q 'BUILD_ENV = \"production\"'"
   }
 }

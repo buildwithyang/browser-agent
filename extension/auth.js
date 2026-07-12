@@ -1,9 +1,9 @@
+import { GATEWAY_BASE as DEFAULT_GATEWAY } from "./config.js";
+
 // 纯逻辑：消息处理 / 鉴权头 / 网关地址 / 401 判定。无 chrome 依赖，便于 node --test。
 export const TOKEN_KEY = "authToken";
 export const EXPIRES_KEY = "authTokenExpiresAt";
-export const GATEWAY_KEY = "gatewayUrl";
-// 默认走云端;自部署在扩展弹窗里改成本地 http://127.0.0.1:17321。
-export const DEFAULT_GATEWAY = "https://browser.buildwithyang.com/api";
+export { DEFAULT_GATEWAY };
 
 export function buildAuthHeaders(token) {
   const headers = { "Content-Type": "application/json" };

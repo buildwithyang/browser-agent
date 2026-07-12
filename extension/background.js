@@ -8,7 +8,6 @@ import {
   handleExternalMessage,
   TOKEN_KEY,
   EXPIRES_KEY,
-  GATEWAY_KEY,
   DEFAULT_GATEWAY,
 } from "./auth.js";
 
@@ -62,11 +61,10 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-// 网关基址可配置：cloud 填 https://browser.buildwithyang.com/api，自部署默认本地。
 function getGatewayConfig() {
   return chrome.storage.local
-    .get({ [GATEWAY_KEY]: DEFAULT_GATEWAY, [TOKEN_KEY]: "" })
-    .then((cfg) => ({ base: cfg[GATEWAY_KEY], token: cfg[TOKEN_KEY] }));
+    .get({ [TOKEN_KEY]: "" })
+    .then((cfg) => ({ base: DEFAULT_GATEWAY, token: cfg[TOKEN_KEY] }));
 }
 
 async function menuLang() {

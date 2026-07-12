@@ -24,6 +24,7 @@ FILES=(
   popup.html
   popup.js
   auth.js
+  config.js
   icons
 )
 
@@ -34,31 +35,44 @@ done
 
 mkdir -p "${OUT_DIR}"
 
+# 一律在临时目录打包，并只修改暂存副本中的构建环境。
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+cp -R "${FILES[@]}" "$STAGE"/
+sed -i.bak 's/export const BUILD_ENV = "development";/export const BUILD_ENV = "production";/' "$STAGE/config.js"
+rm -f "$STAGE/config.js.bak"
+
 if [[ "$STORE" == "1" ]]; then
-  # 暂存一份白名单文件，剥掉 manifest 的 key 字段后再打包（不动源文件 manifest.json）。
-  STAGE="$(mktemp -d)"
-  trap 'rm -rf "$STAGE"' EXIT
-  cp -R "${FILES[@]}" "$STAGE"/
+  # 剥掉暂存 manifest 的 key 字段（不动源文件 manifest.json）。
   node -e 'const fs=require("fs");const p=process.argv[1];const m=JSON.parse(fs.readFileSync(p));delete m.key;fs.writeFileSync(p,JSON.stringify(m,null,2)+"\n")' "$STAGE/manifest.json"
   ZIP="${PWD}/${OUT_DIR}/agent-bridge-extension-${VERSION}-store-firstupload.zip"
   rm -f "$ZIP"
   ( cd "$STAGE" && zip -r -X "$ZIP" "${FILES[@]}" -x '*/.DS_Store' >/dev/null )
+  unzip -p "$ZIP" config.js | grep -q 'BUILD_ENV = "production"' || {
+    echo "package.sh: production gateway config missing" >&2
+    exit 1
+  }
   echo "首发包（已剥离 key，仅用于 + New item 首次上传）：${OUT_DIR}/agent-bridge-extension-${VERSION}-store-firstupload.zip"
   echo "上传后记得：Package 标签 → View public key → 回填进 manifest.json 的 key 字段。"
   unzip -l "$ZIP"
   exit 0
 fi
 
-ZIP="${OUT_DIR}/agent-bridge-extension-${VERSION}.zip"
+ZIP="${PWD}/${OUT_DIR}/agent-bridge-extension-${VERSION}.zip"
 rm -f "${ZIP}"
 
 # -r 递归 icons/；-X 不存 macOS 扩展属性；排除 .DS_Store。
-zip -r -X "${ZIP}" "${FILES[@]}" -x '*/.DS_Store' >/dev/null
+( cd "$STAGE" && zip -r -X "${ZIP}" "${FILES[@]}" -x '*/.DS_Store' >/dev/null )
+
+unzip -p "$ZIP" config.js | grep -q 'BUILD_ENV = "production"' || {
+  echo "package.sh: production gateway config missing" >&2
+  exit 1
+}
 
 # 再复制一份稳定文件名，给网站固定下载链接用（/download/agent-bridge-extension.zip）。
-STABLE="${OUT_DIR}/agent-bridge-extension.zip"
+STABLE="${PWD}/${OUT_DIR}/agent-bridge-extension.zip"
 cp -f "${ZIP}" "${STABLE}"
 
-echo "打包完成：${ZIP}"
-echo "稳定链接副本：${STABLE}"
+echo "打包完成：${OUT_DIR}/agent-bridge-extension-${VERSION}.zip"
+echo "稳定链接副本：${OUT_DIR}/agent-bridge-extension.zip"
 unzip -l "${ZIP}"

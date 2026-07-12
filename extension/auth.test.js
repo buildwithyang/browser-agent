@@ -45,7 +45,7 @@ test("webBaseUrl strips trailing /api and slashes", () => {
   assert.equal(webBaseUrl("https://browser.buildwithyang.com/api"), "https://browser.buildwithyang.com");
   assert.equal(webBaseUrl("https://browser.buildwithyang.com/api/"), "https://browser.buildwithyang.com");
   assert.equal(webBaseUrl("http://localhost:5173/api"), "http://localhost:5173");
-  assert.equal(webBaseUrl(""), DEFAULT_GATEWAY.replace(/\/api$/, ""));
+  assert.equal(webBaseUrl(""), LOCAL_WEB_URL);
 });
 
 test("webBaseUrl maps a bare local gateway to the frontend (gateway ≠ web origin)", () => {
