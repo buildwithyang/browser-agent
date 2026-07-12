@@ -231,6 +231,18 @@ def test_linkedin_profile_falls_back_to_summary():
     assert route_browser_task(task("https://www.linkedin.com/in/someone")) == "summary_page"
 
 
+def test_linkedin_job_search_falls_back_to_summary():
+    assert route_browser_task(task("https://www.linkedin.com/jobs/search")) == "summary_page"
+
+
+def test_linkedin_job_collections_falls_back_to_summary():
+    assert route_browser_task(task("https://www.linkedin.com/jobs/collections")) == "summary_page"
+
+
+def test_indeed_non_job_query_falls_back_to_summary():
+    assert route_browser_task(task("https://ae.indeed.com/jobs?notjk=value")) == "summary_page"
+
+
 def test_job_url_with_short_selection_falls_back_to_summary():
     assert route_browser_task(task("https://www.linkedin.com/jobs/view/123", "short")) == "summary_page"
 
@@ -253,7 +265,7 @@ Create `gateway/app/modules/task/router.py`:
 from __future__ import annotations
 
 from typing import Literal
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from app.agents.job_match import MIN_JOB_CONTENT_CHARS
 from app.modules.task.schema import TaskCreate
@@ -262,12 +274,21 @@ RoutedAgent = Literal["job_match", "summary_page"]
 
 
 def _is_linkedin_job(host: str, path: str) -> bool:
-    return (host == "linkedin.com" or host.endswith(".linkedin.com")) and path.startswith("/jobs/")
+    is_linkedin = host == "linkedin.com" or host.endswith(".linkedin.com")
+    path_parts = path.strip("/").split("/")
+    return (
+        is_linkedin
+        and len(path_parts) == 3
+        and path_parts[:2] == ["jobs", "view"]
+        and bool(path_parts[2])
+    )
 
 
 def _is_indeed_job(host: str, path: str, query: str) -> bool:
     is_indeed = host == "indeed.com" or host.endswith(".indeed.com")
-    return is_indeed and (path.rstrip("/") == "/viewjob" or "jk=" in query)
+    query_params = parse_qs(query)
+    has_job_key = any(value for value in query_params.get("jk", []))
+    return is_indeed and (path.rstrip("/") == "/viewjob" or has_job_key)
 
 
 def route_browser_task(task: TaskCreate) -> RoutedAgent:
@@ -284,7 +305,7 @@ def route_browser_task(task: TaskCreate) -> RoutedAgent:
 
 Run: `cd gateway && uv run pytest tests/test_task_router.py -v`
 
-Expected: PASS (5 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 5: Commit the router**
 

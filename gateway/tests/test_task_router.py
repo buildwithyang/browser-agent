@@ -23,6 +23,24 @@ def test_linkedin_profile_falls_back_to_summary():
     assert route_browser_task(task("https://www.linkedin.com/in/someone")) == "summary_page"
 
 
+def test_linkedin_job_search_falls_back_to_summary():
+    assert route_browser_task(task("https://www.linkedin.com/jobs/search")) == "summary_page"
+
+
+def test_linkedin_job_collections_falls_back_to_summary():
+    assert (
+        route_browser_task(task("https://www.linkedin.com/jobs/collections"))
+        == "summary_page"
+    )
+
+
+def test_indeed_non_job_query_falls_back_to_summary():
+    assert (
+        route_browser_task(task("https://ae.indeed.com/jobs?notjk=value"))
+        == "summary_page"
+    )
+
+
 def test_job_url_with_short_selection_falls_back_to_summary():
     assert (
         route_browser_task(
