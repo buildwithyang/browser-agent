@@ -9,6 +9,7 @@ from typing import Any
 from app.agents.job_match import JobMatchAgent
 from app.modules.resume import ResumeService
 from app.modules.task.repo import TaskRepository
+from app.modules.task.router import route_browser_task
 from app.modules.task.schema import TaskCreate, TaskRecordData, TaskResponse
 from app.render import render_markdown
 
@@ -50,6 +51,15 @@ class TaskService:
         self._debug_store = debug_store
 
     def run(self, task: TaskCreate, *, user_id: str | None) -> TaskResponse:
+        if task.agent == "browser_agent":
+            routed = route_browser_task(task)
+            task = task.model_copy(
+                update={
+                    "agent": routed,
+                    "intent": "quick_insight" if routed == "job_match" else task.intent,
+                }
+            )
+
         agent = self._agents.get(task.agent)
         if agent is None:
             raise ValueError(f"Unsupported agent: {task.agent}")
@@ -96,6 +106,10 @@ class TaskService:
                 if hasattr(agent, "actions")
                 else []
             )
+            builds_insight = hasattr(agent, "build_insight") and (
+                not isinstance(agent, JobMatchAgent) or task.intent == "quick_insight"
+            )
+            insight = agent.build_insight(result, task.lang) if builds_insight else None
             response = TaskResponse(
                 id=rid,
                 created_at=started_at,
@@ -107,6 +121,7 @@ class TaskService:
                 result_html=result_html,
                 sections=sections,
                 actions=actions,
+                insight=insight,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
                 duration_ms=duration_ms,
