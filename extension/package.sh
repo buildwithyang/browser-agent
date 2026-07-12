@@ -20,6 +20,7 @@ OUT_DIR="dist"
 FILES=(
   manifest.json
   background.js
+  quick-insight.js
   content.js
   popup.html
   popup.js

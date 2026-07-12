@@ -10,27 +10,16 @@ import {
   EXPIRES_KEY,
   DEFAULT_GATEWAY,
 } from "./auth.js";
+import { quickInsightView } from "./quick-insight.js";
 
-// 右键菜单项 -> 使用哪个网关 agent。
-const MENU_AGENT = {
-  "agent-bridge-summary": "summary_page",
-  "agent-bridge-jobmatch": "job_match"
-};
+const MENU_ID = "browser-agent";
 
 // 菜单文字跟随语言偏好:zh/en 强制;"browser"/"auto" 按浏览器界面语言。
 const MENU_TITLES = {
-  zh: {
-    "agent-bridge-summary": "Agent Bridge: 总结此页面",
-    "agent-bridge-jobmatch": "Agent Bridge: 分析与简历匹配"
-  },
-  en: {
-    "agent-bridge-summary": "Agent Bridge: Summarize this page",
-    "agent-bridge-jobmatch": "Agent Bridge: Match against my resume"
-  }
+  zh: "Browser Agent",
+  en: "Browser Agent",
 };
 
-// 记录每个 tab 本次点击选择的 agent;content.js 回传上下文时再读取。
-const pendingAgent = {};
 // 右键事件里 Chrome 给的选区快照(info.selectionText)。比 content.js 里
 // window.getSelection() 可靠 —— 菜单触发脚本注入时,页面选区常已被清除。
 const pendingSelection = {};
@@ -73,22 +62,17 @@ async function menuLang() {
 }
 
 async function syncMenuTitles() {
-  const titles = MENU_TITLES[await menuLang()];
-  for (const [id, title] of Object.entries(titles)) {
-    chrome.contextMenus.update(id, { title });
-  }
+  const title = MENU_TITLES[await menuLang()];
+  chrome.contextMenus.update(MENU_ID, { title });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(async () => {
-    const titles = MENU_TITLES[await menuLang()];
-    for (const id of Object.keys(MENU_AGENT)) {
-      chrome.contextMenus.create({
-        id,
-        title: titles[id],
-        contexts: ["page", "selection"]
-      });
-    }
+    chrome.contextMenus.create({
+      id: MENU_ID,
+      title: MENU_TITLES[await menuLang()],
+      contexts: ["page", "selection"]
+    });
   });
 });
 
@@ -105,11 +89,9 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  const agent = MENU_AGENT[info.menuItemId];
-  if (!agent || !tab.id) {
+  if (info.menuItemId !== MENU_ID || !tab.id) {
     return;
   }
-  pendingAgent[tab.id] = agent;
   pendingSelection[tab.id] = info.selectionText || "";
 
   await chrome.scripting.executeScript({
@@ -131,8 +113,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   }
 
   const tabId = sender.tab.id;
-  const agent = pendingAgent[tabId] || "summary_page";
-  delete pendingAgent[tabId];
+  const agent = "browser_agent";
 
   // 优先用右键事件的选区快照(可靠);content.js 的 getSelection 仅作兜底。
   const snapshot = pendingSelection[tabId];
@@ -154,7 +135,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       lang,
       agent,
       source: (message.payload && message.payload.url) || "",
-      body: () => buildTaskBody(payload, { agent, lang }),
+      body: () => buildTaskBody(payload, { agent: "browser_agent", lang }),
     })
   );
 });
@@ -214,7 +195,11 @@ function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) 
         html: task.result_html,
         sections: task.sections || [],
         actions: task.actions || [],
-        agent,
+        insight: task.insight || null,
+        insightView: task.insight
+          ? quickInsightView(task.insight, task.actions || [])
+          : null,
+        agent: task.request?.agent || agent,
         lang,
         result: task.result || "",
         text: task.result || task.detail || "(no result)",
@@ -316,6 +301,89 @@ function renderPanel(payload) {
       .catch(() => {});
   };
 
+  const appendText = (parent, tag, cls, text) => {
+    const node = el(tag, cls);
+    node.textContent = text;
+    parent.append(node);
+    return node;
+  };
+
+  const renderQuickInsight = (container, view, lang) => {
+    const labels = lang === "en"
+      ? {
+          strong_apply: "Strong match",
+          apply: "Worth applying",
+          cautious: "Apply cautiously",
+          skip: "Low priority",
+          industry: "Industry & Business",
+          role: "Role Focus",
+          strength: "Top Strength",
+          gap: "Top Gap",
+        }
+      : {
+          strong_apply: "强烈建议申请",
+          apply: "值得申请",
+          cautious: "谨慎申请",
+          skip: "优先级较低",
+          industry: "行业与业务",
+          role: "岗位核心",
+          strength: "最大优势",
+          gap: "最大差距",
+        };
+
+    appendText(container, "div", "qi-title", view.title);
+    if (view.type === "summary") {
+      const summary = el("div", "qi-summary");
+      summary.innerHTML = view.summaryHtml;
+      container.append(summary);
+      return;
+    }
+
+    const decision = el("section", "qi-decision");
+    const score = el("div", "qi-score");
+    appendText(score, "strong", "qi-score-number", String(view.score));
+    appendText(score, "span", "qi-score-total", "/100");
+    decision.append(score);
+    const verdict = el("div", "qi-verdict");
+    appendText(
+      verdict,
+      "span",
+      `qi-recommendation qi-${view.recommendation}`,
+      labels[view.recommendation] || view.recommendation
+    );
+    appendText(verdict, "p", "qi-reason", view.reason);
+    decision.append(verdict);
+    container.append(decision);
+
+    const overview = el("section", "qi-overview");
+    const facts = el("div", "qi-facts");
+    const industry = el("div", "qi-fact");
+    appendText(industry, "span", "qi-label", labels.industry);
+    appendText(industry, "strong", "qi-value", view.overview.industryBusiness);
+    const role = el("div", "qi-fact");
+    appendText(role, "span", "qi-label", labels.role);
+    appendText(role, "strong", "qi-value", view.overview.roleFocus);
+    facts.append(industry, role);
+    overview.append(facts);
+    appendText(overview, "p", "qi-overview-summary", view.overview.summary);
+    container.append(overview);
+
+    const signals = el("section", "qi-signals");
+    if (view.topStrength) {
+      const strength = el("div", "qi-signal");
+      appendText(strength, "span", "qi-label", labels.strength);
+      appendText(strength, "p", "qi-signal-text", view.topStrength);
+      signals.append(strength);
+    }
+    if (view.topGap) {
+      const gap = el("div", "qi-gap");
+      appendText(gap, "span", "qi-label", labels.gap);
+      appendText(gap, "p", "qi-gap-text", view.topGap);
+      signals.append(gap);
+    }
+    container.append(signals);
+  };
+
   // job_match 的结构化区块:结论(高亮 lede)+ 其余可折叠/可复制区块。
   const renderSections = (container, sections) => {
     sections.forEach((s) => {
@@ -354,6 +422,48 @@ function renderPanel(payload) {
       sec.append(summary, secBody);
       container.append(sec);
     });
+  };
+
+  const renderActions = (container, actionList) => {
+    if (!actionList || !actionList.length) return;
+    const actionsWrap = el("div", "ab-actions");
+    actionList.forEach((action) => {
+      const btn = el("button", "ab-action");
+      btn.type = "button";
+      btn.textContent = action.label;
+      const err = el("div", "ab-action-err");
+      err.style.display = "none";
+      btn.addEventListener("click", () => {
+        btn.disabled = true;
+        const original = action.label;
+        btn.textContent = payload.lang === "en" ? "Generating…" : "生成中…";
+        err.style.display = "none";
+        chrome.runtime.sendMessage(
+          {
+            type: "AGENT_BRIDGE_CONTINUE",
+            sections: action.sections,
+            priorResult: payload.result,
+            lang: payload.lang,
+            url: payload.source,
+            agent: payload.agent,
+          },
+          (resp) => {
+            // 成功时后台已整面板重渲染,这里不必处理;失败时恢复按钮并提示。
+            if (!resp || !resp.ok) {
+              btn.disabled = false;
+              btn.textContent = original;
+              err.textContent =
+                payload.lang === "en"
+                  ? "Generation failed, please retry."
+                  : "生成失败,请重试。";
+              err.style.display = "block";
+            }
+          }
+        );
+      });
+      actionsWrap.append(btn, err);
+    });
+    container.append(actionsWrap);
   };
   // Inline SVGs use currentColor so the surrounding CSS controls their hue —
   // presentation attributes can't read CSS custom properties.
@@ -468,6 +578,24 @@ function renderPanel(payload) {
     .body table { border-collapse: collapse; margin: .6em 0; width: 100%; }
     .body th, .body td { border: 1px solid var(--hairline); padding: 6px 10px; text-align: left; }
     .body th { background: var(--ink-raised); }
+
+    .qi-title { color: var(--text-dim); font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 12px; }
+    .qi-decision { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; padding: 4px 0 16px; }
+    .qi-score { display: flex; align-items: baseline; color: var(--signal); font-family: var(--mono); }
+    .qi-score-number { font-size: 48px; line-height: .9; letter-spacing: -.07em; }
+    .qi-score-total { color: var(--text-dim); font-size: 11px; margin-left: 4px; }
+    .qi-recommendation { display: inline-flex; border-radius: 5px; padding: 3px 8px; background: rgba(111,207,151,.13); color: #6fcf97; font: 600 10px var(--mono); }
+    .qi-cautious { color: var(--signal); background: var(--signal-soft); }
+    .qi-skip { color: var(--alert); background: rgba(232,132,107,.13); }
+    .qi-reason { margin: 8px 0 0; font-weight: 600; line-height: 1.45; }
+    .qi-overview, .qi-signals > div { border: 1px solid var(--hairline); border-radius: 9px; background: var(--ink-raised); padding: 12px; margin-bottom: 10px; }
+    .qi-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+    .qi-fact { background: var(--ink-sunken); border-radius: 7px; padding: 9px; }
+    .qi-label { display: block; color: var(--text-dim); font: 600 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 3px; }
+    .qi-value { display: block; font-size: 12px; }
+    .qi-overview-summary, .qi-signal-text, .qi-gap-text { margin: 0; font-size: 12.5px; }
+    .qi-summary > :first-child { margin-top: 0; }
+    .qi-summary > :last-child { margin-bottom: 0; }
 
     /* job_match: collapsible / copyable sections */
     .lede :first-child { margin-top: 0; }
@@ -645,48 +773,12 @@ function renderPanel(payload) {
       wrap.append(sub, cmd);
     }
     body.append(wrap);
+  } else if (payload.insightView) {
+    renderQuickInsight(body, payload.insightView, payload.lang);
+    renderActions(body, payload.insightView.actions);
   } else if (payload.sections && payload.sections.length) {
     renderSections(body, payload.sections);
-    if (payload.actions && payload.actions.length) {
-      const actionsWrap = el("div", "ab-actions");
-      payload.actions.forEach((action) => {
-        const btn = el("button", "ab-action");
-        btn.type = "button";
-        btn.textContent = action.label;
-        const err = el("div", "ab-action-err");
-        err.style.display = "none";
-        btn.addEventListener("click", () => {
-          btn.disabled = true;
-          const original = action.label;
-          btn.textContent = payload.lang === "en" ? "Generating…" : "生成中…";
-          err.style.display = "none";
-          chrome.runtime.sendMessage(
-            {
-              type: "AGENT_BRIDGE_CONTINUE",
-              sections: action.sections,
-              priorResult: payload.result,
-              lang: payload.lang,
-              url: payload.source,
-              agent: payload.agent,
-            },
-            (resp) => {
-              // 成功时后台已整面板重渲染,这里不必处理;失败时恢复按钮并提示。
-              if (!resp || !resp.ok) {
-                btn.disabled = false;
-                btn.textContent = original;
-                err.textContent =
-                  payload.lang === "en"
-                    ? "Generation failed, please retry."
-                    : "生成失败,请重试。";
-                err.style.display = "block";
-              }
-            }
-          );
-        });
-        actionsWrap.append(btn, err);
-      });
-      body.append(actionsWrap);
-    }
+    renderActions(body, payload.actions);
   } else if (payload.html) {
     body.innerHTML = payload.html; // sanitized by the gateway before it reaches here
     const firstP = body.querySelector("p");
