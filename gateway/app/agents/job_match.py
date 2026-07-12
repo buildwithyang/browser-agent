@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from pathlib import Path
@@ -5,7 +6,7 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from app.agents.base import OpenAIChatAgent, language_directive
-from app.modules.task.schema import Action, Section, TaskCreate
+from app.modules.task.schema import Action, JobOverview, QuickInsight, Section, TaskCreate
 from app.render import render_markdown
 
 SYSTEM_PROMPT = (
@@ -26,6 +27,23 @@ SYSTEM_PROMPT = (
     "此时【只】输出一个 `@@SECTION conclusion`,内容为:这不是招聘职位页面,"
     "无法进行简历匹配,请打开完整的招聘职位页面或选中职位描述后再试;并且不要输出任何其它区块。"
 )
+
+QUICK_INSIGHT_INSTRUCTION = '''
+只输出 `@@INSIGHT` 一行和紧随其后的一个 JSON 对象，不输出 Markdown 或额外文字。
+JSON 必须包含这些字段：
+{"score":0,"recommendation":"apply","reason":"一句核心判断","industry_business":"行业与业务","role_focus":"岗位核心","summary":"1-2句职责摘要","top_strength":"最重要的一项优势","top_gap":"最重要的一项差距"}
+recommendation 只能是 strong_apply、apply、cautious、skip。score 必须是 0-100 整数。
+评分继续遵守核心要求缺失不高于 65、多项部分满足不高于 75、基本命中 80+ 的克制标尺。
+'''.strip()
+QUICK_INSIGHT_SYSTEM_PROMPT = (
+    "你是 Agent Bridge 的求职助手,同时是一位资深 HR / 招聘官。"
+    "只依据所给简历和职位材料,不得编造信息。\n"
+    + QUICK_INSIGHT_INSTRUCTION
+)
+
+
+def _insight_title(lang: str) -> str:
+    return "Job Match" if lang == "en" else "岗位匹配"
 
 # 各区块的展示标题(按语言切换)、是否提供"复制"按钮、是否允许折叠。
 # collapsible=False 的区块前端始终展开;True 的超长时自动折叠。
@@ -164,8 +182,25 @@ class JobMatchAgent(OpenAIChatAgent):
     def build_prompt(self, task: TaskCreate, cv_text: str | None = None) -> str:
         # 兜底:任何路径构造 prompt 前都先校验,确保模型不会在稀疏内容上瞎编。
         self.validate(task)
-        section_lines = self._section_request_lines(self._requested_sections(task))
         cv = self._resolve_cv_text(cv_text)[:MAX_CV_CHARS]
+        if task.intent == "quick_insight":
+            return "\n".join(
+                [
+                    QUICK_INSIGHT_INSTRUCTION,
+                    "",
+                    "# 我的简历",
+                    cv,
+                    "",
+                    "# 当前招聘职位(用户在页面上选中的内容)",
+                    f"标题: {task.title}",
+                    f"链接: {task.url}",
+                    "职位描述(选中文字):",
+                    task.selected_text.strip(),
+                    "图片线索(alt/说明):",
+                    task.image_text.strip() or "(无)",
+                ]
+            )
+        section_lines = self._section_request_lines(self._requested_sections(task))
         if task.prior_result and task.prior_result.strip():
             # 续跑:基于阶段一分析 + 简历生成,不带页面正文。
             # 去掉 @@SECTION 标记行,避免模型把阶段一内容当新输出区块。
@@ -201,7 +236,12 @@ class JobMatchAgent(OpenAIChatAgent):
         )
 
     def run(self, task: TaskCreate, cv_text: str | None = None) -> str:
-        system = self.system_prompt + "\n\n" + language_directive(task.lang)
+        system_prompt = (
+            QUICK_INSIGHT_SYSTEM_PROMPT
+            if task.intent == "quick_insight"
+            else self.system_prompt
+        )
+        system = system_prompt + "\n\n" + language_directive(task.lang)
         prompt = self.build_prompt(task, cv_text=cv_text)
         output = self.complete(system, prompt, tier=self._router.pick(len(prompt)))
         if task.prior_result and task.prior_result.strip():
@@ -244,6 +284,31 @@ class JobMatchAgent(OpenAIChatAgent):
         order = {sid: i for i, sid in enumerate(DISPLAY_ORDER)}
         sections.sort(key=lambda s: order.get(s.id, len(DISPLAY_ORDER)))
         return sections
+
+    def build_insight(self, result: str, lang: str) -> QuickInsight:
+        marker, sep, payload = result.partition("@@INSIGHT")
+        if marker.strip() or not sep:
+            raise ValueError("Quick Insight response is missing @@INSIGHT")
+        try:
+            data = json.loads(payload.strip())
+            if not isinstance(data, dict) or type(data.get("score")) is not int:
+                raise TypeError("score must be an integer")
+            return QuickInsight(
+                type="job_match",
+                title=_insight_title(lang),
+                score=data["score"],
+                recommendation=data["recommendation"],
+                reason=data["reason"],
+                job_overview=JobOverview(
+                    industry_business=data["industry_business"],
+                    role_focus=data["role_focus"],
+                    summary=data["summary"],
+                ),
+                top_strength=data["top_strength"],
+                top_gap=data["top_gap"],
+            )
+        except (KeyError, TypeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("Quick Insight response is invalid") from exc
 
     def actions(self, task: TaskCreate, lang: str) -> list[Action]:
         """阶段一结果上提供「生成求职信」按钮;续跑/已点名 cover_letter 时不提供。"""

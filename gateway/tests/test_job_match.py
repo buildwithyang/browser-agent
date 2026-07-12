@@ -277,3 +277,70 @@ def test_system_prompt_guards_non_job_pages():
     from app.agents.job_match import SYSTEM_PROMPT
     # 模型端兼防:选中的是非招聘内容时,提示词要求拒绝而不是编造匹配。
     assert "不是招聘职位页面" in SYSTEM_PROMPT
+
+
+def test_build_insight_parses_typed_job_decision():
+    agent = JobMatchAgent()
+    raw = '''@@INSIGHT
+{"score":87,"recommendation":"apply","reason":"核心要求基本命中。","industry_business":"金融科技 · B2B 支付","role_focus":"交易平台后端","summary":"负责高可用支付服务。","top_strength":"Go 与分布式系统","top_gap":"缺少直接支付经验"}'''
+    insight = agent.build_insight(raw, "zh")
+    assert insight.type == "job_match"
+    assert insight.score == 87
+    assert insight.recommendation == "apply"
+    assert insight.job_overview.industry_business == "金融科技 · B2B 支付"
+    assert insight.top_strength == "Go 与分布式系统"
+
+
+def test_build_insight_rejects_invalid_json():
+    agent = JobMatchAgent()
+    with pytest.raises(ValueError, match="Quick Insight"):
+        agent.build_insight("@@INSIGHT\nnot json", "zh")
+
+
+@pytest.mark.parametrize("payload", ["[]", "null", "1"])
+def test_build_insight_rejects_non_object_json(payload):
+    agent = JobMatchAgent()
+    with pytest.raises(ValueError, match="Quick Insight"):
+        agent.build_insight(f"@@INSIGHT\n{payload}", "en")
+
+
+@pytest.mark.parametrize("score", ['"87"', "87.0", "true"])
+def test_build_insight_rejects_non_integer_score(score):
+    agent = JobMatchAgent()
+    raw = f'''@@INSIGHT
+{{"score":{score},"recommendation":"apply","reason":"match","industry_business":"fintech","role_focus":"backend","summary":"payments","top_strength":"Go","top_gap":"payments"}}'''
+    with pytest.raises(ValueError, match="Quick Insight"):
+        agent.build_insight(raw, "en")
+
+
+def test_quick_insight_prompt_requests_only_decision_fields():
+    agent = JobMatchAgent()
+    agent._cv_text = "Go / Kubernetes / 5 years"
+    task = make_task().model_copy(update={"agent": "job_match", "intent": "quick_insight"})
+    prompt = agent.build_prompt(task)
+    assert "@@INSIGHT" in prompt
+    assert '"score"' in prompt
+    assert "cover_letter" not in prompt
+
+
+def test_run_quick_insight_uses_json_system_contract():
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="@@INSIGHT\n{}"))]
+        )
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+    )
+    agent = JobMatchAgent(client=fake_client, model="gpt-4o-mini")
+    agent._cv_text = "Go / Kubernetes / 5 years"
+    task = make_task().model_copy(update={"agent": "job_match", "intent": "quick_insight"})
+
+    agent.run(task)
+
+    system = captured["messages"][0]["content"]
+    assert "@@INSIGHT" in system
+    assert "@@SECTION" not in system
