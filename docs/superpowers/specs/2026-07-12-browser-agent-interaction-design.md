@@ -372,6 +372,9 @@ MVP 用消息条数控制 Current Task 的长度：
 
 - Action 能打开正确的 Side Panel Current Task。
 - Current Task 始终保留页面/岗位身份。
+
+### Follow-up（Milestone 3）
+
 - Cover Letter 与 Ask more 能使用 `prior_result + histories + message` 连续修改。
 - `len(histories) + 1 <= 10` 时允许发送；超过限制时扩展端和后端都拒绝。
 - 达到 10 条后保留当前产物，并明确引导用户开启新的 Current Task。
