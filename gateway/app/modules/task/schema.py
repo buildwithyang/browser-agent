@@ -16,7 +16,10 @@ class ApiResponse(BaseModel, Generic[T]):
 
 
 # 内置 OpenAI-backed agents。"claude-code"/"codex" 为未来外部适配预留，暂未实现。
-AgentName = Literal["summary_page", "job_match", "claude-code", "codex", "openclaw"]
+AgentName = Literal[
+    "browser_agent", "summary_page", "job_match", "claude-code", "codex", "openclaw"
+]
+Recommendation = Literal["strong_apply", "apply", "cautious", "skip"]
 
 # /tasks 输入封顶：防止匿名/恶意调用塞超大正文烧平台 LLM 钱。
 PAGE_TEXT_MAX_CHARS = 200_000
@@ -63,12 +66,32 @@ class Section(BaseModel):
     collapsible: bool = True
 
 
+class JobOverview(BaseModel):
+    industry_business: str
+    role_focus: str
+    summary: str
+
+
+class QuickInsight(BaseModel):
+    type: Literal["job_match", "summary"]
+    title: str
+    summary_html: str = ""
+    score: int | None = Field(default=None, ge=0, le=100)
+    recommendation: Recommendation | None = None
+    reason: str = ""
+    job_overview: JobOverview | None = None
+    top_strength: str = ""
+    top_gap: str = ""
+
+
 class Action(BaseModel):
     """结果上可触发的后续动作。后端声明,前端照单渲染按钮(未来新动作纯后端添加)。"""
 
     id: str
     label: str
-    sections: list[str]
+    sections: list[str] = Field(default_factory=list)
+    task_type: str = ""
+    enabled: bool = True
 
 
 class TaskResponse(BaseModel):
@@ -84,6 +107,7 @@ class TaskResponse(BaseModel):
     result_html: str = ""
     sections: list[Section] = Field(default_factory=list)
     actions: list[Action] = Field(default_factory=list)
+    insight: QuickInsight | None = None
     error: str = ""
     started_at: datetime | None = None
     finished_at: datetime | None = None
