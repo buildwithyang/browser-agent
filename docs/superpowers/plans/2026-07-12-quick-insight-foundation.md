@@ -4,7 +4,7 @@
 
 **Goal:** Replace the extension's two agent-specific context-menu entries with one Browser Agent entry that routes LinkedIn/Indeed job pages to a structured job-match Quick Insight and all other pages to a generic summary, while removing Gateway URL from the user-facing popup.
 
-**Architecture:** The extension always sends `agent="browser_agent"`. A new task-module router converts that request to `job_match` only when both the recruitment-site URL shape and selected-JD length are valid; otherwise it safely selects `summary_page`. Agents produce a typed `QuickInsight` on `TaskResponse`, and the extension renders that structure without extracting scores from HTML. This milestone keeps the existing overlay and hides actions whose `enabled` flag is false; opening Side Panel Current Tasks is Milestone 2.
+**Architecture:** The extension always sends `agent="browser_agent"`. A task-module router converts that request to `job_match` when the selected JD is long enough and the host is LinkedIn or Indeed; otherwise it safely selects `summary_page`. Agents produce a typed `QuickInsight` on `TaskResponse`, and the extension renders that structure without extracting scores from HTML. This milestone keeps the existing overlay and hides actions whose `enabled` flag is false; opening Side Panel Current Tasks is Milestone 2.
 
 **Tech Stack:** Python 3.13, FastAPI, Pydantic v2, pytest, Chrome Extension Manifest V3, plain ES modules, Node test runner.
 
@@ -15,7 +15,7 @@
 - `core/` must not depend on `modules/`.
 - Agents remain stateless; user CV text is injected per request.
 - SQLite and PostgreSQL behavior must remain compatible; this milestone changes no tables.
-- LinkedIn/Indeed job routing requires a recognized job URL and at least `MIN_JOB_CONTENT_CHARS == 1000` selected characters.
+- LinkedIn/Indeed routing requires a matching host and at least `MIN_JOB_CONTENT_CHARS == 1000` selected characters.
 - Any uncertain route falls back to `summary_page`; it must not fail because page type is unknown.
 - Match score is a typed integer from 0 through 100, never parsed from rendered HTML.
 - Quick Insight renders at most one top strength and one top gap.
@@ -23,6 +23,8 @@
 - `job_match` Quick Insight responses return no actions in Milestone 1; explicit legacy
   stage-one `job_match` requests still expose `generate_cover_letter`, while continuation
   responses remain action-free.
+- Milestone 2 will add a `Summary` Action for LinkedIn/Indeed job contexts alongside
+  `Deep Analysis` and `Write Cover Letter`.
 - Production gateway is `https://browser.buildwithyang.com/api`; local development gateway is `http://127.0.0.1:17321`.
 - Do not log page body, CV text, prompts, tokens, or full external responses.
 - Run gateway tests from `gateway/` with `uv run pytest`; run extension tests from `extension/` with `npm test`.
@@ -141,9 +143,15 @@ Expected: FAIL because `JobOverview`, `QuickInsight`, `browser_agent`, and the n
 In `gateway/app/modules/task/schema.py`, replace `AgentName` and extend the response contracts with:
 
 ```python
-AgentName = Literal[
-    "browser_agent", "summary_page", "job_match", "claude-code", "codex", "openclaw"
-]
+class AgentName(StrEnum):
+    BROWSER_AGENT = "browser_agent"
+    SUMMARY_PAGE = "summary_page"
+    JOB_MATCH = "job_match"
+    CLAUDE_CODE = "claude-code"
+    CODEX = "codex"
+    OPENCLAW = "openclaw"
+
+
 Recommendation = Literal["strong_apply", "apply", "cautious", "skip"]
 
 
@@ -230,24 +238,30 @@ def test_indeed_job_with_full_selection_routes_to_job_match():
     assert route_browser_task(task("https://ae.indeed.com/viewjob?jk=abc")) == "job_match"
 
 
-def test_linkedin_profile_falls_back_to_summary():
-    assert route_browser_task(task("https://www.linkedin.com/in/someone")) == "summary_page"
+def test_linkedin_profile_with_full_selection_routes_to_job_match():
+    assert route_browser_task(task("https://www.linkedin.com/in/someone")) == "job_match"
 
 
-def test_linkedin_job_search_falls_back_to_summary():
-    assert route_browser_task(task("https://www.linkedin.com/jobs/search")) == "summary_page"
+def test_linkedin_search_results_with_current_job_routes_to_job_match():
+    assert route_browser_task(
+        task("https://www.linkedin.com/jobs/search-results/?currentJobId=4439779617")
+    ) == "job_match"
 
 
-def test_linkedin_job_collections_falls_back_to_summary():
-    assert route_browser_task(task("https://www.linkedin.com/jobs/collections")) == "summary_page"
+def test_linkedin_collections_with_full_selection_routes_to_job_match():
+    assert route_browser_task(task("https://www.linkedin.com/jobs/collections")) == "job_match"
 
 
-def test_indeed_non_job_query_falls_back_to_summary():
-    assert route_browser_task(task("https://ae.indeed.com/jobs?notjk=value")) == "summary_page"
+def test_indeed_page_with_full_selection_routes_to_job_match():
+    assert route_browser_task(task("https://ae.indeed.com/jobs?notjk=value")) == "job_match"
 
 
 def test_job_url_with_short_selection_falls_back_to_summary():
     assert route_browser_task(task("https://www.linkedin.com/jobs/view/123", "short")) == "summary_page"
+
+
+def test_indeed_page_with_short_selection_falls_back_to_summary():
+    assert route_browser_task(task("https://ae.indeed.com/jobs", "short")) == "summary_page"
 
 
 def test_unknown_site_falls_back_to_summary():
@@ -267,48 +281,37 @@ Create `gateway/app/modules/task/router.py`:
 ```python
 from __future__ import annotations
 
-from typing import Literal
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from app.agents.job_match import MIN_JOB_CONTENT_CHARS
-from app.modules.task.schema import TaskCreate
-
-RoutedAgent = Literal["job_match", "summary_page"]
+from app.modules.task.schema import AgentName, TaskCreate
 
 
-def _is_linkedin_job(host: str, path: str) -> bool:
-    is_linkedin = host == "linkedin.com" or host.endswith(".linkedin.com")
-    path_parts = path.strip("/").split("/")
-    return (
-        is_linkedin
-        and len(path_parts) == 3
-        and path_parts[:2] == ["jobs", "view"]
-        and bool(path_parts[2])
-    )
+def _is_linkedin_host(host: str) -> bool:
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
 
 
-def _is_indeed_job(host: str, path: str, query: str) -> bool:
-    is_indeed = host == "indeed.com" or host.endswith(".indeed.com")
-    query_params = parse_qs(query)
-    has_job_key = any(value for value in query_params.get("jk", []))
-    return is_indeed and (path.rstrip("/") == "/viewjob" or has_job_key)
+def _is_indeed_host(host: str) -> bool:
+    return host == "indeed.com" or host.endswith(".indeed.com")
 
 
-def route_browser_task(task: TaskCreate) -> RoutedAgent:
+def route_browser_task(task: TaskCreate) -> AgentName:
     parsed = urlparse(task.url)
     host = (parsed.hostname or "").lower()
     has_full_jd = len(task.selected_text.strip()) >= MIN_JOB_CONTENT_CHARS
-    is_job_url = _is_linkedin_job(host, parsed.path) or _is_indeed_job(
-        host, parsed.path, parsed.query
+    is_supported_host = _is_linkedin_host(host) or _is_indeed_host(host)
+    return (
+        AgentName.JOB_MATCH
+        if is_supported_host and has_full_jd
+        else AgentName.SUMMARY_PAGE
     )
-    return "job_match" if is_job_url and has_full_jd else "summary_page"
 ```
 
 - [ ] **Step 4: Run router tests**
 
 Run: `cd gateway && uv run pytest tests/test_task_router.py -v`
 
-Expected: PASS (8 tests).
+Expected: PASS (9 tests).
 
 - [ ] **Step 5: Commit the router**
 
@@ -548,7 +551,7 @@ Create `gateway/tests/test_task_service.py` if absent, using a small fake agent:
 ```python
 from types import SimpleNamespace
 
-from app.modules.task.schema import QuickInsight, TaskCreate
+from app.modules.task.schema import AgentName, QuickInsight, TaskCreate
 from app.modules.task.service import TaskService
 
 
@@ -571,7 +574,10 @@ class FakeAgent:
 
 def service():
     return TaskService(
-        agents={"summary_page": FakeAgent("summary_page"), "job_match": FakeAgent("job_match")},
+        agents={
+            AgentName.SUMMARY_PAGE: FakeAgent(AgentName.SUMMARY_PAGE),
+            AgentName.JOB_MATCH: FakeAgent(AgentName.JOB_MATCH),
+        },
         repository=None,
         resume_service=None,
         default_model="fake",
@@ -580,10 +586,14 @@ def service():
 
 def test_browser_agent_unknown_page_routes_to_summary():
     response = service().run(
-        TaskCreate(url="https://example.com/article", pageText="Article", agent="browser_agent"),
+        TaskCreate(
+            url="https://example.com/article",
+            pageText="Article",
+            agent=AgentName.BROWSER_AGENT,
+        ),
         user_id=None,
     )
-    assert response.request.agent == "summary_page"
+    assert response.request.agent is AgentName.SUMMARY_PAGE
     assert response.insight.title == "summary_page"
 
 
@@ -606,12 +616,16 @@ Expected: FAIL with `Unsupported agent: browser_agent`.
 In `TaskService.run`, before `_agents.get`, add:
 
 ```python
-        if task.agent == "browser_agent":
+        if task.agent is AgentName.BROWSER_AGENT:
             routed = route_browser_task(task)
             task = task.model_copy(
                 update={
                     "agent": routed,
-                    "intent": "quick_insight" if routed == "job_match" else task.intent,
+                    "intent": (
+                        "quick_insight"
+                        if routed is AgentName.JOB_MATCH
+                        else task.intent
+                    ),
                 }
             )
 ```
@@ -1080,7 +1094,7 @@ Load `extension/` unpacked and verify:
 2. Context menu contains exactly one `Browser Agent` entry.
 3. A selected LinkedIn/Indeed JD of at least 1000 characters shows a typed score card with job overview, one strength, and one gap.
 4. A normal webpage shows generic Page Summary.
-5. A LinkedIn profile or short job selection falls back to Page Summary.
+5. A LinkedIn/Indeed selection shorter than 1000 characters falls back to Page Summary; any path on either host with a full selection enters Job Match.
 6. No dead Ask more, Tailor Resume, or Mock Interview button appears.
 
 - [ ] **Step 7: Commit docs and popup cleanup**

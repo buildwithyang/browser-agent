@@ -12,7 +12,7 @@ from app import main
 from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.task.repo import TaskRepository
-from app.modules.task.schema import TaskCreate, TaskRecordData
+from app.modules.task.schema import AgentName, TaskCreate, TaskRecordData
 from app.modules.task.service import RateLimitError, TaskService
 
 USER = uuid.uuid4().hex
@@ -30,7 +30,7 @@ def _repo(tmp_path) -> TaskRepository:
 
 def _record(**over) -> TaskRecordData:
     base = dict(
-        id=uuid.uuid4().hex, user_id=USER, agent="summary_page", lang="zh",
+        id=uuid.uuid4().hex, user_id=USER, agent=AgentName.SUMMARY_PAGE, lang="zh",
         model="m", status="completed", input_chars=1, result_chars=1,
         duration_ms=1, error="", created_at=datetime.now(timezone.utc),
     )
@@ -50,7 +50,7 @@ def test_service_blocks_after_max(tmp_path):
     repo = _repo(tmp_path)
     agent = SimpleNamespace(build_prompt=lambda task: "P", run=lambda task: "ok")
     svc = TaskService(
-        agents={"summary_page": agent}, repository=repo, resume_service=None,
+        agents={AgentName.SUMMARY_PAGE: agent}, repository=repo, resume_service=None,
         default_model="m", rate_limit_max=2, rate_limit_window_seconds=3600,
     )
     task = TaskCreate(url="https://x")

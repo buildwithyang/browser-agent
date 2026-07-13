@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from openai import OpenAI
 
 from app.agents.model_router import ModelRouter, ModelTier
-from app.modules.task.schema import TaskCreate
+from app.modules.task.schema import AgentName, TaskCreate
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -22,7 +22,7 @@ def language_directive(lang: str) -> str:
 
 
 class AgentAdapter(ABC):
-    name: str
+    name: AgentName
 
     @abstractmethod
     def build_prompt(self, task: TaskCreate) -> str:

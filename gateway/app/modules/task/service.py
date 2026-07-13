@@ -10,7 +10,7 @@ from app.agents.job_match import JobMatchAgent
 from app.modules.resume import ResumeService
 from app.modules.task.repo import TaskRepository
 from app.modules.task.router import route_browser_task
-from app.modules.task.schema import TaskCreate, TaskRecordData, TaskResponse
+from app.modules.task.schema import AgentName, TaskCreate, TaskRecordData, TaskResponse
 from app.render import render_markdown
 
 logger = logging.getLogger("agent_bridge")
@@ -33,11 +33,11 @@ class TaskService:
     def __init__(
         self,
         *,
-        agents: dict[str, Any],
+        agents: dict[AgentName, Any],
         repository: TaskRepository | None,
         resume_service: ResumeService | None,
         default_model: str,
-        rate_limit_max: int = 0,
+        rate_limit_max: int = 20,
         rate_limit_window_seconds: int = 86400,
         debug_store: bool = False,
     ) -> None:
@@ -51,12 +51,16 @@ class TaskService:
         self._debug_store = debug_store
 
     def run(self, task: TaskCreate, *, user_id: str | None) -> TaskResponse:
-        if task.agent == "browser_agent":
+        if task.agent is AgentName.BROWSER_AGENT:
             routed = route_browser_task(task)
             task = task.model_copy(
                 update={
                     "agent": routed,
-                    "intent": "quick_insight" if routed == "job_match" else task.intent,
+                    "intent": (
+                        "quick_insight"
+                        if routed is AgentName.JOB_MATCH
+                        else task.intent
+                    ),
                 }
             )
 

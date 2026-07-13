@@ -25,6 +25,7 @@ from app.modules.resume import ResumeRepository, ResumeService, create_storage_p
 from app.modules.resume.api import router as resume_router
 from app.modules.task.api import router as task_router
 from app.modules.task.repo import TaskRepository
+from app.modules.task.schema import AgentName
 from app.modules.task.service import TaskService
 
 # Configure our own logger so task activity prints to the terminal regardless of
@@ -44,9 +45,9 @@ if not logger.handlers:
     logger.propagate = False
 
 _agent_opts: dict[str, Any] = dict(router=settings.model_router)
-agents = {
-    "summary_page": SummaryPageAgent(**_agent_opts),
-    "job_match": JobMatchAgent(**_agent_opts),
+agents: dict[AgentName, Any] = {
+    AgentName.SUMMARY_PAGE: SummaryPageAgent(**_agent_opts),
+    AgentName.JOB_MATCH: JobMatchAgent(**_agent_opts),
 }
 
 

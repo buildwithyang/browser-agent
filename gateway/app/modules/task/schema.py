@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
@@ -15,10 +16,18 @@ class ApiResponse(BaseModel, Generic[T]):
     data: T
 
 
-# 内置 OpenAI-backed agents。"claude-code"/"codex" 为未来外部适配预留，暂未实现。
-AgentName = Literal[
-    "browser_agent", "summary_page", "job_match", "claude-code", "codex", "openclaw"
-]
+class AgentName(StrEnum):
+    """稳定的 Agent 标识；HTTP/DB 边界仍使用成员的字符串值。"""
+
+    BROWSER_AGENT = "browser_agent"
+    SUMMARY_PAGE = "summary_page"
+    JOB_MATCH = "job_match"
+    # 未来外部适配预留，暂未实现。
+    CLAUDE_CODE = "claude-code"
+    CODEX = "codex"
+    OPENCLAW = "openclaw"
+
+
 Recommendation = Literal["strong_apply", "apply", "cautious", "skip"]
 
 # /tasks 输入封顶：防止匿名/恶意调用塞超大正文烧平台 LLM 钱。
@@ -47,7 +56,7 @@ class TaskCreate(BaseModel):
     # 续跑时回传的阶段一 result 文本(求职信/建议基于它生成,无需重传页面正文)。
     prior_result: str | None = Field(default=None, alias="priorResult", max_length=50_000)
     intent: str = "Summarize this page."
-    agent: AgentName = "summary_page"
+    agent: AgentName = AgentName.SUMMARY_PAGE
     # 输出语言:"zh"/"en" 强制;"auto" 跟随页面语言。扩展通常已把用户偏好解析为 zh/en。
     lang: Literal["auto", "zh", "en"] = "auto"
 
@@ -95,7 +104,7 @@ class Action(BaseModel):
 
 
 class TaskResponse(BaseModel):
-    """返回给扩展的完整结果。不含 prompt（含简历/页面正文，无需回传客户端）。"""
+    """返回给扩展的完整结果。不含 prompt(含简历/页面正文，无需回传客户端）。"""
 
     id: UUID = Field(default_factory=uuid4)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -123,7 +132,7 @@ class TaskRecordData(BaseModel):
 
     id: str
     user_id: str | None = None
-    agent: str
+    agent: AgentName
     lang: str = "auto"
     model: str = ""
     status: str = "completed"

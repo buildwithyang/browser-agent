@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from app.modules.task.schema import (
     Action,
+    AgentName,
     JobOverview,
     QuickInsight,
     TaskCreate,
@@ -39,7 +40,17 @@ def test_action_model_shape():
 
 
 def test_browser_agent_is_valid_input_name():
-    assert TaskCreate(url="https://example.com", agent="browser_agent").agent == "browser_agent"
+    assert (
+        TaskCreate(url="https://example.com", agent="browser_agent").agent
+        is AgentName.BROWSER_AGENT
+    )
+
+
+def test_taskcreate_parses_agent_name_enum_and_serializes_existing_value():
+    task = TaskCreate(url="https://example.com", agent="browser_agent")
+
+    assert task.agent is AgentName.BROWSER_AGENT
+    assert task.model_dump(mode="json")["agent"] == "browser_agent"
 
 
 def test_job_quick_insight_shape():

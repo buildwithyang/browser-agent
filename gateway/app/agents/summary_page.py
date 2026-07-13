@@ -1,5 +1,5 @@
 from app.agents.base import OpenAIChatAgent
-from app.modules.task.schema import Action, QuickInsight, TaskCreate
+from app.modules.task.schema import Action, AgentName, QuickInsight, TaskCreate
 from app.render import render_markdown
 
 SYSTEM_PROMPT = (
@@ -16,7 +16,7 @@ SYSTEM_PROMPT = (
 
 
 class SummaryPageAgent(OpenAIChatAgent):
-    name = "summary_page"
+    name = AgentName.SUMMARY_PAGE
     system_prompt = SYSTEM_PROMPT
 
     def build_prompt(self, task: TaskCreate) -> str:

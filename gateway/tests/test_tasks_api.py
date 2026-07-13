@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.modules.auth import AuthService
+from app.modules.task.schema import AgentName
 from app.modules.task.service import TaskService
 
 
@@ -33,7 +34,7 @@ def test_create_task_returns_result(monkeypatch):
         build_prompt=lambda task: "PROMPT",
         run=lambda task: "## Summary\n\nThis page is about **Go** jobs.",
     )
-    _wire(monkeypatch, {"summary_page": fake_agent})
+    _wire(monkeypatch, {AgentName.SUMMARY_PAGE: fake_agent})
 
     client = TestClient(main.app)
     # Mirror the extension's flat, camelCase payload.

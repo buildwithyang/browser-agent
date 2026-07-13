@@ -6,7 +6,14 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from app.agents.base import OpenAIChatAgent, language_directive
-from app.modules.task.schema import Action, JobOverview, QuickInsight, Section, TaskCreate
+from app.modules.task.schema import (
+    Action,
+    AgentName,
+    JobOverview,
+    QuickInsight,
+    Section,
+    TaskCreate,
+)
 from app.render import render_markdown
 
 SYSTEM_PROMPT = (
@@ -115,7 +122,7 @@ _SECTION_RE = re.compile(r"^@@SECTION\s+(\w+)\s*$", re.MULTILINE)
 
 
 class JobMatchAgent(OpenAIChatAgent):
-    name = "job_match"
+    name = AgentName.JOB_MATCH
     system_prompt = SYSTEM_PROMPT
 
     def __init__(self, *args, cv_path: str | Path | None = None, **kwargs) -> None:

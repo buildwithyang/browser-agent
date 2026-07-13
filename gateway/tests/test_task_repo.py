@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 import app.modules.task.model  # noqa: F401  -- register table on Base.metadata
 from app.core.db import Base
 from app.modules.task.repo import TaskRepository
-from app.modules.task.schema import TaskRecordData
+from app.modules.task.schema import AgentName, TaskRecordData
 
 USER = uuid.uuid4().hex
 
@@ -26,7 +26,7 @@ def _record(**over) -> TaskRecordData:
     base = dict(
         id=uuid.uuid4().hex,
         user_id=USER,
-        agent="job_match",
+        agent=AgentName.JOB_MATCH,
         lang="zh",
         model="gpt-4o-mini",
         status="completed",
@@ -40,20 +40,24 @@ def _record(**over) -> TaskRecordData:
     return TaskRecordData(**base)
 
 
+def test_task_record_parses_agent_name_enum():
+    assert _record(agent="job_match").agent is AgentName.JOB_MATCH
+
+
 def test_append_and_list_recent(tmp_path):
     repo = _make_repo(tmp_path)
     repo.append(_record())
-    repo.append(_record(agent="summary_page", status="failed", error="boom"))
+    repo.append(_record(agent=AgentName.SUMMARY_PAGE, status="failed", error="boom"))
 
     items = repo.list_recent(user_id=USER)
     assert len(items) == 2
-    assert {i.agent for i in items} == {"job_match", "summary_page"}
+    assert {i.agent for i in items} == {AgentName.JOB_MATCH, AgentName.SUMMARY_PAGE}
     failed = next(i for i in items if i.status == "failed")
     assert failed.error == "boom"
 
 
 def test_anonymous_record_has_no_user(tmp_path):
     repo = _make_repo(tmp_path)
-    repo.append(_record(user_id=None, agent="summary_page"))
+    repo.append(_record(user_id=None, agent=AgentName.SUMMARY_PAGE))
     # 匿名记录不归任何用户，按用户查不到。
     assert repo.list_recent(user_id=USER) == []

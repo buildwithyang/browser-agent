@@ -12,6 +12,7 @@ from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.auth.repo import ExtensionTokenRepository
 from app.modules.auth.token_service import ExtensionTokenService
+from app.modules.task.schema import AgentName
 from app.modules.task.service import TaskService
 
 USER = uuid.uuid4().hex
@@ -40,7 +41,7 @@ def _wire(monkeypatch, *, settings, token_service):
     monkeypatch.setattr(
         main.app.state, "task_service",
         TaskService(
-            agents={"summary_page": fake_agent},
+            agents={AgentName.SUMMARY_PAGE: fake_agent},
             repository=None,
             resume_service=None,
             default_model=settings.model_router.default_model,

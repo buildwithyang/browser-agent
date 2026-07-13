@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.agents.job_match import JobMatchAgent
-from app.modules.task.schema import TaskCreate
+from app.modules.task.schema import AgentName, TaskCreate
 from app.modules.task.service import TaskService
 
 
@@ -19,7 +19,7 @@ def make_service(content: str) -> tuple[TaskService, JobMatchAgent]:
     agent = JobMatchAgent(client=fake_client(content), model="m")
     agent._cv_text = "Go / Kubernetes / 5y backend"
     svc = TaskService(
-        agents={"job_match": agent},
+        agents={AgentName.JOB_MATCH: agent},
         repository=None,
         resume_service=None,
         default_model="m",
@@ -43,7 +43,7 @@ def job_task() -> TaskCreate:
         url="https://x.com/j",
         title="Senior Go Engineer",
         selected_text=LONG_JD,
-        agent="job_match",
+        agent=AgentName.JOB_MATCH,
     )
 
 
@@ -62,7 +62,7 @@ def test_continuation_response_has_no_actions():
         title="Senior Go Engineer",
         sections=["cover_letter", "resume_tips"],
         priorResult="@@SECTION conclusion\n匹配度 70。\n",
-        agent="job_match",
+        agent=AgentName.JOB_MATCH,
     )
     resp = svc.run(task, user_id=None)
     assert resp.actions == []
@@ -101,7 +101,7 @@ def test_browser_agent_job_route_returns_insight_without_actions_and_injects_cv(
         model="m",
     )
     svc = TaskService(
-        agents={"job_match": agent},
+        agents={AgentName.JOB_MATCH: agent},
         repository=None,
         resume_service=FakeResumeService(),
         default_model="m",
@@ -110,12 +110,12 @@ def test_browser_agent_job_route_returns_insight_without_actions_and_injects_cv(
         url="https://www.linkedin.com/jobs/view/123",
         title="Senior Go Engineer",
         selected_text=LONG_JD,
-        agent="browser_agent",
+        agent=AgentName.BROWSER_AGENT,
     )
 
     response = svc.run(task, user_id="user-1")
 
-    assert response.request.agent == "job_match"
+    assert response.request.agent is AgentName.JOB_MATCH
     assert response.request.intent == "quick_insight"
     assert response.actions == []
     assert response.insight is not None

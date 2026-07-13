@@ -1,9 +1,9 @@
-from app.modules.task.schema import QuickInsight, TaskCreate
+from app.modules.task.schema import AgentName, QuickInsight, TaskCreate
 from app.modules.task.service import TaskService
 
 
 class FakeAgent:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: AgentName) -> None:
         self.name = name
 
     def build_prompt(self, task: TaskCreate, **kwargs: object) -> str:
@@ -15,7 +15,7 @@ class FakeAgent:
     def build_insight(self, result: str, lang: str) -> QuickInsight:
         return QuickInsight(
             type="summary",
-            title=self.name,
+            title=self.name.value,
             summary_html=f"<p>{result}</p>",
         )
 
@@ -26,8 +26,8 @@ class FakeAgent:
 def service() -> TaskService:
     return TaskService(
         agents={
-            "summary_page": FakeAgent("summary_page"),
-            "job_match": FakeAgent("job_match"),
+            AgentName.SUMMARY_PAGE: FakeAgent(AgentName.SUMMARY_PAGE),
+            AgentName.JOB_MATCH: FakeAgent(AgentName.JOB_MATCH),
         },
         repository=None,
         resume_service=None,
@@ -40,12 +40,12 @@ def test_browser_agent_unknown_page_routes_to_summary():
         TaskCreate(
             url="https://example.com/article",
             pageText="Article",
-            agent="browser_agent",
+            agent=AgentName.BROWSER_AGENT,
         ),
         user_id=None,
     )
 
-    assert response.request.agent == "summary_page"
+    assert response.request.agent is AgentName.SUMMARY_PAGE
     assert response.insight is not None
     assert response.insight.title == "summary_page"
 
@@ -54,9 +54,9 @@ def test_explicit_summary_agent_is_not_rerouted():
     response = service().run(
         TaskCreate(
             url="https://www.linkedin.com/jobs/view/1",
-            agent="summary_page",
+            agent=AgentName.SUMMARY_PAGE,
         ),
         user_id=None,
     )
 
-    assert response.request.agent == "summary_page"
+    assert response.request.agent is AgentName.SUMMARY_PAGE

@@ -8,7 +8,7 @@ import app.modules.task.model  # noqa: F401  -- register table on Base.metadata
 from app.core.db import Base
 from app.modules.task.model import TaskRecordModel
 from app.modules.task.repo import TaskRepository
-from app.modules.task.schema import TaskCreate
+from app.modules.task.schema import AgentName, TaskCreate
 from app.modules.task.service import TaskService
 
 USER = uuid.uuid4().hex
@@ -40,7 +40,7 @@ def _only_row(repo: TaskRepository) -> TaskRecordModel:
 
 def _run(repo: TaskRepository, *, debug_store: bool) -> None:
     svc = TaskService(
-        agents={"summary_page": _fake_agent()},
+        agents={AgentName.SUMMARY_PAGE: _fake_agent()},
         repository=repo,
         resume_service=None,
         default_model="m",

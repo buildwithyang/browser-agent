@@ -31,7 +31,7 @@ class TaskRepository:
                     TaskRecordModel(
                         id=record.id,
                         user_id=record.user_id,
-                        agent=record.agent,
+                        agent=record.agent.value,
                         lang=record.lang,
                         model=record.model,
                         status=record.status,

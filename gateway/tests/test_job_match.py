@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agents.job_match import MIN_JOB_CONTENT_CHARS, JobMatchAgent
-from app.modules.task.schema import TaskCreate
+from app.modules.task.schema import AgentName, TaskCreate
 
 
 # 真实 JD 通常上千字;门控要求选中内容 >= MIN_JOB_CONTENT_CHARS(1000)字。
@@ -247,7 +247,7 @@ def test_actions_label_english():
 def test_actions_empty_for_quick_insight():
     agent = JobMatchAgent()
     task = make_task().model_copy(
-        update={"agent": "job_match", "intent": "quick_insight"}
+        update={"agent": AgentName.JOB_MATCH, "intent": "quick_insight"}
     )
 
     assert agent.actions(task, "en") == []
@@ -355,7 +355,9 @@ def test_build_insight_rejects_non_contract_output(raw):
 def test_quick_insight_prompt_requests_only_decision_fields():
     agent = JobMatchAgent()
     agent._cv_text = "Go / Kubernetes / 5 years"
-    task = make_task().model_copy(update={"agent": "job_match", "intent": "quick_insight"})
+    task = make_task().model_copy(
+        update={"agent": AgentName.JOB_MATCH, "intent": "quick_insight"}
+    )
     prompt = agent.build_prompt(task)
     assert "@@INSIGHT" in prompt
     assert '"score"' in prompt
@@ -376,7 +378,9 @@ def test_run_quick_insight_uses_json_system_contract():
     )
     agent = JobMatchAgent(client=fake_client, model="gpt-4o-mini")
     agent._cv_text = "Go / Kubernetes / 5 years"
-    task = make_task().model_copy(update={"agent": "job_match", "intent": "quick_insight"})
+    task = make_task().model_copy(
+        update={"agent": AgentName.JOB_MATCH, "intent": "quick_insight"}
+    )
 
     agent.run(task)
 
