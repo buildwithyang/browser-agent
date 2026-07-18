@@ -1,5 +1,12 @@
-from app.agents.base import OpenAIChatAgent
-from app.modules.task.schema import Action, AgentName, QuickInsight, TaskCreate
+from app.agents.base import AgentContext, AgentExecution, OpenAIChatAgent, language_directive
+from app.modules.task.schema import (
+    AgentName,
+    DocumentContent,
+    Insight,
+    PageContext,
+    Section,
+    TextInsightCard,
+)
 from app.render import render_markdown
 
 SYSTEM_PROMPT = (
@@ -19,7 +26,7 @@ class SummaryPageAgent(OpenAIChatAgent):
     name = AgentName.SUMMARY_PAGE
     system_prompt = SYSTEM_PROMPT
 
-    def build_prompt(self, task: TaskCreate) -> str:
+    def build_prompt(self, task: PageContext) -> str:
         selection = task.selected_text.strip()
         # 选中文字非空 = 用户明确的"我只关心这块"信号:只总结选中内容,
         # 页面标题/URL 仅作轻背景,不灌整页正文(也更快、更省 token)。
@@ -61,19 +68,43 @@ class SummaryPageAgent(OpenAIChatAgent):
             ]
         )
 
-    def build_insight(self, result: str, lang: str) -> QuickInsight:
-        return QuickInsight(
-            type="summary",
+    def build_insight(self, result: str, lang: str) -> Insight:
+        return Insight(
             title="Page Summary" if lang == "en" else "页面摘要",
-            summary_html=render_markdown(result),
+            cards=[
+                TextInsightCard(
+                    id="summary",
+                    title="Summary" if lang == "en" else "摘要",
+                    body_html=render_markdown(result),
+                )
+            ],
         )
 
-    def actions(self, task: TaskCreate, lang: str) -> list[Action]:
-        return [
-            Action(
-                id="ask_more",
-                label="Ask more" if lang == "en" else "继续提问",
-                task_type="ask_more",
-                enabled=False,
-            )
-        ]
+    def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        prompt = self.build_prompt(ctx.request)
+        system = self.system_prompt + "\n\n" + language_directive(ctx.request.lang)
+        result, model = self.complete_prompt(system=system, prompt=prompt)
+        return AgentExecution(
+            content=self.build_insight(result, ctx.request.lang),
+            raw_result=result,
+            prompt=prompt,
+            model=model,
+        )
+
+    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
+        prompt = self.build_prompt(ctx.request)
+        if getattr(ctx.request, "message", "").strip():
+            prompt += "\n\nFollow-up request:\n" + ctx.request.message.strip()
+        system = self.system_prompt + "\n\n" + language_directive(ctx.request.lang)
+        result, model = self.complete_prompt(system=system, prompt=prompt)
+        html = render_markdown(result)
+        return AgentExecution(
+            content=DocumentContent(
+                text=result,
+                html=html,
+                sections=[Section(id="result", title="", html=html)],
+            ),
+            raw_result=result,
+            prompt=prompt,
+            model=model,
+        )

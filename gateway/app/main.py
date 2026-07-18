@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.job_match import JobMatchAgent
+from app.agents.base import TaskAgent
 from app.agents.summary_page import SummaryPageAgent
 from app.config import settings
 from app.core import (
@@ -24,6 +25,7 @@ from app.modules.auth.api import router as auth_router
 from app.modules.resume import ResumeRepository, ResumeService, create_storage_provider
 from app.modules.resume.api import router as resume_router
 from app.modules.task.api import router as task_router
+from app.modules.task.legacy.api import router as legacy_task_router
 from app.modules.task.repo import TaskRepository
 from app.modules.task.schema import AgentName
 from app.modules.task.service import TaskService
@@ -45,7 +47,7 @@ if not logger.handlers:
     logger.propagate = False
 
 _agent_opts: dict[str, Any] = dict(router=settings.model_router)
-agents: dict[AgentName, Any] = {
+agents: dict[AgentName, TaskAgent] = {
     AgentName.SUMMARY_PAGE: SummaryPageAgent(**_agent_opts),
     AgentName.JOB_MATCH: JobMatchAgent(**_agent_opts),
 }
@@ -120,6 +122,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(resume_router)
 app.include_router(task_router)
+app.include_router(legacy_task_router)
 
 
 @app.get("/health")

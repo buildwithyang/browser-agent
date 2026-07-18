@@ -11,9 +11,9 @@ export function buildAuthHeaders(token) {
   return headers;
 }
 
-export function taskUrl(base) {
+export function taskUrl(base, endpoint) {
   const root = (base || DEFAULT_GATEWAY).replace(/\/+$/, "");
-  return `${root}/tasks`;
+  return `${root}/tasks/${endpoint}`;
 }
 
 // 本地开发前端(Vite)地址；自部署裸网关(127.0.0.1:17321)与前端不同源，按此约定跳转。
@@ -54,11 +54,11 @@ export function loginStrings(lang) {
   };
 }
 
-// Build the JSON body for a /tasks request. `opts.sections` / `opts.priorResult`
-// are the on-demand follow-up fields (omitted entirely for the stage-one request).
-export function buildTaskBody(payload, { agent, lang, sections, priorResult } = {}) {
+// Build a request for either explicit task scenario. Current Task uses actionId;
+// section selection is an internal backend concern.
+export function buildTaskBody(payload, { agent, lang, actionId, priorResult } = {}) {
   const body = { ...payload, agent, lang };
-  if (sections) body.sections = sections;
+  if (actionId) body.actionId = actionId;
   if (priorResult) body.priorResult = priorResult;
   return body;
 }

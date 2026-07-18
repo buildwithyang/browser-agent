@@ -1,14 +1,13 @@
 import uuid
-from types import SimpleNamespace
-
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 import app.modules.task.model  # noqa: F401  -- register table on Base.metadata
+from app.agents.base import AgentContext, AgentExecution, TaskAgent
 from app.core.db import Base
 from app.modules.task.model import TaskRecordModel
 from app.modules.task.repo import TaskRepository
-from app.modules.task.schema import AgentName, TaskCreate
+from app.modules.task.schema import AgentName, DocumentContent, Insight, QuickInsightRequest
 from app.modules.task.service import TaskService
 
 USER = uuid.uuid4().hex
@@ -24,11 +23,19 @@ def _repo(tmp_path) -> TaskRepository:
     return TaskRepository(factory)
 
 
-def _fake_agent() -> SimpleNamespace:
-    return SimpleNamespace(
-        build_prompt=lambda task: "PROMPT-XYZ",
-        run=lambda task: "RESULT-XYZ",
-    )
+class FakeAgent(TaskAgent):
+    name = AgentName.SUMMARY_PAGE
+
+    def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        return AgentExecution(
+            content=Insight(title="Summary", cards=[]),
+            raw_result="RESULT-XYZ",
+            prompt="PROMPT-XYZ",
+            model="m",
+        )
+
+    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
+        raise NotImplementedError
 
 
 def _only_row(repo: TaskRepository) -> TaskRecordModel:
@@ -40,14 +47,19 @@ def _only_row(repo: TaskRepository) -> TaskRecordModel:
 
 def _run(repo: TaskRepository, *, debug_store: bool) -> None:
     svc = TaskService(
-        agents={AgentName.SUMMARY_PAGE: _fake_agent()},
+        agents={AgentName.SUMMARY_PAGE: FakeAgent()},
         repository=repo,
         resume_service=None,
         default_model="m",
         debug_store=debug_store,
     )
-    svc.run(
-        TaskCreate(url="https://ex.com/j", title="Go Eng", pageText="PAGE-BODY"),
+    svc.quick_insight(
+        QuickInsightRequest(
+            url="https://ex.com/j",
+            title="Go Eng",
+            pageText="PAGE-BODY",
+            agent=AgentName.SUMMARY_PAGE,
+        ),
         user_id=USER,
     )
 

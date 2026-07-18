@@ -1,9 +1,18 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Generic, TypeVar
 
 from openai import OpenAI
 
 from app.agents.model_router import ModelRouter, ModelTier
-from app.modules.task.schema import AgentName, TaskCreate
+from app.modules.task.schema import (
+    Action,
+    AgentName,
+    DocumentContent,
+    Insight,
+    QuickInsightRequest,
+    TaskRequest,
+)
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -21,24 +30,45 @@ def language_directive(lang: str) -> str:
     return LANGUAGE_DIRECTIVES.get(lang, LANGUAGE_DIRECTIVES["auto"])
 
 
-class AgentAdapter(ABC):
+AgentRequest = QuickInsightRequest | TaskRequest
+AgentContent = TypeVar("AgentContent", Insight, DocumentContent)
+
+
+@dataclass(frozen=True)
+class AgentContext:
+    request: AgentRequest
+    resume_text: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentExecution(Generic[AgentContent]):
+    content: AgentContent
+    raw_result: str
+    prompt: str
+    model: str
+    actions: list[Action] = field(default_factory=list)
+
+
+class TaskAgent(ABC):
     name: AgentName
+    requires_resume: bool = False
+
+    def validate(self, ctx: AgentContext) -> None:
+        """Validate request-scoped input before any model call."""
 
     @abstractmethod
-    def build_prompt(self, task: TaskCreate) -> str:
-        """Render the task into a single user-message prompt."""
+    def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
         raise NotImplementedError
 
     @abstractmethod
-    def run(self, task: TaskCreate) -> str:
-        """Execute the task and return the agent's result text."""
+    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
         raise NotImplementedError
 
 
-class OpenAIChatAgent(AgentAdapter):
+class OpenAIChatAgent(TaskAgent):
     """Base for agents that call an OpenAI-compatible chat model.
 
-    Subclasses set `system_prompt` and implement `build_prompt`.
+    Subclasses implement the scenario methods and reuse `complete_prompt`.
     """
 
     system_prompt: str = ""
@@ -88,7 +118,7 @@ class OpenAIChatAgent(AgentAdapter):
         )
         return response.choices[0].message.content or ""
 
-    def run(self, task: TaskCreate) -> str:
-        system = self.system_prompt + "\n\n" + language_directive(task.lang)
-        prompt = self.build_prompt(task)
-        return self.complete(system, prompt, tier=self._router.pick(len(prompt)))
+    def complete_prompt(self, *, system: str, prompt: str) -> tuple[str, str]:
+        """Execute one prompt and return (text, selected model)."""
+        tier = self._router.pick(len(prompt))
+        return self.complete(system, prompt, tier=tier), tier.model

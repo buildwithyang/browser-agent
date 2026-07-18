@@ -4,16 +4,27 @@ import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Callable, TypeVar
 
-from app.agents.job_match import JobMatchAgent
+from app.agents.base import AgentContext, AgentExecution, TaskAgent
 from app.modules.resume import ResumeService
 from app.modules.task.repo import TaskRepository
 from app.modules.task.router import route_browser_task
-from app.modules.task.schema import AgentName, TaskCreate, TaskRecordData, TaskResponse
-from app.render import render_markdown
+from app.modules.task.schema import (
+    AgentName,
+    DocumentContent,
+    ExecutionMeta,
+    Insight,
+    PageContext,
+    QuickInsightRequest,
+    QuickInsightResponse,
+    TaskRecordData,
+    TaskRequest,
+    TaskResponse,
+)
 
 logger = logging.getLogger("agent_bridge")
+ContentT = TypeVar("ContentT", Insight, DocumentContent)
 
 
 class TaskExecutionError(RuntimeError):
@@ -33,7 +44,7 @@ class TaskService:
     def __init__(
         self,
         *,
-        agents: dict[AgentName, Any],
+        agents: dict[AgentName, TaskAgent],
         repository: TaskRepository | None,
         resume_service: ResumeService | None,
         default_model: str,
@@ -47,42 +58,62 @@ class TaskService:
         self._default_model = default_model
         self._rate_limit_max = rate_limit_max
         self._rate_limit_window_seconds = rate_limit_window_seconds
-        # debug:额外把 url/title/prompt/页面正文/结果文本 落库,用于对比模型效果。
-        self._debug_store = debug_store
 
-    def run(self, task: TaskCreate, *, user_id: str | None) -> TaskResponse:
-        if task.agent is AgentName.BROWSER_AGENT:
-            routed = route_browser_task(task)
-            task = task.model_copy(
-                update={
-                    "agent": routed,
-                    "intent": (
-                        "quick_insight"
-                        if routed is AgentName.JOB_MATCH
-                        else task.intent
-                    ),
-                }
-            )
+    def quick_insight(
+        self, request: QuickInsightRequest, *, user_id: str | None
+    ) -> QuickInsightResponse:
+        routed, agent = self._resolve_agent(request)
+        request = request.model_copy(update={"agent": routed})
+        execution, meta = self._execute_agent(
+            request,
+            agent=agent,
+            user_id=user_id,
+            operation=lambda ctx: agent.insight(ctx),
+        )
+        return QuickInsightResponse(
+            request=request,
+            insight=execution.content,
+            actions=execution.actions,
+            meta=meta,
+        )
 
-        agent = self._agents.get(task.agent)
+    def execute(self, request: TaskRequest, *, user_id: str | None) -> TaskResponse:
+        routed, agent = self._resolve_agent(request)
+        request = request.model_copy(update={"agent": routed})
+        execution, meta = self._execute_agent(
+            request,
+            agent=agent,
+            user_id=user_id,
+            operation=lambda ctx: agent.execute(ctx),
+        )
+        return TaskResponse(request=request, document=execution.content, meta=meta)
+
+    def _resolve_agent(self, request: PageContext) -> tuple[AgentName, TaskAgent]:
+        routed = (
+            route_browser_task(request)
+            if request.agent is AgentName.BROWSER_AGENT
+            else request.agent
+        )
+        agent = self._agents.get(routed)
         if agent is None:
-            raise ValueError(f"Unsupported agent: {task.agent}")
+            raise ValueError(f"Unsupported agent: {routed}")
+        return routed, agent
 
+    def _execute_agent(
+        self,
+        request: PageContext,
+        *,
+        agent: TaskAgent,
+        user_id: str | None,
+        operation: Callable[[AgentContext], AgentExecution[ContentT]],
+    ) -> tuple[AgentExecution[ContentT], ExecutionMeta]:
         self._enforce_rate_limit(user_id)
+        logger.info("task received agent=%s url=%s", request.agent, request.url)
 
-        logger.info("task received agent=%s url=%s", task.agent, task.url)
-
-        # agent 可声明输入预检(如 job_match 要求页面有足够职位内容)。不满足时抛
-        # ValueError -> API 映射 400,在调用模型之前就失败,不浪费 token、也不瞎编。
-        validate = getattr(agent, "validate", None)
-        if callable(validate):
-            validate(task)
-
-        # job_match 需要简历文本:按登录用户解析(无可用简历 -> ValueError 引导上传);
-        # 匿名(扩展单用户)返回 None,交给 agent 回退本地简历文件。
-        run_kwargs: dict[str, Any] = {}
-        if isinstance(agent, JobMatchAgent):
-            run_kwargs["cv_text"] = self._resolve_cv_text(user_id)
+        resume_text = self._resolve_cv_text(user_id) if agent.requires_resume else None
+        ctx = AgentContext(request=request, resume_text=resume_text)
+        # Stable contract: every agent validates explicitly; no reflection or concrete-type checks.
+        agent.validate(ctx)
 
         rid = uuid.uuid4()
         started_at = datetime.now(timezone.utc)
@@ -90,66 +121,41 @@ class TaskService:
         model = self._default_model
         prompt = ""
         try:
-            prompt = agent.build_prompt(task, **run_kwargs)
-            if hasattr(agent, "pick_model"):
-                model = agent.pick_model(prompt)
-            result = agent.run(task, **run_kwargs)
+            execution = operation(ctx)
+            prompt = execution.prompt
+            model = execution.model
+            result = execution.raw_result
             duration_ms = int((time.perf_counter() - t0) * 1000)
-
-            sections = agent.build_sections(result, task.lang) if hasattr(agent, "build_sections") else []
-            if sections:
-                # 给忽略 sections 的客户端留一份干净的回退 HTML。
-                result_html = "".join(
-                    (f"<h3>{s.title}</h3>{s.html}" if s.title else s.html) for s in sections
-                )
-            else:
-                result_html = render_markdown(result)
-
-            actions = (
-                agent.actions(task, task.lang)
-                if hasattr(agent, "actions")
-                else []
-            )
-            builds_insight = hasattr(agent, "build_insight") and (
-                not isinstance(agent, JobMatchAgent) or task.intent == "quick_insight"
-            )
-            insight = agent.build_insight(result, task.lang) if builds_insight else None
-            response = TaskResponse(
+            meta = ExecutionMeta(
                 id=rid,
                 created_at=started_at,
                 status="completed",
-                request=task,
                 input_chars=len(prompt),
                 model=model,
-                result=result,
-                result_html=result_html,
-                sections=sections,
-                actions=actions,
-                insight=insight,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
                 duration_ms=duration_ms,
             )
             self._persist(
-                rid.hex, task, user_id, model, "completed",
+                rid.hex, request, user_id, model, "completed",
                 len(prompt), len(result), duration_ms, "",
                 prompt=prompt, result=result,
             )
             logger.info(
                 "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
-                task.agent, model, len(prompt) / 1000, duration_ms, len(result),
+                request.agent, model, len(prompt) / 1000, duration_ms, len(result),
             )
-            return response
+            return execution, meta
         except Exception as exc:
             duration_ms = int((time.perf_counter() - t0) * 1000)
             self._persist(
-                rid.hex, task, user_id, model, "failed",
+                rid.hex, request, user_id, model, "failed",
                 len(prompt), 0, duration_ms, str(exc)[:512],
                 prompt=prompt, result="",
             )
             logger.exception(
                 "task failed agent=%s input=%.1fk duration_ms=%d",
-                task.agent, len(prompt) / 1000, duration_ms,
+                request.agent, len(prompt) / 1000, duration_ms,
             )
             raise TaskExecutionError(str(exc)) from exc
 
@@ -182,7 +188,7 @@ class TaskService:
     def _persist(
         self,
         record_id: str,
-        task: TaskCreate,
+        task: PageContext,
         user_id: str | None,
         model: str,
         status: str,
@@ -196,16 +202,14 @@ class TaskService:
     ) -> None:
         if self._repository is None:
             return
-        # debug 模式额外存明细(含隐私),用于对比不同模型效果;默认不存。
-        detail: dict[str, str] = {}
-        if self._debug_store:
-            detail = {
-                "url": task.url,
-                "title": task.title,
-                "prompt": prompt,
-                "page_text": task.page_text,
-                "result": result,
-            }
+        # debug 模式额外存明细,用于对比不同模型效果
+        detail = {
+             "url": task.url,
+             "title": task.title,
+             "prompt": prompt,
+             "page_text": task.page_text,
+             "result": result,
+         }
         try:
             self._repository.append(
                 TaskRecordData(

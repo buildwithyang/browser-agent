@@ -35,10 +35,15 @@ test("buildAuthHeaders adds bearer only when token present", () => {
   });
 });
 
-test("taskUrl trims trailing slash and appends /tasks", () => {
-  assert.equal(taskUrl("http://127.0.0.1:17321"), "http://127.0.0.1:17321/tasks");
-  assert.equal(taskUrl("https://x.com/api/"), "https://x.com/api/tasks");
-  assert.equal(taskUrl(""), `${DEFAULT_GATEWAY}/tasks`);
+test("taskUrl routes each scenario to its explicit endpoint", () => {
+  assert.equal(
+    taskUrl("http://127.0.0.1:17321", "quick-insight"),
+    "http://127.0.0.1:17321/tasks/quick-insight"
+  );
+  assert.equal(
+    taskUrl("https://x.com/api/", "current-task"),
+    "https://x.com/api/tasks/current-task"
+  );
 });
 
 test("webBaseUrl strips trailing /api and slashes", () => {
@@ -123,11 +128,12 @@ test("buildTaskBody sets agent/lang and spreads payload", () => {
   assert.equal("priorResult" in body, false);
 });
 
-test("buildTaskBody includes sections and priorResult when given", () => {
+test("buildTaskBody adds current task action without legacy sections", () => {
   const body = buildTaskBody(
     { url: "u" },
-    { agent: "job_match", lang: "en", sections: ["cover_letter", "resume_tips"], priorResult: "ANALYSIS" }
+    { agent: "job_match", lang: "en", actionId: "write_cover_letter", priorResult: "prior" }
   );
-  assert.deepEqual(body.sections, ["cover_letter", "resume_tips"]);
-  assert.equal(body.priorResult, "ANALYSIS");
+  assert.equal(body.actionId, "write_cover_letter");
+  assert.equal(body.priorResult, "prior");
+  assert.equal("sections" in body, false);
 });

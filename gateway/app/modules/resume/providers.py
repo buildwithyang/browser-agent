@@ -87,6 +87,8 @@ class OSSStorageProvider:
             oss.GetObjectRequest(bucket=self._bucket, key=object_key)
         )
         body = result.body
+        if body is None:
+            raise RuntimeError(f"Failed to download object {object_key} from OSS")
         data = body.read() if hasattr(body, "read") else bytes(body or b"")
         return data
 

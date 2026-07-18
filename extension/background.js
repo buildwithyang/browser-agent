@@ -134,6 +134,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       tabId,
       lang,
       agent,
+      endpoint: "quick-insight",
       source: (message.payload && message.payload.url) || "",
       body: () => buildTaskBody(payload, { agent: "browser_agent", lang }),
     })
@@ -143,7 +144,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 // Shared task dispatch: builds the request, handles token/timeout/keep-alive,
 // renders the result panel. Used by both the stage-one context flow and the
 // on-demand continuation flow. `opts.body()` returns the JSON body object.
-function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) {
+function dispatchTask({ tabId, lang, agent, endpoint, source, body, suppressErrorPanel }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
   const keepAlive = setInterval(
@@ -157,7 +158,7 @@ function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) 
 
   return getGatewayConfig()
     .then(({ base, token }) =>
-      fetch(taskUrl(base), {
+      fetch(taskUrl(base, endpoint), {
         method: "POST",
         headers: buildAuthHeaders(token),
         body: JSON.stringify(body()),
@@ -192,8 +193,8 @@ function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) 
       done();
       showResult(tabId, {
         state: "result",
-        html: task.result_html,
-        sections: task.sections || [],
+        html: task.document?.html || "",
+        sections: task.document?.sections || [],
         actions: task.actions || [],
         insight: task.insight || null,
         insightView: task.insight
@@ -201,10 +202,10 @@ function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) 
           : null,
         agent: task.request?.agent || agent,
         lang,
-        result: task.result || "",
-        text: task.result || task.detail || "(no result)",
+        result: task.document?.text || "",
+        text: task.document?.text || task.detail || "(no result)",
         source: (task.request && task.request.url) || source,
-        durationMs: task.duration_ms,
+        durationMs: task.meta?.duration_ms,
       });
       return true;
     })
@@ -227,9 +228,9 @@ function dispatchTask({ tabId, lang, agent, source, body, suppressErrorPanel }) 
     });
 }
 
-// On-demand follow-up (e.g. 生成求职信). The panel button sends the stage-1
-// raw result back as priorResult; we re-POST /tasks for the named sections and
-// re-render the full merged panel. On failure we reply {ok:false} so the page
+// On-demand follow-up (e.g. 生成求职信). The panel button sends an action id to
+// /tasks/current-task; section selection stays inside the backend Agent. On failure
+// we reply {ok:false} so the page
 // re-enables its button and keeps the stage-1 result visible.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type !== "AGENT_BRIDGE_CONTINUE" || !sender.tab) return;
@@ -239,6 +240,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     tabId,
     lang: message.lang,
     agent: message.agent,
+    endpoint: "current-task",
     source: message.url || "",
     body: () =>
       buildTaskBody(
@@ -246,7 +248,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         {
           agent: message.agent,
           lang: message.lang,
-          sections: message.sections,
+          actionId: message.actionId,
           priorResult: message.priorResult,
         }
       ),
@@ -430,18 +432,18 @@ function renderPanel(payload) {
     actionList.forEach((action) => {
       const btn = el("button", "ab-action");
       btn.type = "button";
-      btn.textContent = action.label;
+      btn.textContent = action.title;
       const err = el("div", "ab-action-err");
       err.style.display = "none";
       btn.addEventListener("click", () => {
         btn.disabled = true;
-        const original = action.label;
+        const original = action.title;
         btn.textContent = payload.lang === "en" ? "Generating…" : "生成中…";
         err.style.display = "none";
         chrome.runtime.sendMessage(
           {
             type: "AGENT_BRIDGE_CONTINUE",
-            sections: action.sections,
+            actionId: action.id,
             priorResult: payload.result,
             lang: payload.lang,
             url: payload.source,

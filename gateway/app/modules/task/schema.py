@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Generic, Literal, TypeVar
+from typing import Annotated, Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,12 +36,8 @@ SELECTED_TEXT_MAX_CHARS = 100_000
 IMAGE_TEXT_MAX_CHARS = 50_000
 
 
-class TaskCreate(BaseModel):
-    """浏览器扩展提交的任务(agent 的输入契约）。
-
-    扩展发送扁平的 camelCase 负载(``{url, title, selectedText, pageText}``),
-    这里用别名接收，同时对网关其余部分暴露 snake_case 属性。
-    """
+class PageContext(BaseModel):
+    """浏览器明确提交的当前页面上下文。"""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -51,14 +47,22 @@ class TaskCreate(BaseModel):
     page_text: str = Field("", alias="pageText", max_length=PAGE_TEXT_MAX_CHARS)
     # 图片文字线索(alt / caption / aria-label),纯文本,不含图片本身。
     image_text: str = Field("", alias="imageText", max_length=IMAGE_TEXT_MAX_CHARS)
-    # 按需分阶段:job_match 用。省略=默认分析集;非空=只生成被点名的区块。
-    sections: list[str] | None = None
-    # 续跑时回传的阶段一 result 文本(求职信/建议基于它生成,无需重传页面正文)。
-    prior_result: str | None = Field(default=None, alias="priorResult", max_length=50_000)
     intent: str = "Summarize this page."
-    agent: AgentName = AgentName.SUMMARY_PAGE
+    agent: AgentName = AgentName.BROWSER_AGENT
     # 输出语言:"zh"/"en" 强制;"auto" 跟随页面语言。扩展通常已把用户偏好解析为 zh/en。
     lang: Literal["auto", "zh", "en"] = "auto"
+
+
+class QuickInsightRequest(PageContext):
+    """Quick Insight 场景输入；只产生 Insight，不产生文档区块。"""
+
+
+class TaskRequest(PageContext):
+    """Current Task 场景输入;action_id 决定要生成的文档。"""
+
+    action_id: str = Field(alias="actionId", min_length=1, max_length=100)
+    prior_result: str | None = Field(default=None, alias="priorResult", max_length=50_000)
+    message: str = Field(default="", max_length=10_000)
 
 
 class Section(BaseModel):
@@ -75,52 +79,84 @@ class Section(BaseModel):
     collapsible: bool = True
 
 
-class JobOverview(BaseModel):
-    industry_business: str
-    role_focus: str
-    summary: str
+class InsightItem(BaseModel):
+    label: str
+    value: str
 
 
-class QuickInsight(BaseModel):
-    type: Literal["job_match", "summary"]
+class ScoreInsightCard(BaseModel):
+    type: Literal["score"] = "score"
+    id: str
     title: str
-    summary_html: str = ""
-    score: int | None = Field(default=None, ge=0, le=100)
-    recommendation: Recommendation | None = None
-    reason: str = ""
-    job_overview: JobOverview | None = None
-    top_strength: str = ""
-    top_gap: str = ""
+    score: int = Field(ge=0, le=100)
+    max_score: int = Field(default=100, ge=1)
+    recommendation: Recommendation
+    reason: str
+
+
+class TextInsightCard(BaseModel):
+    type: Literal["text"] = "text"
+    id: str
+    title: str
+    body_html: str
+
+
+class DetailsInsightCard(BaseModel):
+    type: Literal["details"] = "details"
+    id: str
+    title: str
+    items: list[InsightItem] = Field(default_factory=list)
+    summary: str = ""
+
+
+InsightCard = Annotated[
+    ScoreInsightCard | TextInsightCard | DetailsInsightCard,
+    Field(discriminator="type"),
+]
+
+
+class Insight(BaseModel):
+    title: str
+    cards: list[InsightCard] = Field(default_factory=list)
 
 
 class Action(BaseModel):
-    """结果上可触发的后续动作。后端声明,前端照单渲染按钮(未来新动作纯后端添加)。"""
+    """后端声明的 Current Task 入口；执行参数由后端按 id 解析。"""
 
     id: str
-    label: str
-    sections: list[str] = Field(default_factory=list)
-    task_type: str = ""
-    enabled: bool = True
+    title: str
 
 
-class TaskResponse(BaseModel):
-    """返回给扩展的完整结果。不含 prompt(含简历/页面正文，无需回传客户端）。"""
+class DocumentContent(BaseModel):
+    text: str = ""
+    html: str = ""
+    sections: list[Section] = Field(default_factory=list)
 
+
+class ExecutionMeta(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    status: Literal["created", "completed", "failed"] = "created"
-    request: TaskCreate
-    input_chars: int = 0  # 发给模型的 prompt 长度（仅指标）
-    model: str = ""  # 实际路由到的模型
-    result: str = ""
-    result_html: str = ""
-    sections: list[Section] = Field(default_factory=list)
-    actions: list[Action] = Field(default_factory=list)
-    insight: QuickInsight | None = None
-    error: str = ""
+    status: Literal["completed", "failed"] = "completed"
+    input_chars: int = 0
+    model: str = ""
     started_at: datetime | None = None
     finished_at: datetime | None = None
     duration_ms: int | None = None
+
+
+class QuickInsightResponse(BaseModel):
+    request: QuickInsightRequest
+    insight: Insight
+    actions: list[Action] = Field(default_factory=list)
+    meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
+
+
+class TaskResponse(BaseModel):
+    """Current Task 文档响应；Quick Insight 不使用此模型。"""
+
+    request: TaskRequest
+    document: DocumentContent
+    meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
 
 
 class TaskRecordData(BaseModel):

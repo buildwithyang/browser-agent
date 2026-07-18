@@ -5,13 +5,13 @@
 ## 工作流程
 
 ```
-右键菜单 → content.js 抓取页面上下文 → background.js POST 到网关
+右键菜单 → content.js 抓取页面上下文 → background.js POST /tasks/quick-insight
         → 网关调用模型 → 返回结果 → 注入页面的 Shadow DOM 面板显示
 ```
 
 popup 只控制输出语言,普通用户不能配置 `gatewayUrl`。从源码加载未打包的 `extension/` 时固定使用本地网关 `http://127.0.0.1:17321`;`package.sh` 生成的普通包和商店首发包固定使用云端网关 `https://browser.buildwithyang.com/api`。
 
-登录态下,前端「浏览器扩展」卡片会经 `externally_connectable` 把 bearer token 推送给扩展,之后 `/tasks` 自动带 `Authorization: Bearer`。遇 401(token 过期/被解绑)扩展会清除本地 token 并提示在网页端重新连接。从源码加载时,本地网关可用 `REQUIRE_AUTH=false` 匿名运行。
+登录态下,前端「浏览器扩展」卡片会经 `externally_connectable` 把 bearer token 推送给扩展,之后 `/tasks/quick-insight` 和 `/tasks/current-task` 自动带 `Authorization: Bearer`。遇 401(token 过期/被解绑)扩展会清除本地 token 并提示在网页端重新连接。从源码加载时,本地网关可用 `REQUIRE_AUTH=false` 匿名运行。
 
 扩展逻辑测试:`cd extension && node --test`。
 

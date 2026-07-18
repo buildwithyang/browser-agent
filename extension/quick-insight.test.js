@@ -4,31 +4,36 @@ import { readFile } from "node:fs/promises";
 
 import { quickInsightView } from "./quick-insight.js";
 
-test("job insight keeps typed decision fields", () => {
+test("job insight normalizes generic cards for the existing renderer", () => {
   const view = quickInsightView({
-    type: "job_match",
     title: "Job Match",
-    score: 87,
-    recommendation: "apply",
-    reason: "Core requirements match.",
-    job_overview: {
-      industry_business: "Fintech · B2B payments",
-      role_focus: "Transaction backend",
-      summary: "Build reliable payment services.",
-    },
-    top_strength: "Go",
-    top_gap: "Payments experience",
+    cards: [
+      { type: "score", id: "decision", title: "Decision", score: 87, max_score: 100,
+        recommendation: "apply", reason: "Core requirements match." },
+      { type: "details", id: "job_overview", title: "Job Overview",
+        items: [
+          { label: "industry_business", value: "Fintech · B2B payments" },
+          { label: "role_focus", value: "Transaction backend" },
+        ], summary: "Build reliable payment services." },
+      { type: "text", id: "top_strength", title: "Top Strength", body_html: "<p>Go</p>" },
+      { type: "text", id: "top_gap", title: "Top Gap", body_html: "<p>Payments experience</p>" },
+    ],
   }, []);
   assert.equal(view.score, 87);
   assert.equal(view.overview.roleFocus, "Transaction backend");
+  assert.equal(view.topStrength, "Go");
 });
 
-test("disabled actions are omitted", () => {
+test("summary card becomes summary HTML", () => {
   const view = quickInsightView(
-    { type: "summary", title: "Page Summary", summary_html: "<p>Summary</p>" },
-    [{ id: "ask_more", label: "Ask more", enabled: false }]
+    { title: "Page Summary", cards: [
+      { type: "text", id: "summary", title: "Summary", body_html: "<p>Summary</p>" }
+    ] },
+    [{ id: "ask_more", title: "Ask more" }]
   );
-  assert.deepEqual(view.actions, []);
+  assert.equal(view.type, "summary");
+  assert.equal(view.summaryHtml, "<p>Summary</p>");
+  assert.equal(view.actions[0].title, "Ask more");
 });
 
 test("background renders normalized insight actions", async () => {
@@ -36,7 +41,8 @@ test("background renders normalized insight actions", async () => {
   assert.match(source, /renderActions\(body, payload\.insightView\.actions\)/);
 });
 
-test("continuation uses the routed response agent", async () => {
+test("continuation uses action id and current-task endpoint", async () => {
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
-  assert.match(source, /agent: task\.request\?\.agent \|\| agent/);
+  assert.match(source, /actionId: message\.actionId/);
+  assert.match(source, /endpoint: "current-task"/);
 });

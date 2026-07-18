@@ -5,14 +5,19 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from app.agents.base import OpenAIChatAgent, language_directive
+from app.agents.base import AgentContext, AgentExecution, OpenAIChatAgent, language_directive
 from app.modules.task.schema import (
-    Action,
     AgentName,
-    JobOverview,
-    QuickInsight,
+    DetailsInsightCard,
+    DocumentContent,
+    Insight,
+    InsightItem,
+    PageContext,
+    QuickInsightRequest,
+    ScoreInsightCard,
     Section,
-    TaskCreate,
+    TaskRequest,
+    TextInsightCard,
 )
 from app.render import render_markdown
 
@@ -109,6 +114,14 @@ GENERATION_ORDER = ["overview", "skills", "conclusion", "cover_letter", "resume_
 # 回前端的展示顺序:conclusion 置顶(前端把它当 lede)。
 DISPLAY_ORDER = ["conclusion", "overview", "skills", "cover_letter", "resume_tips"]
 
+ACTION_SECTIONS = {
+    "summary": ["conclusion", "overview"],
+    "deep_analysis": DEFAULT_SECTIONS,
+    "write_cover_letter": ["cover_letter", "resume_tips"],
+    # Deprecated extension action id, accepted only while /tasks is supported.
+    "generate_cover_letter": ["cover_letter", "resume_tips"],
+}
+
 # 简历路径,相对网关运行目录(gateway/)。可用环境变量覆盖。
 DEFAULT_CV_PATH = os.environ.get("AGENT_BRIDGE_CV_PATH", "data/cv/cv.pdf")
 MAX_CV_CHARS = 15000
@@ -123,6 +136,7 @@ _SECTION_RE = re.compile(r"^@@SECTION\s+(\w+)\s*$", re.MULTILINE)
 
 class JobMatchAgent(OpenAIChatAgent):
     name = AgentName.JOB_MATCH
+    requires_resume = True
     system_prompt = SYSTEM_PROMPT
 
     def __init__(self, *args, cv_path: str | Path | None = None, **kwargs) -> None:
@@ -157,7 +171,7 @@ class JobMatchAgent(OpenAIChatAgent):
             )
         return text
 
-    def validate(self, task: TaskCreate) -> None:
+    def _validate_request(self, task: PageContext) -> None:
         """没有选中足够的职位描述就直接失败,避免模型凭空编造职位/匹配。
 
         只看 selected_text,不再用 page_text 兜底:历史数据显示真实匹配的选中文本
@@ -165,7 +179,7 @@ class JobMatchAgent(OpenAIChatAgent):
         的来源。续跑(有 prior_result)时跳过该检查。由 TaskService 在调用模型前预检
         (抛 ValueError -> API 返回 400,且不耗 token)。
         """
-        if task.prior_result and task.prior_result.strip():
+        if isinstance(task, TaskRequest) and task.prior_result and task.prior_result.strip():
             return
         if len(task.selected_text.strip()) < MIN_JOB_CONTENT_CHARS:
             raise ValueError(
@@ -173,11 +187,14 @@ class JobMatchAgent(OpenAIChatAgent):
                 "请在招聘页面选中完整的职位描述(JD)后再试。"
             )
 
-    def _requested_sections(self, task: TaskCreate) -> list[str]:
-        """请求的区块集合(过滤未知 id);空则回默认分析集。顺序无关,拼 prompt 时按 GENERATION_ORDER 排。"""
-        requested = task.sections or DEFAULT_SECTIONS
-        valid = [s for s in requested if s in SECTION_INSTRUCTIONS]
-        return valid or DEFAULT_SECTIONS
+    def validate(self, ctx: AgentContext) -> None:
+        self._validate_request(ctx.request)
+
+    def _requested_sections(self, task: TaskRequest) -> list[str]:
+        sections = ACTION_SECTIONS.get(task.action_id)
+        if sections is None:
+            raise ValueError(f"Unsupported current task action: {task.action_id}")
+        return sections
 
     def _section_request_lines(self, sections: list[str]) -> list[str]:
         lines = ["请按顺序输出以下区块:"]
@@ -186,11 +203,11 @@ class JobMatchAgent(OpenAIChatAgent):
                 lines.append(f"@@SECTION {sid} — {SECTION_INSTRUCTIONS[sid]}")
         return lines
 
-    def build_prompt(self, task: TaskCreate, cv_text: str | None = None) -> str:
+    def build_prompt(self, task: PageContext, cv_text: str | None = None) -> str:
         # 兜底:任何路径构造 prompt 前都先校验,确保模型不会在稀疏内容上瞎编。
-        self.validate(task)
+        self._validate_request(task)
         cv = self._resolve_cv_text(cv_text)[:MAX_CV_CHARS]
-        if task.intent == "quick_insight":
+        if isinstance(task, QuickInsightRequest):
             return "\n".join(
                 [
                     QUICK_INSIGHT_INSTRUCTION,
@@ -207,6 +224,8 @@ class JobMatchAgent(OpenAIChatAgent):
                     task.image_text.strip() or "(无)",
                 ]
             )
+        if not isinstance(task, TaskRequest):
+            raise TypeError("Current task execution requires TaskRequest")
         section_lines = self._section_request_lines(self._requested_sections(task))
         if task.prior_result and task.prior_result.strip():
             # 续跑:基于阶段一分析 + 简历生成,不带页面正文。
@@ -242,20 +261,18 @@ class JobMatchAgent(OpenAIChatAgent):
             ]
         )
 
-    def run(self, task: TaskCreate, cv_text: str | None = None) -> str:
-        system_prompt = (
-            QUICK_INSIGHT_SYSTEM_PROMPT
-            if task.intent == "quick_insight"
-            else self.system_prompt
-        )
+    def _complete_request(
+        self, task: PageContext, cv_text: str | None = None
+    ) -> tuple[str, str, str]:
+        system_prompt = QUICK_INSIGHT_SYSTEM_PROMPT if isinstance(task, QuickInsightRequest) else self.system_prompt
         system = system_prompt + "\n\n" + language_directive(task.lang)
         prompt = self.build_prompt(task, cv_text=cv_text)
-        output = self.complete(system, prompt, tier=self._router.pick(len(prompt)))
-        if task.prior_result and task.prior_result.strip():
+        output, model = self.complete_prompt(system=system, prompt=prompt)
+        if isinstance(task, TaskRequest) and task.prior_result and task.prior_result.strip():
             # 把阶段二输出拼到阶段一分析之后,使返回值即「合并全量文本」;
             # service/build_sections 因此无需感知 prior_result。
-            return task.prior_result.rstrip() + "\n\n" + output
-        return output
+            output = task.prior_result.rstrip() + "\n\n" + output
+        return output, prompt, model
 
     def build_sections(self, result: str, lang: str) -> list[Section]:
         """Split the model output on `@@SECTION <id>` markers into renderable blocks."""
@@ -292,7 +309,7 @@ class JobMatchAgent(OpenAIChatAgent):
         sections.sort(key=lambda s: order.get(s.id, len(DISPLAY_ORDER)))
         return sections
 
-    def build_insight(self, result: str, lang: str) -> QuickInsight:
+    def build_insight(self, result: str, lang: str) -> Insight:
         marker, sep, payload = result.partition("@@INSIGHT")
         if marker.strip() or not sep:
             raise ValueError("Quick Insight response is missing @@INSIGHT")
@@ -300,37 +317,63 @@ class JobMatchAgent(OpenAIChatAgent):
             data = json.loads(payload.strip())
             if not isinstance(data, dict) or type(data.get("score")) is not int:
                 raise TypeError("score must be an integer")
-            return QuickInsight(
-                type="job_match",
+            return Insight(
                 title=_insight_title(lang),
-                score=data["score"],
-                recommendation=data["recommendation"],
-                reason=data["reason"],
-                job_overview=JobOverview(
-                    industry_business=data["industry_business"],
-                    role_focus=data["role_focus"],
-                    summary=data["summary"],
-                ),
-                top_strength=data["top_strength"],
-                top_gap=data["top_gap"],
+                cards=[
+                    ScoreInsightCard(
+                        id="decision",
+                        title="Decision" if lang == "en" else "申请建议",
+                        score=data["score"],
+                        recommendation=data["recommendation"],
+                        reason=data["reason"],
+                    ),
+                    DetailsInsightCard(
+                        id="job_overview",
+                        title="Job Overview" if lang == "en" else "岗位概览",
+                        items=[
+                            InsightItem(label="industry_business", value=data["industry_business"]),
+                            InsightItem(label="role_focus", value=data["role_focus"]),
+                        ],
+                        summary=data["summary"],
+                    ),
+                    TextInsightCard(
+                        id="top_strength",
+                        title="Top Strength" if lang == "en" else "最大优势",
+                        body_html=render_markdown(data["top_strength"]),
+                    ),
+                    TextInsightCard(
+                        id="top_gap",
+                        title="Top Gap" if lang == "en" else "最大差距",
+                        body_html=render_markdown(data["top_gap"]),
+                    ),
+                ],
             )
         except (KeyError, TypeError, json.JSONDecodeError, ValueError) as exc:
             raise ValueError("Quick Insight response is invalid") from exc
 
-    def actions(self, task: TaskCreate, lang: str) -> list[Action]:
-        """旧版阶段一提供「生成求职信」;Quick Insight/续跑时不提供。"""
-        if task.intent == "quick_insight":
-            return []
-        if task.prior_result and task.prior_result.strip():
-            return []
-        requested = task.sections or DEFAULT_SECTIONS
-        if "cover_letter" in requested:
-            return []
-        label = "✍️ Write cover letter" if lang == "en" else "✍️ 生成求职信"
-        return [
-            Action(
-                id="generate_cover_letter",
-                label=label,
-                sections=["cover_letter", "resume_tips"],
-            )
-        ]
+    def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        result, prompt, model = self._complete_request(ctx.request, ctx.resume_text)
+        return AgentExecution(
+            content=self.build_insight(result, ctx.request.lang),
+            raw_result=result,
+            prompt=prompt,
+            model=model,
+            # Current Task UI is not shipped yet; do not expose dead actions.
+            actions=[],
+        )
+
+    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
+        if not isinstance(ctx.request, TaskRequest):
+            raise TypeError("Current task execution requires TaskRequest")
+        result, prompt, model = self._complete_request(ctx.request, ctx.resume_text)
+        sections = self.build_sections(result, ctx.request.lang)
+        html = "".join(
+            (f"<h3>{section.title}</h3>{section.html}" if section.title else section.html)
+            for section in sections
+        )
+        return AgentExecution(
+            content=DocumentContent(text=result, html=html, sections=sections),
+            raw_result=result,
+            prompt=prompt,
+            model=model,
+        )

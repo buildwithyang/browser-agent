@@ -1,11 +1,12 @@
 from types import SimpleNamespace
 
+from app.agents.base import AgentContext
 from app.agents.summary_page import SummaryPageAgent
-from app.modules.task.schema import TaskCreate
+from app.modules.task.schema import QuickInsightRequest
 
 
-def full_page_task() -> TaskCreate:
-    return TaskCreate(
+def full_page_task() -> QuickInsightRequest:
+    return QuickInsightRequest(
         intent="Analyze this job for resume fit.",
         url="https://example.com/jobs/123",
         title="Senior Golang Engineer",
@@ -15,8 +16,8 @@ def full_page_task() -> TaskCreate:
     )
 
 
-def selection_task() -> TaskCreate:
-    return TaskCreate(
+def selection_task() -> QuickInsightRequest:
+    return QuickInsightRequest(
         url="https://example.com/jobs/123",
         title="Senior Golang Engineer",
         selected_text="Dubai remote role, visa sponsored",
@@ -62,9 +63,9 @@ def test_run_returns_model_text_and_passes_model():
     )
 
     agent = SummaryPageAgent(client=fake_client, model="gpt-4o-mini")
-    result = agent.run(full_page_task())
+    result = agent.insight(AgentContext(request=full_page_task()))
 
-    assert result == "Here are the next steps."
+    assert result.raw_result == "Here are the next steps."
     assert captured["model"] == "gpt-4o-mini"
     # The page context reaches the model via the user message (index 1; the
     # system prompt is index 0).
@@ -75,16 +76,20 @@ def test_run_returns_model_text_and_passes_model():
 def test_summary_builds_generic_quick_insight():
     agent = SummaryPageAgent()
     insight = agent.build_insight("**Release:** Version 2.0 ships Friday.", "en")
-    assert insight.type == "summary"
     assert insight.title == "Page Summary"
-    assert "<strong>Release:</strong>" in insight.summary_html
-    assert insight.score is None
+    assert "<strong>Release:</strong>" in insight.cards[0].body_html
 
 
-def test_summary_declares_ask_more_for_next_milestone_but_disabled():
-    agent = SummaryPageAgent()
-    actions = agent.actions(full_page_task(), "en")
-    assert len(actions) == 1
-    assert actions[0].id == "ask_more"
-    assert actions[0].task_type == "ask_more"
-    assert actions[0].enabled is False
+def test_summary_hides_ask_more_until_current_task_ui_ships():
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **kwargs: SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="Summary"))]
+                )
+            )
+        )
+    )
+    agent = SummaryPageAgent(client=fake_client, model="m")
+    execution = agent.insight(AgentContext(request=full_page_task()))
+    assert execution.actions == []

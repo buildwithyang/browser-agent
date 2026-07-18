@@ -9,10 +9,17 @@ from sqlalchemy.orm import sessionmaker
 
 import app.modules.task.model  # noqa: F401
 from app import main
+from app.agents.base import AgentContext, AgentExecution, TaskAgent
 from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.task.repo import TaskRepository
-from app.modules.task.schema import AgentName, TaskCreate, TaskRecordData
+from app.modules.task.schema import (
+    AgentName,
+    DocumentContent,
+    Insight,
+    QuickInsightRequest,
+    TaskRecordData,
+)
 from app.modules.task.service import RateLimitError, TaskService
 
 USER = uuid.uuid4().hex
@@ -48,27 +55,47 @@ def test_count_since(tmp_path):
 
 def test_service_blocks_after_max(tmp_path):
     repo = _repo(tmp_path)
-    agent = SimpleNamespace(build_prompt=lambda task: "P", run=lambda task: "ok")
+
+    class Agent(TaskAgent):
+        name = AgentName.SUMMARY_PAGE
+
+        def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+            return AgentExecution(
+                content=Insight(title="Summary", cards=[]),
+                raw_result="ok",
+                prompt="P",
+                model="m",
+            )
+
+        def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
+            raise NotImplementedError
+
+    agent = Agent()
     svc = TaskService(
         agents={AgentName.SUMMARY_PAGE: agent}, repository=repo, resume_service=None,
         default_model="m", rate_limit_max=2, rate_limit_window_seconds=3600,
     )
-    task = TaskCreate(url="https://x")
-    svc.run(task, user_id=USER)
-    svc.run(task, user_id=USER)
+    task = QuickInsightRequest(url="https://x", agent=AgentName.SUMMARY_PAGE)
+    svc.quick_insight(task, user_id=USER)
+    svc.quick_insight(task, user_id=USER)
     with pytest.raises(RateLimitError):
-        svc.run(task, user_id=USER)
+        svc.quick_insight(task, user_id=USER)
 
 
 def test_api_maps_rate_limit_to_429(monkeypatch):
     def boom(task, *, user_id):
         raise RateLimitError("over quota")
 
-    monkeypatch.setattr(main.app.state, "task_service", SimpleNamespace(run=boom), raising=False)
+    monkeypatch.setattr(
+        main.app.state,
+        "task_service",
+        SimpleNamespace(quick_insight=boom),
+        raising=False,
+    )
     monkeypatch.setattr(
         main.app.state, "auth_service",
         AuthService(settings=main.settings, repository=None), raising=False,
     )
     client = TestClient(main.app)
-    r = client.post("/tasks", json={"url": "https://x"})
+    r = client.post("/tasks/quick-insight", json={"url": "https://x"})
     assert r.status_code == 429

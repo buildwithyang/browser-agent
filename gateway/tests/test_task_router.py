@@ -1,14 +1,14 @@
 from app.agents.job_match import MIN_JOB_CONTENT_CHARS
 from app.modules.task.router import route_browser_task
-from app.modules.task.schema import AgentName, TaskCreate
+from app.modules.task.schema import AgentName, QuickInsightRequest
 
 
 LONG_JD = "Responsibilities and requirements for this engineering role. " * 30
 assert len(LONG_JD) >= MIN_JOB_CONTENT_CHARS
 
 
-def task(url: str, selected: str = LONG_JD) -> TaskCreate:
-    return TaskCreate(url=url, selectedText=selected, agent=AgentName.BROWSER_AGENT)
+def task(url: str, selected: str = LONG_JD) -> QuickInsightRequest:
+    return QuickInsightRequest(url=url, selectedText=selected, agent=AgentName.BROWSER_AGENT)
 
 
 def test_linkedin_job_with_full_selection_routes_to_job_match():

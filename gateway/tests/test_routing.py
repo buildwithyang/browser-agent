@@ -1,8 +1,8 @@
 import pytest
 
-from app.agents.base import OpenAIChatAgent
+from app.agents.base import AgentContext, AgentExecution, OpenAIChatAgent
 from app.agents.model_router import ModelRouter, ModelTier
-from app.modules.task.schema import TaskCreate
+from app.modules.task.schema import DocumentContent, Insight, QuickInsightRequest
 
 
 # --- ModelRouter.pick: 选「容得下的最小层」,超上限走 default ----------------
@@ -89,8 +89,11 @@ def test_from_json_allows_empty_url_and_key():
 class DummyAgent(OpenAIChatAgent):
     name = "dummy"
 
-    def build_prompt(self, task: TaskCreate) -> str:
-        return task.page_text
+    def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        raise NotImplementedError
+
+    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
+        raise NotImplementedError
 
 
 def test_agent_pick_model_routes_by_length():
@@ -108,7 +111,7 @@ def test_agent_without_router_uses_fixed_model():
     assert agent.pick_model("x" * 100000) == "quality-model"
 
 
-def test_run_uses_routed_tier_model():
+def test_complete_prompt_uses_routed_tier_model():
     captured = {}
 
     class CapturingAgent(DummyAgent):
@@ -121,8 +124,9 @@ def test_run_uses_routed_tier_model():
         ' "default": {"url": "u", "key": "k", "model": "quality"}}'
     )
     agent = CapturingAgent(router=router)
-    task = TaskCreate(url="https://example.com", page_text="x" * 50)
-    assert agent.run(task) == "ok"
+    result, model = agent.complete_prompt(system="system", prompt="x" * 50)
+    assert result == "ok"
+    assert model == "quality"
     assert captured["model"] == "quality"
 
 

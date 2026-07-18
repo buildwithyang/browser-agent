@@ -3,7 +3,7 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from app.agents.job_match import MIN_JOB_CONTENT_CHARS
-from app.modules.task.schema import AgentName, TaskCreate
+from app.modules.task.schema import AgentName, PageContext
 
 
 def _is_linkedin_host(host: str) -> bool:
@@ -14,7 +14,7 @@ def _is_indeed_host(host: str) -> bool:
     return host == "indeed.com" or host.endswith(".indeed.com")
 
 
-def route_browser_task(task: TaskCreate) -> AgentName:
+def route_browser_task(task: PageContext) -> AgentName:
     parsed = urlparse(task.url)
     host = (parsed.hostname or "").lower()
     has_full_jd = len(task.selected_text.strip()) >= MIN_JOB_CONTENT_CHARS

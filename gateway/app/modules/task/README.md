@@ -1,33 +1,52 @@
 # Agent Bridge - Task Module
 
-Task 模块负责浏览器任务的**请求生命周期**：接收扩展提交的页面上下文 → 分发给对应 agent → （job_match 时）注入登录用户的生效简历 → 执行 → 把**运营指标**落库。
+Task 模块负责浏览器任务的同步请求生命周期：接收页面上下文、路由到对应 Agent、注入请求级用户简历、执行并记录 metrics-only 指标。
 
-它不是 lsl 的 `job`：`job` 是异步、可持久化、带调度器的后台任务队列（ASR/TTS 这类耗时活）。这里的 task 是**同步交互请求**——扩展点一下、等几秒拿结果，不需要队列与调度器。`agents/`（summary_page / job_match）是被本模块编排的「执行层」。
+## 场景接口
 
-## 设计原则
+- `POST /tasks/quick-insight`：返回 `QuickInsightResponse`，只包含 `Insight(title, cards)` 和 `actions`，不返回文档区块。
+- `POST /tasks/current-task`：返回 `TaskResponse`，只包含 `DocumentContent(text, html, sections)`。
+- `POST /tasks`：deprecated 旧扩展兼容入口；协议类型和转换集中在 `legacy/`，内部仍调用新 `TaskService`，没有第二套业务实现。
 
-- `service.py` 编排：agent 分发、`_resolve_cv_text`（通过 `ResumeService` 取当前用户简历）、执行、落库。
-- `router.py` 纯函数路由：LinkedIn、Indeed 都只校验 host；两者都要求选中文本至少 1000 字，再把 `browser_agent` 确定性分流到 `job_match` 或 `summary_page`。
-- Agent 标识统一使用 `schema.py` 的 `AgentName(StrEnum)`；Router、Service、Agent 注册表和任务记录不比较裸字符串，HTTP/DB 边界仍使用稳定字符串值。
-- `api.py` 只做 HTTP：解析登录态拿 `user_id`（匿名也放行）、调用 service、错误映射（`ValueError`→400，`TaskExecutionError`→502）。
-- 持久化 **metrics-only**：`task_records` 表只存 `agent / model / status / input_chars / result_chars / duration_ms / user_id / 时间`。**刻意不存** prompt、结果文本、页面正文、URL——这些是用户隐私（简历、浏览内容）。指标用于用量统计与后续按用户计费 / 限流。
-- 持久化可选：无 `DATABASE_URL` 时跳过落库，摘要等能力照常可用。
-- `/tasks` 对扩展保持匿名可用：带登录 cookie 时用该用户的生效简历，否则 job_match 回退本地 `AGENT_BRIDGE_CV_PATH`。
+两个新接口都支持 bearer token / session 身份解析、托管模式强制登录、按用户限流和 metrics-only 落库。匿名自部署仍可运行；`job_match` 在登录态下注入用户当前生效简历，匿名模式回退 `AGENT_BRIDGE_CV_PATH`。
 
-## 接口
+## Agent 契约
 
-- `POST /tasks`：执行一次任务，返回 `TaskResponse`（`result` / `result_html` / `sections` / `model` / `duration_ms` / `status`，供扩展面板渲染）。响应不含 prompt。
+`agents/base.py` 的 `TaskAgent` 是稳定接口：
 
-## 模块结构
+```python
+class TaskAgent(ABC):
+    requires_resume: bool = False
+
+    def validate(ctx: AgentContext) -> None: ...
+    def insight(ctx: AgentContext) -> AgentExecution[Insight]: ...
+    def execute(ctx: AgentContext) -> AgentExecution[DocumentContent]: ...
+```
+
+`TaskService` 只调用该契约，简历需求由 `requires_resume` 声明，用户数据只放在请求级 `AgentContext`，Agent 不缓存跨用户状态。
+
+## 分层与隐私
+
+- `api.py`：参数、身份解析和 HTTP 错误映射。
+- `service.py`：场景编排、Agent 分发、请求级依赖注入、限流和指标落库。
+- `repo.py`：`task_records` 持久化。
+- `router.py`：Context Router 纯函数；LinkedIn / Indeed 只匹配 host，并要求至少 1000 字选中 JD。
+- `legacy/`：旧 `/tasks` transport schema 与 adapter，只做协议转换。
+
+默认只持久化 `agent / model / status / input_chars / result_chars / duration_ms / user_id / 时间`，不存 URL、页面正文、简历、Prompt 或结果。`TASK_DEBUG_STORE` 仅用于明确开启的本地模型对比调试。
 
 ```text
 task/
-|- api.py       # POST /tasks，登录态解析 + 错误映射
-|- service.py   # 请求生命周期编排（agent 分发 / 简历注入 / 落库）
-|- router.py    # browser_agent 页面上下文的确定性路由（纯函数）
-|- repo.py      # task_records 写入与读取（指标）
-|- model.py     # ORM 映射（metrics-only）
-|- schema.py    # TaskCreate / Section / AgentName / TaskResponse / TaskRecordData
+|- api.py
+|- schema.py
+|- service.py
+|- router.py
+|- repo.py
+|- model.py
+|- legacy/
+|  |- api.py
+|  |- schema.py
+|  |- adapter.py
 ```
 
-建表 SQL 以 `deploy/initdb/001-schema.sql` 的 `task_records` 为权威，与 `model.py` 保持一致。
+PostgreSQL 表结构以 `deploy/initdb/001-schema.sql` 为权威，并与 `model.py` 保持一致。

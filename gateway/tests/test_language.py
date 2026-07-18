@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 
+from app.agents.base import AgentContext
 from app.agents.summary_page import SummaryPageAgent
-from app.modules.task.schema import TaskCreate
+from app.modules.task.schema import QuickInsightRequest
 
 
 def run_with_lang(lang: str) -> str:
@@ -17,8 +18,8 @@ def run_with_lang(lang: str) -> str:
     fake_client = SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
     )
-    task = TaskCreate(url="https://x.com", title="t", page_text="body", lang=lang)
-    SummaryPageAgent(client=fake_client, model="m").run(task)
+    task = QuickInsightRequest(url="https://x.com", title="t", page_text="body", lang=lang)
+    SummaryPageAgent(client=fake_client, model="m").insight(AgentContext(request=task))
     return captured["messages"][0]["content"]
 
 
@@ -35,5 +36,5 @@ def test_lang_auto_directive():
 
 
 def test_default_lang_is_auto():
-    task = TaskCreate(url="https://x.com", title="t")
+    task = QuickInsightRequest(url="https://x.com", title="t")
     assert task.lang == "auto"

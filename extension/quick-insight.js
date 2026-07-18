@@ -1,19 +1,27 @@
 export function quickInsightView(insight = {}, actions = []) {
-  const overview = insight.job_overview || {};
+  const cards = Array.isArray(insight.cards) ? insight.cards : [];
+  const decision = cards.find((card) => card.type === "score") || {};
+  const details = cards.find((card) => card.id === "job_overview") || {};
+  const items = Object.fromEntries(
+    (details.items || []).map((item) => [item.label, item.value])
+  );
+  const textCard = (id) => cards.find((card) => card.id === id) || {};
+  const plainText = (html = "") => html.replace(/<[^>]+>/g, "").trim();
+  const summary = textCard("summary");
   return {
-    type: insight.type || "summary",
+    type: decision.type === "score" ? "job_match" : "summary",
     title: insight.title || "Quick Insight",
-    summaryHtml: insight.summary_html || "",
-    score: Number.isInteger(insight.score) ? insight.score : null,
-    recommendation: insight.recommendation || "",
-    reason: insight.reason || "",
+    summaryHtml: summary.body_html || "",
+    score: Number.isInteger(decision.score) ? decision.score : null,
+    recommendation: decision.recommendation || "",
+    reason: decision.reason || "",
     overview: {
-      industryBusiness: overview.industry_business || "",
-      roleFocus: overview.role_focus || "",
-      summary: overview.summary || "",
+      industryBusiness: items.industry_business || "",
+      roleFocus: items.role_focus || "",
+      summary: details.summary || "",
     },
-    topStrength: insight.top_strength || "",
-    topGap: insight.top_gap || "",
-    actions: actions.filter((action) => action.enabled !== false),
+    topStrength: plainText(textCard("top_strength").body_html),
+    topGap: plainText(textCard("top_gap").body_html),
+    actions,
   };
 }
