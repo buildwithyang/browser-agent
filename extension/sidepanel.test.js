@@ -46,6 +46,43 @@ test("job actions stay flat and the selected action survives history", () => {
   assert.equal(view.document.title, "Tailored resume");
 });
 
+test("resume documents become a fixed website preview", () => {
+  const view = workspaceView({
+    actions: [{ id: "tailor_resume", title: "Tailor resume" }],
+    currentDocument: {
+      kind: "resume",
+      title: "Tailored resume",
+      text: "private resume body",
+      html: "<article>private resume body</article>",
+    },
+  }, "en");
+
+  assert.equal(sidepanel.CV_PREVIEW_URL, "https://browser.buildwithyang.com");
+  assert.equal(view.document.presentation, "resume-preview");
+  assert.equal(view.document.previewUrl, sidepanel.CV_PREVIEW_URL);
+});
+
+test("cover letter documents remain inline and copyable", () => {
+  const view = workspaceView({
+    actions: [{ id: "write_cover_letter", title: "Write cover letter" }],
+    currentDocument: {
+      kind: "cover_letter",
+      title: "Cover Letter",
+      text: "Dear Hiring Manager",
+    },
+  }, "en");
+
+  assert.equal(view.document.presentation, "inline");
+  assert.equal(view.document.previewUrl, null);
+  assert.equal(view.document.text, "Dear Hiring Manager");
+});
+
+test("resume preview links open safely in a new tab", async () => {
+  const source = await readFile(new URL("./sidepanel.js", import.meta.url), "utf8");
+  assert.match(source, /previewLink\.target\s*=\s*"_blank"/);
+  assert.match(source, /previewLink\.rel\s*=\s*"noopener noreferrer"/);
+});
+
 test("view model localizes the send limit and disables further turns", () => {
   const histories = Array.from({ length: 10 }, (_, index) => ({
     role: index % 2 ? "assistant" : "user",

@@ -5,6 +5,7 @@ export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
 export const WORKSPACE_UPDATED = "AGENT_BRIDGE_WORKSPACE_UPDATED";
 export const WORKSPACE_RESET = "AGENT_BRIDGE_WORKSPACE_RESET";
+export const CV_PREVIEW_URL = "https://browser.buildwithyang.com";
 
 const COPY = {
   en: {
@@ -17,6 +18,9 @@ const COPY = {
     noHistory: "No shared history yet. Choose an Action and send the first instruction.",
     quickInsight: "Quick Insight / read-only",
     artifact: "Latest artifact",
+    resumePreview: "CV website preview",
+    resumePreviewHint: "Open the current tailored CV in a full browser tab.",
+    openResumePreview: "Open CV preview",
     copy: "Copy",
     copied: "Copied",
     next: "Next instruction",
@@ -38,6 +42,9 @@ const COPY = {
     noHistory: "暂无共享历史。选择 Action 并发送第一条指令。",
     quickInsight: "快速洞察 / 只读",
     artifact: "最新产物",
+    resumePreview: "CV 网页预览",
+    resumePreviewHint: "在完整浏览器标签页中查看当前定制 CV。",
+    openResumePreview: "打开 CV 预览",
     copy: "复制",
     copied: "已复制",
     next: "下一步指令",
@@ -70,6 +77,17 @@ export function workspaceLifecycleTarget(message, currentTabId) {
   return null;
 }
 
+/** Convert a Workspace document into the presentation contract used by the Side Panel. */
+export function documentPresentation(documentState) {
+  if (!documentState || typeof documentState !== "object") return null;
+  const isResume = documentState.kind === "resume";
+  return {
+    ...documentState,
+    presentation: isResume ? "resume-preview" : "inline",
+    previewUrl: isResume ? CV_PREVIEW_URL : null,
+  };
+}
+
 /** Build a DOM-independent rendering model for one complete Workspace state. */
 export function workspaceView(state = {}, lang = "browser", uiLanguage = "en") {
   const locale = resolveUiLang(lang, uiLanguage);
@@ -91,7 +109,7 @@ export function workspaceView(state = {}, lang = "browser", uiLanguage = "en") {
     actions,
     selectedActionId,
     histories,
-    document: state.currentDocument || null,
+    document: documentPresentation(state.currentDocument),
     insight: state.quickInsight
       ? quickInsightView(state.quickInsight, actions)
       : null,
@@ -182,9 +200,33 @@ function renderHistories(container, view) {
   });
 }
 
+/** Render a resume as a safe link to the current prototype website preview. */
+function renderResumePreview(container, view) {
+  const card = document.createElement("article");
+  card.className = "resume-preview-card";
+  const copy = document.createElement("div");
+  copy.className = "resume-preview-copy";
+  copy.append(
+    textElement("span", "artifact-kind", view.strings.resumePreview),
+    textElement("h2", "", view.document.title || view.strings.resumePreview),
+    textElement("p", "", view.strings.resumePreviewHint)
+  );
+  const previewLink = textElement("a", "resume-preview-link", view.strings.openResumePreview);
+  previewLink.href = view.document.previewUrl;
+  previewLink.target = "_blank";
+  previewLink.rel = "noopener noreferrer";
+  copy.append(previewLink);
+  card.append(copy);
+  container.append(card);
+}
+
 /** Render the latest document as one visually distinct artifact card. */
 function renderDocument(container, view) {
   if (!view.document) return;
+  if (view.document.presentation === "resume-preview") {
+    renderResumePreview(container, view);
+    return;
+  }
   const card = document.createElement("article");
   card.className = "artifact-card";
   const header = document.createElement("header");
