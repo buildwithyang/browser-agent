@@ -123,9 +123,45 @@ test("response accepts the gateway's snake_case Workspace fields", () => {
   assert.equal(next.updatedAt, "2026-07-19T00:00:00Z");
 });
 
-test("canSend accepts exactly the tenth input message and rejects malformed history", () => {
-  assert.equal(canSend({ histories: Array.from({ length: 9 }) }), true);
-  assert.equal(canSend({ histories: Array.from({ length: 10 }) }), false);
-  assert.equal(canSend({ histories: "not-an-array" }), false);
+/** Build a minimal wire-compatible HistoryMessage fixture. */
+function history(role, content) {
+  return { role, content };
+}
+
+/** Build an alternating, fully valid history collection of the requested length. */
+function validHistories(length) {
+  return Array.from(
+    { length },
+    (_, index) => history(index % 2 === 0 ? "user" : "assistant", index % 2 === 0 ? "question" : "")
+  );
+}
+
+test("canSend accepts exactly the tenth valid input message", () => {
+  assert.equal(canSend({ histories: validHistories(9) }), true);
+  assert.equal(canSend({ histories: validHistories(10) }), false);
+});
+
+test("canSend fails closed for malformed history collections and entries", () => {
+  const sparseHistories = new Array(2);
+  sparseHistories[0] = history("user", "question");
+  const cases = [
+    "not-an-array",
+    undefined,
+    [undefined],
+    ["not-an-object"],
+    [{}],
+    [{ role: "system", content: "invalid role" }],
+    [{ role: "user" }],
+    [{ role: "user", content: "" }],
+    [{ role: "user", content: "u".repeat(10_001) }],
+    [{ role: "assistant", content: 123 }],
+    [{ role: "assistant", content: "a".repeat(100_001) }],
+    sparseHistories,
+  ];
+
+  for (const histories of cases) {
+    assert.equal(canSend({ histories }), false);
+  }
+  assert.equal(canSend({ histories: [history("assistant", "")] }), true);
   assert.equal(canSend({}), false);
 });
