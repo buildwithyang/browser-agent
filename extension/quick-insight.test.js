@@ -41,8 +41,17 @@ test("background renders normalized insight actions", async () => {
   assert.match(source, /renderActions\(body, payload\.insightView\.actions\)/);
 });
 
-test("continuation uses action id and current-task endpoint", async () => {
+test("Quick Insight actions open the shared Workspace", async () => {
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
+  assert.match(source, /type:\s*"AGENT_BRIDGE_OPEN_WORKSPACE"/);
   assert.match(source, /actionId: message\.actionId/);
-  assert.match(source, /endpoint: "current-task"/);
+  assert.match(source, /chrome\.sidePanel\.open\(\{ tabId \}\)/);
+  assert.equal(source.includes(["AGENT_BRIDGE", "CONTINUE"].join("_")), false);
+  assert.equal(source.includes(["current", "task"].join("-")), false);
+  assert.equal(source.includes(["prior", "Result"].join("")), false);
+});
+
+test("content script supports fresh Workspace context collection", async () => {
+  const source = await readFile(new URL("./content.js", import.meta.url), "utf8");
+  assert.match(source, /AGENT_BRIDGE_COLLECT_CONTEXT/);
 });

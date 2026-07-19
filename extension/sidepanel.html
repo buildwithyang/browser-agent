@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Bridge Workspace</title>
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <main class="workspace-shell" aria-labelledby="workspace-title">
+      <header class="workspace-header">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><i></i><span></span>
+          </div>
+          <p class="eyebrow">Agent Bridge / Workspace</p>
+          <span id="connection-status" class="connection-status">Standby</span>
+        </div>
+        <h1 id="workspace-title">Shared Workspace</h1>
+        <a id="source-link" class="source-link" href="#" target="_blank" rel="noopener noreferrer">
+          <span id="source-host">No active page</span>
+          <span aria-hidden="true">↗</span>
+        </a>
+      </header>
+
+      <div class="signal-rule" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+
+      <section id="timeline" class="timeline" aria-label="Shared history" aria-live="polite">
+        <div id="empty-state" class="empty-state">
+          <span class="empty-index">00</span>
+          <h2>Workspace offline</h2>
+          <p>Open a Quick Insight Action on a page to establish a shared Workspace.</p>
+        </div>
+      </section>
+
+      <footer id="composer" class="composer">
+        <form id="message-form" novalidate>
+          <div class="composer-heading">
+            <label id="composer-label" for="message-input">Next instruction</label>
+            <span id="turn-meter" class="turn-meter">0 / 10</span>
+          </div>
+          <div id="action-chips" class="action-chips" role="group" aria-label="Workspace action"></div>
+          <textarea
+            id="message-input"
+            rows="3"
+            maxlength="10000"
+            placeholder="Ask a question or direct the next artifact revision…"
+          ></textarea>
+          <div id="composer-error" class="composer-error" role="alert" hidden></div>
+          <div class="composer-footer">
+            <span id="composer-hint" class="composer-hint">Enter to send · Shift + Enter for a new line</span>
+            <button id="send-button" type="submit" disabled>
+              <span id="send-label">Transmit</span>
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
+        </form>
+      </footer>
+    </main>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

@@ -13,6 +13,9 @@ export function buildAuthHeaders(token) {
 }
 
 export function taskUrl(base, endpoint) {
+  if (endpoint !== "quick-insight" && endpoint !== "workspace") {
+    throw new TypeError("endpoint must be quick-insight or workspace");
+  }
   const root = (base || DEFAULT_GATEWAY).replace(/\/+$/, "");
   return `${root}/tasks/${endpoint}`;
 }
@@ -55,13 +58,43 @@ export function loginStrings(lang) {
   };
 }
 
-// Build a request for either explicit task scenario. Current Task uses actionId;
-// section selection is an internal backend concern.
-export function buildTaskBody(payload, { agent, lang, actionId, priorResult } = {}) {
-  const body = { ...payload, agent, lang };
-  if (actionId) body.actionId = actionId;
-  if (priorResult) body.priorResult = priorResult;
-  return body;
+/** Copy the public PageContext fields while dropping legacy or internal fields. */
+function pageContextBody(payload = {}) {
+  return {
+    url: typeof payload.url === "string" ? payload.url : "",
+    title: typeof payload.title === "string" ? payload.title : "",
+    selectedText: typeof payload.selectedText === "string" ? payload.selectedText : "",
+    pageText: typeof payload.pageText === "string" ? payload.pageText : "",
+    imageText: typeof payload.imageText === "string" ? payload.imageText : "",
+  };
+}
+
+/** Build the public Quick Insight request without exposing an Agent selector. */
+export function buildQuickInsightBody(payload, lang) {
+  return { ...pageContextBody(payload), lang };
+}
+
+/** Reduce a rendered DocumentContent to the gateway's editable DocumentDraft contract. */
+function documentDraft(documentState) {
+  if (!documentState || typeof documentState !== "object") return null;
+  return {
+    kind: typeof documentState.kind === "string" ? documentState.kind : "",
+    title: typeof documentState.title === "string" ? documentState.title : "",
+    text: typeof documentState.text === "string" ? documentState.text : "",
+  };
+}
+
+/** Build one stateless Workspace transition from fresh page context and local state. */
+export function buildWorkspaceBody(pageContext, workspace = {}) {
+  return {
+    ...pageContextBody(pageContext),
+    resourceUrl: workspace.resourceUrl,
+    actionId: workspace.actionId,
+    histories: Array.isArray(workspace.histories) ? workspace.histories : [],
+    currentDocument: documentDraft(workspace.currentDocument),
+    message: workspace.message,
+    lang: workspace.lang,
+  };
 }
 
 export function shouldClearToken(status) {

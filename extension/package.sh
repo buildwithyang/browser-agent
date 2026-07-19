@@ -21,7 +21,12 @@ FILES=(
   manifest.json
   background.js
   quick-insight.js
+  workspace.js
+  workspace-controller.js
   content.js
+  sidepanel.html
+  sidepanel.css
+  sidepanel.js
   popup.html
   popup.js
   auth.js

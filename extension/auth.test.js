@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   buildAuthHeaders,
-  buildTaskBody,
+  buildQuickInsightBody,
+  buildWorkspaceBody,
   taskUrl,
   webBaseUrl,
   loginStrings,
@@ -44,10 +45,9 @@ test("taskUrl routes each scenario to its explicit endpoint", () => {
     taskUrl("http://127.0.0.1:17321", "quick-insight"),
     "http://127.0.0.1:17321/tasks/quick-insight"
   );
-  assert.equal(
-    taskUrl("https://x.com/api/", "current-task"),
-    "https://x.com/api/tasks/current-task"
-  );
+  assert.equal(taskUrl("https://x.com/api/", "workspace"), "https://x.com/api/tasks/workspace");
+  const removedEndpoint = ["current", "task"].join("-");
+  assert.throws(() => taskUrl("https://x.com/api/", removedEndpoint), /endpoint/);
 });
 
 test("webBaseUrl strips trailing /api and slashes", () => {
@@ -150,25 +150,59 @@ test("unknown message returns undefined", async () => {
   assert.equal(await handleExternalMessage(null, { store: fakeStore(), now: 1 }), undefined);
 });
 
-test("buildTaskBody sets agent/lang and spreads payload", () => {
-  const body = buildTaskBody(
-    { url: "u", pageText: "p" },
-    { agent: "job_match", lang: "zh" }
+test("Quick Insight request contains only page context and language", () => {
+  const body = buildQuickInsightBody(
+    {
+      url: "u",
+      title: "Page",
+      selectedText: "selection",
+      pageText: "page",
+      imageText: "image",
+      agent: "job_match",
+      [["prior", "Result"].join("")]: "legacy",
+    },
+    "zh"
   );
-  assert.equal(body.url, "u");
-  assert.equal(body.pageText, "p");
-  assert.equal(body.agent, "job_match");
-  assert.equal(body.lang, "zh");
-  assert.equal("sections" in body, false);
-  assert.equal("priorResult" in body, false);
+  assert.deepEqual(body, {
+    url: "u",
+    title: "Page",
+    selectedText: "selection",
+    pageText: "page",
+    imageText: "image",
+    lang: "zh",
+  });
 });
 
-test("buildTaskBody adds current task action without legacy sections", () => {
-  const body = buildTaskBody(
-    { url: "u" },
-    { agent: "job_match", lang: "en", actionId: "write_cover_letter", priorResult: "prior" }
+test("Workspace request contains the complete public contract without agent", () => {
+  const body = buildWorkspaceBody(
+    { url: "u", title: "Page", pageText: "fresh", agent: "job_match" },
+    {
+      resourceUrl: "https://x/resource",
+      actionId: "write_cover_letter",
+      histories: [{ role: "assistant", content: "Earlier" }],
+      currentDocument: {
+        kind: "cover_letter",
+        title: "Draft",
+        text: "draft",
+        html: "<p>draft</p>",
+        sections: [],
+      },
+      message: "Improve it",
+      lang: "en",
+      [["prior", "Result"].join("")]: "legacy",
+    }
   );
-  assert.equal(body.actionId, "write_cover_letter");
-  assert.equal(body.priorResult, "prior");
-  assert.equal("sections" in body, false);
+  assert.deepEqual(body, {
+    url: "u",
+    title: "Page",
+    selectedText: "",
+    pageText: "fresh",
+    imageText: "",
+    resourceUrl: "https://x/resource",
+    actionId: "write_cover_letter",
+    histories: [{ role: "assistant", content: "Earlier" }],
+    currentDocument: { kind: "cover_letter", title: "Draft", text: "draft" },
+    message: "Improve it",
+    lang: "en",
+  });
 });

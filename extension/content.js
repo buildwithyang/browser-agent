@@ -32,13 +32,28 @@ function getImageText() {
   return unique.join(" · ").slice(0, 4000);
 }
 
-chrome.runtime.sendMessage({
-  type: "AGENT_BRIDGE_CONTEXT",
-  payload: {
+/** Collect a fresh, wire-compatible Page Context without persisting page content. */
+function collectPageContext() {
+  return {
     url: window.location.href,
     title: document.title,
     selectedText: window.getSelection().toString(),
     pageText: getPageText(),
-    imageText: getImageText()
-  }
+    imageText: getImageText(),
+  };
+}
+
+// Re-injecting content.js for another Quick Insight must not duplicate collectors.
+if (!window.__agentBridgeContextCollectorInstalled) {
+  window.__agentBridgeContextCollectorInstalled = true;
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "AGENT_BRIDGE_COLLECT_CONTEXT") return undefined;
+    sendResponse(collectPageContext());
+    return undefined;
+  });
+}
+
+chrome.runtime.sendMessage({
+  type: "AGENT_BRIDGE_CONTEXT",
+  payload: collectPageContext(),
 });

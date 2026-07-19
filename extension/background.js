@@ -1,6 +1,7 @@
 import {
   buildAuthHeaders,
-  buildTaskBody,
+  buildQuickInsightBody,
+  buildWorkspaceBody,
   taskUrl,
   webBaseUrl,
   loginStrings,
@@ -8,11 +9,30 @@ import {
   handleExternalMessage,
   TOKEN_KEY,
   EXPIRES_KEY,
+  WORKSPACE_OWNER_KEY,
   DEFAULT_GATEWAY,
 } from "./auth.js";
 import { quickInsightView } from "./quick-insight.js";
+import {
+  ANONYMOUS_WORKSPACE_OWNER,
+  applyWorkspaceResponse,
+  canSend,
+  workspaceStorageKey,
+} from "./workspace.js";
+import {
+  activeWorkspaceKey,
+  initialSelectionKey,
+  loadAfterPendingSeed,
+  mergeWorkspaceSeed,
+  readGatewayResponse,
+  restoreInitialSelection,
+} from "./workspace-controller.js";
 
 const MENU_ID = "browser-agent";
+const OPEN_WORKSPACE = "AGENT_BRIDGE_OPEN_WORKSPACE";
+const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
+const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
+const workspaceSeedPromises = new Map();
 
 // 菜单文字跟随语言偏好:zh/en 强制;"browser"/"auto" 按浏览器界面语言。
 const MENU_TITLES = {
@@ -113,16 +133,23 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   }
 
   const tabId = sender.tab.id;
-  const agent = "browser_agent";
 
   // 优先用右键事件的选区快照(可靠);content.js 的 getSelection 仅作兜底。
   const snapshot = pendingSelection[tabId];
   delete pendingSelection[tabId];
   const payload = { ...message.payload };
   if (snapshot && snapshot.trim()) payload.selectedText = snapshot;
+  if (payload.selectedText?.trim()) {
+    chrome.storage.session.set({
+      [initialSelectionKey(tabId)]: {
+        url: payload.url,
+        selectedText: payload.selectedText,
+      },
+    });
+  }
 
   console.log(
-    "[Agent Bridge] context received:", agent,
+    "[Agent Bridge] context received:",
     "selection chars:", (payload.selectedText || "").length,
     "page chars:", (payload.pageText || "").length,
     message.payload && message.payload.url
@@ -130,21 +157,25 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   showResult(tabId, { state: "loading", source: message.payload && message.payload.url });
 
   resolveLang().then((lang) =>
-    dispatchTask({
+    dispatchQuickInsight({
       tabId,
       lang,
-      agent,
-      endpoint: "quick-insight",
       source: (message.payload && message.payload.url) || "",
-      body: () => buildTaskBody(payload, { agent: "browser_agent", lang }),
+      payload,
     })
   );
 });
 
-// Shared task dispatch: builds the request, handles token/timeout/keep-alive,
-// renders the result panel. Used by both the stage-one context flow and the
-// on-demand continuation flow. `opts.body()` returns the JSON body object.
-function dispatchTask({ tabId, lang, agent, endpoint, source, body, suppressErrorPanel }) {
+/** Clear authentication identity and the active tab namespace after a 401. */
+async function clearAuthNamespace(tabId) {
+  await Promise.all([
+    chrome.storage.local.remove([TOKEN_KEY, EXPIRES_KEY, WORKSPACE_OWNER_KEY]),
+    chrome.storage.session.remove(activeWorkspaceKey(tabId)),
+  ]);
+}
+
+/** Dispatch Quick Insight while preserving the existing overlay loading/login behavior. */
+function dispatchQuickInsight({ tabId, lang, source, payload }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
   const keepAlive = setInterval(
@@ -158,61 +189,56 @@ function dispatchTask({ tabId, lang, agent, endpoint, source, body, suppressErro
 
   return getGatewayConfig()
     .then(({ base, token }) =>
-      fetch(taskUrl(base, endpoint), {
+      fetch(taskUrl(base, "quick-insight"), {
         method: "POST",
         headers: buildAuthHeaders(token),
-        body: JSON.stringify(body()),
+        body: JSON.stringify(buildQuickInsightBody(payload, lang)),
         signal: controller.signal,
-      }).then((response) => {
-        if (shouldClearToken(response.status)) {
-          chrome.storage.local.remove([TOKEN_KEY, EXPIRES_KEY]);
-          done();
-          const loginUrl = webBaseUrl(base);
-          const s = loginStrings(errLang(lang));
-          // 不立刻开标签页：面板里先跑倒计时，让用户明白将要发生什么，避免以为中招。
-          // 倒计时结束(或用户点按钮)后由面板发消息回来打开登录页。
-          showResult(tabId, {
-            state: "error",
-            source,
-            errorTitle: s.title,
-            errorHint: s.hint,
-            loginUrl,
-            loginLabel: s.button,
-            loginCountdownTpl: s.countdownTpl,
-            loginCountdown: 5,
-            loginOpened: s.opened,
-            text: s.text(loginUrl),
-          });
-          return null;
-        }
-        return response.json();
-      })
+      }).then(async (response) => ({
+        base,
+        task: await readGatewayResponse(response),
+      }))
     )
-    .then((task) => {
-      if (!task) return false; // 401 已处理
+    .then(({ task }) => {
       done();
       showResult(tabId, {
         state: "result",
-        html: task.document?.html || "",
-        sections: task.document?.sections || [],
         actions: task.actions || [],
         insight: task.insight || null,
+        workspace: task.workspace || null,
         insightView: task.insight
           ? quickInsightView(task.insight, task.actions || [])
           : null,
-        agent: task.request?.agent || agent,
         lang,
-        result: task.document?.text || "",
-        text: task.document?.text || task.detail || "(no result)",
+        pageTitle: task.request?.title || payload.title || "",
+        text: task.insight?.title || "(no result)",
         source: (task.request && task.request.url) || source,
         durationMs: task.meta?.duration_ms,
       });
       return true;
     })
-    .catch((error) => {
+    .catch(async (error) => {
       done();
       console.error("[Agent Bridge] gateway request failed:", error);
-      if (suppressErrorPanel) return false; // caller handles failure inline (keeps stage-1 panel)
+      if (shouldClearToken(error.status)) {
+        await clearAuthNamespace(tabId);
+        const loginUrl = webBaseUrl(DEFAULT_GATEWAY);
+        const strings = loginStrings(errLang(lang));
+        // 保持已上线的 Overlay 登录倒计时体验；Workspace 401 走内联可重试错误。
+        showResult(tabId, {
+          state: "error",
+          source,
+          errorTitle: strings.title,
+          errorHint: strings.hint,
+          loginUrl,
+          loginLabel: strings.button,
+          loginCountdownTpl: strings.countdownTpl,
+          loginCountdown: 5,
+          loginOpened: strings.opened,
+          text: strings.text(loginUrl),
+        });
+        return false;
+      }
       const hint =
         error.name === "AbortError"
           ? "请求超时,网关无响应。"
@@ -228,34 +254,169 @@ function dispatchTask({ tabId, lang, agent, endpoint, source, body, suppressErro
     });
 }
 
-// On-demand follow-up (e.g. 生成求职信). The panel button sends an action id to
-// /tasks/current-task; section selection stays inside the backend Agent. On failure
-// we reply {ok:false} so the page
-// re-enables its button and keeps the stage-1 result visible.
+/** Seed or refresh the owner-scoped Workspace selected by a Quick Insight Action. */
+async function seedWorkspace(tabId, message) {
+  const descriptor = message.workspace || {};
+  const resourceUrl = descriptor.resource_url || descriptor.resourceUrl || message.source || "";
+  if (!resourceUrl) throw new Error("Workspace resource is unavailable");
+  const ownerData = await chrome.storage.local.get({
+    [WORKSPACE_OWNER_KEY]: ANONYMOUS_WORKSPACE_OWNER,
+  });
+  const storageKey = workspaceStorageKey(ownerData[WORKSPACE_OWNER_KEY], resourceUrl);
+  const stored = await chrome.storage.local.get(storageKey);
+  const state = mergeWorkspaceSeed(stored[storageKey], {
+    resourceUrl,
+    pageTitle: message.pageTitle || "",
+    quickInsight: message.insight || null,
+    actions: message.actions || [],
+    actionId: message.actionId,
+    defaultActionId: descriptor.default_action_id || descriptor.defaultActionId,
+  });
+  await Promise.all([
+    chrome.storage.local.set({ [storageKey]: state }),
+    chrome.storage.session.set({
+      [activeWorkspaceKey(tabId)]: {
+        storageKey,
+        resourceUrl,
+        lang: message.lang || "en",
+      },
+    }),
+  ]);
+  return { state, lang: message.lang || "en" };
+}
+
+/** Load the active tab mapping and its owner-scoped Workspace from split storage areas. */
+async function loadActiveWorkspace(tabId) {
+  const mappingKey = activeWorkspaceKey(tabId);
+  const mappingData = await chrome.storage.session.get(mappingKey);
+  const mapping = mappingData[mappingKey];
+  if (!mapping?.storageKey) return null;
+  const stored = await chrome.storage.local.get(mapping.storageKey);
+  const state = stored[mapping.storageKey];
+  return state ? { mapping, state, lang: mapping.lang || "en" } : null;
+}
+
+/** Ask the existing content script for current page context immediately before SEND. */
+async function collectPageContext(tabId) {
+  const fresh = await chrome.tabs.sendMessage(tabId, {
+    type: "AGENT_BRIDGE_COLLECT_CONTEXT",
+  });
+  if (!fresh || typeof fresh.url !== "string") {
+    throw new Error("Unable to collect the active page context");
+  }
+  const selectionKey = initialSelectionKey(tabId);
+  const selectionData = await chrome.storage.session.get(selectionKey);
+  return restoreInitialSelection(fresh, selectionData[selectionKey]);
+}
+
+/** Execute one stateless Workspace transition and persist only canonical response state. */
+async function sendWorkspaceTurn(tabId, message) {
+  const active = await loadActiveWorkspace(tabId);
+  const userMessage = typeof message.message === "string" ? message.message.trim() : "";
+  if (!active) throw new Error("Open a Quick Insight Action before sending");
+  if (!userMessage) throw new Error("Message cannot be empty");
+  if (!canSend(active.state)) throw new Error("Workspace message limit reached");
+
+  const pageContext = await collectPageContext(tabId);
+  const { base, token } = await getGatewayConfig();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+  try {
+    const response = await fetch(taskUrl(base, "workspace"), {
+      method: "POST",
+      headers: buildAuthHeaders(token),
+      body: JSON.stringify(buildWorkspaceBody(pageContext, {
+        resourceUrl: active.mapping.resourceUrl,
+        actionId: message.actionId,
+        histories: active.state.histories,
+        currentDocument: active.state.currentDocument,
+        message: userMessage,
+        lang: active.lang,
+      })),
+      signal: controller.signal,
+    });
+    const workspaceResponse = await readGatewayResponse(response);
+    const state = applyWorkspaceResponse(active.state, workspaceResponse);
+    await chrome.storage.local.set({ [active.mapping.storageKey]: state });
+    return { state, lang: active.lang };
+  } finally {
+    clearTimeout(timeout);
+    clearInterval(keepAlive);
+  }
+}
+
+/** Open Side Panel inside the user gesture, then seed its Workspace asynchronously. */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type !== "AGENT_BRIDGE_CONTINUE" || !sender.tab) return;
+  if (message?.type !== OPEN_WORKSPACE || !sender.tab?.id) return undefined;
   const tabId = sender.tab.id;
-
-  dispatchTask({
-    tabId,
+  const openPromise = chrome.sidePanel.open({ tabId });
+  const seedPromise = seedWorkspace(tabId, {
+    actionId: message.actionId,
+    workspace: message.workspace,
+    insight: message.insight,
+    actions: message.actions,
+    pageTitle: message.pageTitle,
+    source: message.source,
     lang: message.lang,
-    agent: message.agent,
-    endpoint: "current-task",
-    source: message.url || "",
-    body: () =>
-      buildTaskBody(
-        { url: message.url || "" },
-        {
-          agent: message.agent,
-          lang: message.lang,
-          actionId: message.actionId,
-          priorResult: message.priorResult,
-        }
-      ),
-    suppressErrorPanel: true,
-  }).then((ok) => sendResponse({ ok: !!ok }));
+  });
+  workspaceSeedPromises.set(tabId, seedPromise);
+  Promise.all([
+    openPromise,
+    seedPromise,
+  ])
+    .then(([, workspace]) => sendResponse({ ok: true, ...workspace }))
+    .catch((error) => sendResponse({ ok: false, error: error.message }))
+    .finally(() => workspaceSeedPromises.delete(tabId));
+  return true;
+});
 
-  return true; // async sendResponse
+/** Serve Side Panel reads from the active session mapping. */
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== WORKSPACE_GET || !message.tabId) return undefined;
+  loadAfterPendingSeed(
+    workspaceSeedPromises.get(message.tabId),
+    () => loadActiveWorkspace(message.tabId)
+  )
+    .then((active) => {
+      if (!active) {
+        sendResponse({ ok: false, error: "Open a Quick Insight Action to start this Workspace." });
+        return;
+      }
+      sendResponse({ ok: true, state: active.state, lang: active.lang });
+    })
+    .catch((error) => sendResponse({ ok: false, error: error.message }));
+  return true;
+});
+
+/** Route Side Panel SEND through fresh context collection, fetch, auth, and persistence. */
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== WORKSPACE_SEND || !message.tabId) return undefined;
+  sendWorkspaceTurn(message.tabId, message)
+    .then(({ state, lang }) => sendResponse({ ok: true, state, lang }))
+    .catch(async (error) => {
+      if (shouldClearToken(error.status)) {
+        await clearAuthNamespace(message.tabId);
+        const strings = loginStrings(errLang(await resolveLang()));
+        sendResponse({
+          ok: false,
+          error: `${strings.hint} ${webBaseUrl(DEFAULT_GATEWAY)}`,
+          recoverable: true,
+        });
+        return;
+      }
+      sendResponse({ ok: false, error: error.message, recoverable: true });
+    });
+  return true;
+});
+
+/** Remove privacy-sensitive session mappings when their owning tab closes. */
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.remove([
+    activeWorkspaceKey(tabId),
+    initialSelectionKey(tabId),
+  ]);
+  delete pendingSelection[tabId];
 });
 
 // Render the agent result in an overlay panel injected into the originating page.
@@ -436,28 +597,25 @@ function renderPanel(payload) {
       const err = el("div", "ab-action-err");
       err.style.display = "none";
       btn.addEventListener("click", () => {
-        btn.disabled = true;
-        const original = action.title;
-        btn.textContent = payload.lang === "en" ? "Generating…" : "生成中…";
         err.style.display = "none";
         chrome.runtime.sendMessage(
           {
-            type: "AGENT_BRIDGE_CONTINUE",
+            type: "AGENT_BRIDGE_OPEN_WORKSPACE",
             actionId: action.id,
-            priorResult: payload.result,
+            workspace: payload.workspace,
+            insight: payload.insight,
+            actions: payload.actions,
+            pageTitle: payload.pageTitle,
+            source: payload.source,
             lang: payload.lang,
-            url: payload.source,
-            agent: payload.agent,
           },
           (resp) => {
-            // 成功时后台已整面板重渲染,这里不必处理;失败时恢复按钮并提示。
+            // Side Panel 已在用户手势内打开；只在后台 seed 失败时保留可见反馈。
             if (!resp || !resp.ok) {
-              btn.disabled = false;
-              btn.textContent = original;
               err.textContent =
                 payload.lang === "en"
-                  ? "Generation failed, please retry."
-                  : "生成失败,请重试。";
+                  ? "Workspace failed to open. Please retry."
+                  : "Workspace 打开失败，请重试。";
               err.style.display = "block";
             }
           }
