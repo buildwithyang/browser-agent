@@ -36,9 +36,9 @@ class RateLimitError(RuntimeError):
 
 
 class TaskService:
-    """任务请求生命周期:agent 分发 -> (job_match)解析用户简历 -> 执行 -> 落库指标。
+    """任务请求生命周期:agent 分发 -> (job_match)解析用户简历 -> 执行 -> 落库。
 
-    持久化是 metrics-only 且可选:无 DB 时跳过,摘要等无状态能力照常可用。
+    无 DB 时跳过持久化,摘要等无状态能力照常可用。
     """
 
     def __init__(
@@ -50,7 +50,6 @@ class TaskService:
         default_model: str,
         rate_limit_max: int = 20,
         rate_limit_window_seconds: int = 86400,
-        debug_store: bool = False,
     ) -> None:
         self._agents = agents
         self._repository = repository
@@ -202,14 +201,13 @@ class TaskService:
     ) -> None:
         if self._repository is None:
             return
-        # debug 模式额外存明细,用于对比不同模型效果
         detail = {
-             "url": task.url,
-             "title": task.title,
-             "prompt": prompt,
-             "page_text": task.page_text,
-             "result": result,
-         }
+            "url": task.url,
+            "title": task.title,
+            "prompt": prompt,
+            "page_text": task.page_text,
+            "result": result,
+        }
         try:
             self._repository.append(
                 TaskRecordData(

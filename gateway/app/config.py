@@ -86,9 +86,6 @@ class Settings:
     # 单用户 /tasks 限流:窗口内最大次数,0=不限流(自部署默认);窗口秒数默认 1 天。
     task_rate_limit_max: int = 0
     task_rate_limit_window_seconds: int = 86400
-    # debug:落库时额外存明细(URL/标题/prompt/页面正文/结果文本),用于对比不同
-    # 模型效果。含简历、浏览内容等隐私,默认 False;生产/多租户务必保持关闭。
-    task_debug_store: bool = False
 
     # --- Casdoor OAuth ------------------------------------------------------
     casdoor_endpoint: str = ""
@@ -142,7 +139,6 @@ class Settings:
             task_rate_limit_window_seconds=_get_env_int(
                 "TASK_RATE_LIMIT_WINDOW_SECONDS", cls.task_rate_limit_window_seconds
             ),
-            task_debug_store=_get_env_bool("TASK_DEBUG_STORE", cls.task_debug_store),
             casdoor_endpoint=_get_env_str("CASDOOR_ENDPOINT", cls.casdoor_endpoint),
             casdoor_client_id=_get_env_str("CASDOOR_CLIENT_ID", cls.casdoor_client_id),
             casdoor_client_secret=_get_env_str("CASDOOR_CLIENT_SECRET", cls.casdoor_client_secret),
