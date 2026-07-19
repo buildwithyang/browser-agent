@@ -19,12 +19,13 @@ export async function probe({ sendMessage, extId }) {
   }
 }
 
-// issueToken: () => Promise<{token, expires_at}>
+// issueToken: () => Promise<{token, user_id, expires_at}>
 export async function connect({ sendMessage, extId, issueToken }) {
   const issued = await issueToken();
   const res = await sendMessage(extId, {
     type: "AUTH_TOKEN",
     token: issued.token,
+    userId: issued.user_id,
     expiresAt: issued.expires_at ?? null,
   });
   const ok = !!(res && res.type === "AUTH_TOKEN_ACK" && res.ok);

@@ -52,6 +52,7 @@ def test_issue_list_revoke_flow(monkeypatch, tmp_path):
     issued = client.post("/auth/extension-token").json()["data"]
     assert issued["token"].startswith("ext_")
     assert issued["expires_at"]
+    assert issued["user_id"] == USER
 
     items = client.get("/auth/extension-tokens").json()["data"]["items"]
     assert len(items) == 1

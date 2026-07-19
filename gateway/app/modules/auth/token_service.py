@@ -41,7 +41,7 @@ class ExtensionTokenService:
             label=label,
             expires_at=expires_at,
         )
-        return ExtensionTokenIssued(token=token, expires_at=expires_at)
+        return ExtensionTokenIssued(token=token, user_id=user_id, expires_at=expires_at)
 
     def resolve(self, token: str) -> str | None:
         if self._repository is None or not token:

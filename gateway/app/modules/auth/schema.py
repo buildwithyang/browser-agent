@@ -31,7 +31,10 @@ class AuthMeData(BaseModel):
 
 
 class ExtensionTokenIssued(BaseModel):
+    """The one-time extension credential and its stable Workspace owner."""
+
     token: str  # 明文，仅签发时返回这一次
+    user_id: str
     expires_at: datetime
 
 

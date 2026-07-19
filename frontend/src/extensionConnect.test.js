@@ -31,14 +31,23 @@ describe("probe", () => {
 describe("connect", () => {
   test("issues token, pushes, returns ok on ack", async () => {
     const calls = [];
-    const issueToken = async () => ({ token: "T", expires_at: "2999-01-01T00:00:00Z" });
+    const issueToken = async () => ({
+      token: "T",
+      expires_at: "2999-01-01T00:00:00Z",
+      user_id: "user-1",
+    });
     const sendMessage = async (extId, msg) => {
       calls.push(msg);
       return { type: "AUTH_TOKEN_ACK", ok: true };
     };
     const res = await connect({ sendMessage, extId: EXT_ID, issueToken });
     expect(res).toEqual({ ok: true, expiresAt: "2999-01-01T00:00:00Z" });
-    expect(calls[0]).toEqual({ type: "AUTH_TOKEN", token: "T", expiresAt: "2999-01-01T00:00:00Z" });
+    expect(calls[0]).toEqual({
+      type: "AUTH_TOKEN",
+      token: "T",
+      expiresAt: "2999-01-01T00:00:00Z",
+      userId: "user-1",
+    });
   });
 
   test("no ack -> ok false", async () => {

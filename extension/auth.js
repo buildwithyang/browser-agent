@@ -3,6 +3,7 @@ import { GATEWAY_BASE as DEFAULT_GATEWAY } from "./config.js";
 // 纯逻辑：消息处理 / 鉴权头 / 网关地址 / 401 判定。无 chrome 依赖，便于 node --test。
 export const TOKEN_KEY = "authToken";
 export const EXPIRES_KEY = "authTokenExpiresAt";
+export const WORKSPACE_OWNER_KEY = "workspaceOwnerId";
 export { DEFAULT_GATEWAY };
 
 export function buildAuthHeaders(token) {
@@ -79,8 +80,19 @@ export async function handleExternalMessage(msg, { store, now }) {
     return { type: "PONG", connected };
   }
 
-  if (msg.type === "AUTH_TOKEN" && msg.token) {
-    await store.set({ [TOKEN_KEY]: msg.token, [EXPIRES_KEY]: msg.expiresAt || null });
+  if (
+    msg.type === "AUTH_TOKEN"
+    && typeof msg.token === "string"
+    && msg.token.trim()
+    && typeof msg.userId === "string"
+    && msg.userId.trim()
+  ) {
+    // One storage write keeps an extension-token rotation bound to the same owner.
+    await store.set({
+      [TOKEN_KEY]: msg.token.trim(),
+      [EXPIRES_KEY]: msg.expiresAt || null,
+      [WORKSPACE_OWNER_KEY]: msg.userId.trim(),
+    });
     return { type: "AUTH_TOKEN_ACK", ok: true };
   }
 

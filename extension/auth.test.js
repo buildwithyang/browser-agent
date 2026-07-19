@@ -12,15 +12,19 @@ import {
   handleExternalMessage,
   TOKEN_KEY,
   EXPIRES_KEY,
+  WORKSPACE_OWNER_KEY,
   DEFAULT_GATEWAY,
 } from "./auth.js";
 
 function fakeStore(initial = {}) {
   const data = { ...initial };
+  const setCalls = [];
   return {
     data,
+    setCalls,
     get: (key) => Promise.resolve(data[key]),
     set: (obj) => {
+      setCalls.push(obj);
       Object.assign(data, obj);
       return Promise.resolve();
     },
@@ -99,15 +103,46 @@ test("PING reports connected=false for expired token", async () => {
   assert.deepEqual(res, { type: "PONG", connected: false });
 });
 
-test("AUTH_TOKEN stores token+expiry and acks", async () => {
+test("AUTH_TOKEN atomically stores token, expiry, and stable workspace owner", async () => {
   const store = fakeStore();
   const res = await handleExternalMessage(
-    { type: "AUTH_TOKEN", token: "abc", expiresAt: "2999-01-01T00:00:00Z" },
+    {
+      type: "AUTH_TOKEN",
+      token: "abc",
+      expiresAt: "2999-01-01T00:00:00Z",
+      userId: "user-1",
+    },
     { store, now: 1000 }
   );
   assert.deepEqual(res, { type: "AUTH_TOKEN_ACK", ok: true });
   assert.equal(store.data[TOKEN_KEY], "abc");
   assert.equal(store.data[EXPIRES_KEY], "2999-01-01T00:00:00Z");
+  assert.equal(store.data[WORKSPACE_OWNER_KEY], "user-1");
+  assert.deepEqual(store.setCalls, [{
+    [TOKEN_KEY]: "abc",
+    [EXPIRES_KEY]: "2999-01-01T00:00:00Z",
+    [WORKSPACE_OWNER_KEY]: "user-1",
+  }]);
+});
+
+test("AUTH_TOKEN rejects a missing stable workspace owner", async () => {
+  const store = fakeStore();
+  const res = await handleExternalMessage(
+    { type: "AUTH_TOKEN", token: "abc", expiresAt: "2999-01-01T00:00:00Z" },
+    { store, now: 1000 }
+  );
+  assert.equal(res, undefined);
+  assert.deepEqual(store.data, {});
+});
+
+test("AUTH_TOKEN rejects an empty bearer token", async () => {
+  const store = fakeStore();
+  const res = await handleExternalMessage(
+    { type: "AUTH_TOKEN", token: "   ", userId: "user-1" },
+    { store, now: 1000 }
+  );
+  assert.equal(res, undefined);
+  assert.deepEqual(store.data, {});
 });
 
 test("unknown message returns undefined", async () => {
