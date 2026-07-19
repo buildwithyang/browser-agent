@@ -24,23 +24,12 @@ def _wire(monkeypatch) -> None:
     )
 
 
-def test_quick_insight_rejects_unsupported_agent(monkeypatch) -> None:
+def test_quick_insight_rejects_public_agent_field(monkeypatch) -> None:
     _wire(monkeypatch)
 
     response = TestClient(main.app).post(
         "/tasks/quick-insight",
         json={"agent": "codex", "url": "https://example.com"},
-    )
-
-    assert response.status_code == 400
-
-
-def test_current_task_requires_action_id(monkeypatch) -> None:
-    _wire(monkeypatch)
-
-    response = TestClient(main.app).post(
-        "/tasks/current-task",
-        json={"url": "https://example.com"},
     )
 
     assert response.status_code == 422

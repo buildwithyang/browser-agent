@@ -14,10 +14,18 @@ def test_quick_insight_response_contains_only_insight_content() -> None:
         ],
     )
 
-    response = schema.QuickInsightResponse(request=request, insight=insight)
+    response = schema.QuickInsightResponse(
+        request=request,
+        insight=insight,
+        workspace=schema.WorkspaceDescriptor(
+            resource_url="https://example.com/",
+            default_action_id="ask_more",
+        ),
+    )
 
     assert response.insight.cards[0].type == "text"
     assert response.actions == []
+    assert response.workspace.default_action_id == "ask_more"
     assert "document" not in response.model_dump()
 
 

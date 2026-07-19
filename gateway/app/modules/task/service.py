@@ -9,11 +9,13 @@ from typing import Callable, TypeVar
 from app.agents.base import AgentContext, AgentExecution, TaskAgent
 from app.modules.resume import ResumeService
 from app.modules.task.repo import TaskRepository
-from app.modules.task.router import route_browser_task
+from app.modules.task.router import normalize_resource_url, route_browser_task
 from app.modules.task.schema import (
+    ActionId,
     AgentName,
     DocumentContent,
     ExecutionMeta,
+    HistoryMessage,
     Insight,
     PageContext,
     QuickInsightRequest,
@@ -21,6 +23,9 @@ from app.modules.task.schema import (
     TaskRecordData,
     TaskRequest,
     TaskResponse,
+    WorkspaceDescriptor,
+    WorkspaceRequest,
+    WorkspaceResponse,
 )
 
 logger = logging.getLogger("agent_bridge")
@@ -59,12 +64,19 @@ class TaskService:
         self._rate_limit_window_seconds = rate_limit_window_seconds
 
     def quick_insight(
-        self, request: QuickInsightRequest, *, user_id: str | None
+        self,
+        request: QuickInsightRequest,
+        *,
+        user_id: str | None,
+        agent_override: AgentName | None = None,
     ) -> QuickInsightResponse:
-        routed, agent = self._resolve_agent(request)
-        request = request.model_copy(update={"agent": routed})
+        """Execute Quick Insight and describe the page's stable Workspace."""
+
+        resource_url = normalize_resource_url(request.url)
+        routed, agent = self._resolve_agent(request, agent_override=agent_override)
         execution, meta = self._execute_agent(
             request,
+            agent_name=routed,
             agent=agent,
             user_id=user_id,
             operation=lambda ctx: agent.insight(ctx),
@@ -73,25 +85,91 @@ class TaskService:
             request=request,
             insight=execution.content,
             actions=execution.actions,
+            workspace=WorkspaceDescriptor(
+                resource_url=resource_url,
+                default_action_id=(
+                    ActionId.ANALYZE
+                    if routed is AgentName.JOB_MATCH
+                    else ActionId.ASK_MORE
+                ),
+            ),
             meta=meta,
         )
 
-    def execute(self, request: TaskRequest, *, user_id: str | None) -> TaskResponse:
-        routed, agent = self._resolve_agent(request)
-        request = request.model_copy(update={"agent": routed})
+    def execute(
+        self,
+        request: TaskRequest,
+        *,
+        user_id: str | None,
+        agent_override: AgentName | None = None,
+    ) -> TaskResponse:
+        """Execute the legacy task document flow with an internal Agent override."""
+
+        routed, agent = self._resolve_agent(request, agent_override=agent_override)
         execution, meta = self._execute_agent(
             request,
+            agent_name=routed,
             agent=agent,
             user_id=user_id,
             operation=lambda ctx: agent.execute(ctx),
         )
         return TaskResponse(request=request, document=execution.content, meta=meta)
 
-    def _resolve_agent(self, request: PageContext) -> tuple[AgentName, TaskAgent]:
+    def workspace(
+        self,
+        request: WorkspaceRequest,
+        *,
+        user_id: str | None,
+    ) -> WorkspaceResponse:
+        """Validate identity and perform one deterministic Workspace transition."""
+
+        resource_url = normalize_resource_url(request.url)
+        if request.resource_url != resource_url:
+            raise ValueError("resourceUrl does not match normalized url")
+
+        routed, agent = self._resolve_agent(request)
+        execution, meta = self._execute_agent(
+            request,
+            agent_name=routed,
+            agent=agent,
+            user_id=user_id,
+            operation=lambda ctx: agent.execute(ctx),
+        )
+        # The gateway owns identity/timestamps for the two messages created by
+        # this transition; existing validated histories remain unchanged.
+        histories = [
+            *request.histories,
+            HistoryMessage(
+                role="user",
+                content=request.message,
+                action_id=request.action_id,
+            ),
+            HistoryMessage(
+                role="assistant",
+                content=execution.content.text,
+                action_id=request.action_id,
+            ),
+        ]
+        return WorkspaceResponse(
+            resource_url=resource_url,
+            selected_action_id=request.action_id,
+            histories=histories,
+            document=execution.content,
+            meta=meta,
+        )
+
+    def _resolve_agent(
+        self,
+        request: PageContext,
+        *,
+        agent_override: AgentName | None = None,
+    ) -> tuple[AgentName, TaskAgent]:
+        """Resolve a public page request to one internal stateless Agent."""
+
         routed = (
             route_browser_task(request)
-            if request.agent is AgentName.BROWSER_AGENT
-            else request.agent
+            if agent_override in {None, AgentName.BROWSER_AGENT}
+            else agent_override
         )
         agent = self._agents.get(routed)
         if agent is None:
@@ -102,12 +180,15 @@ class TaskService:
         self,
         request: PageContext,
         *,
+        agent_name: AgentName,
         agent: TaskAgent,
         user_id: str | None,
         operation: Callable[[AgentContext], AgentExecution[ContentT]],
     ) -> tuple[AgentExecution[ContentT], ExecutionMeta]:
+        """Run one validated Agent call and capture metrics consistently."""
+
         self._enforce_rate_limit(user_id)
-        logger.info("task received agent=%s url=%s", request.agent, request.url)
+        logger.info("task received agent=%s url=%s", agent_name, request.url)
 
         resume_text = self._resolve_cv_text(user_id) if agent.requires_resume else None
         ctx = AgentContext(request=request, resume_text=resume_text)
@@ -136,25 +217,25 @@ class TaskService:
                 duration_ms=duration_ms,
             )
             self._persist(
-                rid.hex, request, user_id, model, "completed",
+                rid.hex, request, agent_name, user_id, model, "completed",
                 len(prompt), len(result), duration_ms, "",
                 prompt=prompt, result=result,
             )
             logger.info(
                 "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
-                request.agent, model, len(prompt) / 1000, duration_ms, len(result),
+                agent_name, model, len(prompt) / 1000, duration_ms, len(result),
             )
             return execution, meta
         except Exception as exc:
             duration_ms = int((time.perf_counter() - t0) * 1000)
             self._persist(
-                rid.hex, request, user_id, model, "failed",
+                rid.hex, request, agent_name, user_id, model, "failed",
                 len(prompt), 0, duration_ms, str(exc)[:512],
                 prompt=prompt, result="",
             )
             logger.exception(
                 "task failed agent=%s input=%.1fk duration_ms=%d",
-                request.agent, len(prompt) / 1000, duration_ms,
+                agent_name, len(prompt) / 1000, duration_ms,
             )
             raise TaskExecutionError(str(exc)) from exc
 
@@ -188,6 +269,7 @@ class TaskService:
         self,
         record_id: str,
         task: PageContext,
+        agent_name: AgentName,
         user_id: str | None,
         model: str,
         status: str,
@@ -213,7 +295,7 @@ class TaskService:
                 TaskRecordData(
                     id=record_id,
                     user_id=user_id,
-                    agent=task.agent,
+                    agent=agent_name,
                     lang=task.lang,
                     model=model,
                     status=status,

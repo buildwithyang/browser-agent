@@ -60,15 +60,3 @@ def test_quick_insight_endpoint_has_stable_response_shape(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["insight"]["title"] == "Page Summary"
     assert "document" not in response.json()
-
-
-def test_current_task_endpoint_has_stable_response_shape(monkeypatch) -> None:
-    _wire(monkeypatch)
-    response = TestClient(main.app).post(
-        "/tasks/current-task",
-        json={"url": "https://example.com", "actionId": "ask_more"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["document"]["text"] == "document"
-    assert "insight" not in response.json()

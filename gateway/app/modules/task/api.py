@@ -8,8 +8,8 @@ from app.modules.auth.identity import resolve_user_id
 from app.modules.task.schema import (
     QuickInsightRequest,
     QuickInsightResponse,
-    TaskRequest,
-    TaskResponse,
+    WorkspaceRequest,
+    WorkspaceResponse,
 )
 from app.modules.task.service import RateLimitError, TaskExecutionError, TaskService
 
@@ -17,6 +17,8 @@ router = APIRouter(tags=["tasks"])
 
 
 def get_task_service(request: Request) -> TaskService:
+    """Resolve the application-scoped TaskService dependency."""
+
     service = getattr(request.app.state, "task_service", None)
     if service is None:
         raise HTTPException(status_code=500, detail="Task service is not initialized")
@@ -24,6 +26,8 @@ def get_task_service(request: Request) -> TaskService:
 
 
 def _user_id(request: Request) -> str | None:
+    """Resolve request identity and enforce managed-mode authentication."""
+
     user_id = resolve_user_id(request)
     settings = getattr(request.app.state, "settings", None)
     if getattr(settings, "require_auth", False) and user_id is None:
@@ -32,6 +36,8 @@ def _user_id(request: Request) -> str | None:
 
 
 def _map_error(exc: Exception) -> HTTPException:
+    """Map service-layer failures to the task API HTTP contract."""
+
     if isinstance(exc, RateLimitError):
         return HTTPException(status_code=429, detail=str(exc))
     if isinstance(exc, ValueError):
@@ -43,6 +49,8 @@ def _map_error(exc: Exception) -> HTTPException:
 def create_quick_insight(
     task: QuickInsightRequest, request: Request
 ) -> QuickInsightResponse:
+    """Produce a fast page insight and its Workspace descriptor."""
+
     service = get_task_service(request)
     try:
         return service.quick_insight(task, user_id=_user_id(request))
@@ -50,10 +58,15 @@ def create_quick_insight(
         raise _map_error(exc) from exc
 
 
-@router.post("/tasks/current-task", response_model=TaskResponse)
-def create_current_task(task: TaskRequest, request: Request) -> TaskResponse:
+@router.post("/tasks/workspace", response_model=WorkspaceResponse)
+def create_workspace_task(
+    task: WorkspaceRequest,
+    request: Request,
+) -> WorkspaceResponse:
+    """Execute one stateless Workspace state transition."""
+
     service = get_task_service(request)
     try:
-        return service.execute(task, user_id=_user_id(request))
+        return service.workspace(task, user_id=_user_id(request))
     except (RateLimitError, ValueError, TaskExecutionError) as exc:
         raise _map_error(exc) from exc

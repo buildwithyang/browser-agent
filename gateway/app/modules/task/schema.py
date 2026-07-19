@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Annotated, Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 T = TypeVar("T")
 
@@ -28,6 +28,15 @@ class AgentName(StrEnum):
     OPENCLAW = "openclaw"
 
 
+class ActionId(StrEnum):
+    """Workspace 支持的稳定 Action 标识。"""
+
+    ANALYZE = "analyze"
+    TAILOR_RESUME = "tailor_resume"
+    WRITE_COVER_LETTER = "write_cover_letter"
+    ASK_MORE = "ask_more"
+
+
 Recommendation = Literal["strong_apply", "apply", "cautious", "skip"]
 
 # /tasks 输入封顶：防止匿名/恶意调用塞超大正文烧平台 LLM 钱。
@@ -39,7 +48,7 @@ IMAGE_TEXT_MAX_CHARS = 50_000
 class PageContext(BaseModel):
     """浏览器明确提交的当前页面上下文。"""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     url: str
     title: str = ""
@@ -48,7 +57,6 @@ class PageContext(BaseModel):
     # 图片文字线索(alt / caption / aria-label),纯文本,不含图片本身。
     image_text: str = Field("", alias="imageText", max_length=IMAGE_TEXT_MAX_CHARS)
     intent: str = "Summarize this page."
-    agent: AgentName = AgentName.BROWSER_AGENT
     # 输出语言:"zh"/"en" 强制;"auto" 跟随页面语言。扩展通常已把用户偏好解析为 zh/en。
     lang: Literal["auto", "zh", "en"] = "auto"
 
@@ -58,7 +66,7 @@ class QuickInsightRequest(PageContext):
 
 
 class TaskRequest(PageContext):
-    """Current Task 场景输入;action_id 决定要生成的文档。"""
+    """旧 `/tasks` 内部执行输入；不属于新的公共 wire contract。"""
 
     action_id: str = Field(alias="actionId", min_length=1, max_length=100)
     prior_result: str | None = Field(default=None, alias="priorResult", max_length=50_000)
@@ -127,7 +135,59 @@ class Action(BaseModel):
     title: str
 
 
+class WorkspaceDescriptor(BaseModel):
+    """Quick Insight 返回的客户端 Workspace 身份和默认 Action。"""
+
+    resource_url: str
+    default_action_id: ActionId
+
+
+class HistoryMessage(BaseModel):
+    """一次 Workspace 用户或 Assistant 消息。"""
+
+    id: UUID = Field(default_factory=uuid4)
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=10_000)
+    action_id: ActionId | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class DocumentDraft(BaseModel):
+    """客户端回传的最新文档草稿，供本次无状态生成使用。"""
+
+    kind: str = ""
+    title: str = ""
+    text: str = ""
+    html: str = ""
+    sections: list[Section] = Field(default_factory=list)
+
+
+class WorkspaceRequest(PageContext):
+    """共享 Workspace 的一次无状态 Action 请求。"""
+
+    resource_url: str = Field(alias="resourceUrl")
+    action_id: ActionId = Field(alias="actionId")
+    histories: list[HistoryMessage] = Field(default_factory=list, max_length=10)
+    current_document: DocumentDraft | None = Field(
+        default=None,
+        alias="currentDocument",
+    )
+    message: str = Field(min_length=1, max_length=10_000)
+
+    @model_validator(mode="after")
+    def validate_message_limit(self) -> "WorkspaceRequest":
+        """Count the current user message against the ten-message input cap."""
+
+        if len(self.histories) + 1 > 10:
+            raise ValueError("histories plus current message must not exceed 10")
+        return self
+
+
 class DocumentContent(BaseModel):
+    """Agent 生成并返回给客户端的最新文档。"""
+
+    kind: str = ""
+    title: str = ""
     text: str = ""
     html: str = ""
     sections: list[Section] = Field(default_factory=list)
@@ -148,6 +208,17 @@ class QuickInsightResponse(BaseModel):
     request: QuickInsightRequest
     insight: Insight
     actions: list[Action] = Field(default_factory=list)
+    workspace: WorkspaceDescriptor
+    meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
+
+
+class WorkspaceResponse(BaseModel):
+    """Workspace 单次状态转换的完整结果。"""
+
+    resource_url: str
+    selected_action_id: ActionId
+    histories: list[HistoryMessage]
+    document: DocumentContent | None
     meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
 
 

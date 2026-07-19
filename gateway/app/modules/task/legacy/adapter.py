@@ -21,31 +21,51 @@ from app.modules.task.schema import (
     TaskResponse,
     TextInsightCard,
 )
+from app.modules.task.router import route_browser_task
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def to_quick_request(request: LegacyTaskRequest) -> QuickInsightRequest:
-    return QuickInsightRequest.model_validate(request.model_dump(by_alias=True))
+    """Translate legacy page fields into the public Quick Insight contract."""
+
+    payload = request.model_dump(
+        by_alias=True,
+        exclude={"agent", "sections", "prior_result"},
+    )
+    return QuickInsightRequest.model_validate(payload)
 
 
 def to_task_request(request: LegacyTaskRequest) -> TaskRequest:
+    """Translate a legacy document request into the internal task input."""
+
     if request.sections and "cover_letter" in request.sections:
         action_id = "write_cover_letter"
     elif request.agent is AgentName.JOB_MATCH:
         action_id = "deep_analysis"
     else:
         action_id = "summary"
-    payload = request.model_dump(by_alias=True)
+    payload = request.model_dump(
+        by_alias=True,
+        exclude={"agent", "sections", "prior_result"},
+    )
     payload.update({"actionId": action_id, "priorResult": request.prior_result})
     return TaskRequest.model_validate(payload)
 
 
 def is_quick_request(request: LegacyTaskRequest) -> bool:
+    """Return whether the old transport expects the Quick Insight flow."""
+
     return request.agent is AgentName.BROWSER_AGENT or request.intent == "quick_insight"
 
 
-def from_quick_response(response: QuickInsightResponse) -> LegacyTaskResponse:
+def from_quick_response(
+    response: QuickInsightResponse,
+    *,
+    legacy_request: LegacyTaskRequest,
+) -> LegacyTaskResponse:
+    """Adapt Quick Insight output back to the deployed legacy wire shape."""
+
     score = next(
         (card for card in response.insight.cards if isinstance(card, ScoreInsightCard)),
         None,
@@ -90,11 +110,18 @@ def from_quick_response(response: QuickInsightResponse) -> LegacyTaskResponse:
         if text_cards.get("top_gap")
         else "",
     )
+    routed_agent = (
+        route_browser_task(response.request)
+        if legacy_request.agent is AgentName.BROWSER_AGENT
+        else legacy_request.agent
+    )
+    response_request = response.request.model_dump(by_alias=True)
+    response_request["agent"] = routed_agent
     return LegacyTaskResponse(
         id=response.meta.id,
         created_at=response.meta.created_at,
         status=response.meta.status,
-        request=LegacyTaskRequest.model_validate(response.request.model_dump(by_alias=True)),
+        request=LegacyTaskRequest.model_validate(response_request),
         input_chars=response.meta.input_chars,
         model=response.meta.model,
         result=result,
@@ -110,12 +137,20 @@ def from_quick_response(response: QuickInsightResponse) -> LegacyTaskResponse:
     )
 
 
-def from_task_response(response: TaskResponse) -> LegacyTaskResponse:
+def from_task_response(
+    response: TaskResponse,
+    *,
+    legacy_request: LegacyTaskRequest,
+) -> LegacyTaskResponse:
+    """Adapt legacy document execution back to the deployed wire shape."""
+
+    response_request = response.request.model_dump(by_alias=True)
+    response_request["agent"] = legacy_request.agent
     return LegacyTaskResponse(
         id=response.meta.id,
         created_at=response.meta.created_at,
         status=response.meta.status,
-        request=LegacyTaskRequest.model_validate(response.request.model_dump(by_alias=True)),
+        request=LegacyTaskRequest.model_validate(response_request),
         input_chars=response.meta.input_chars,
         model=response.meta.model,
         result=response.document.text,

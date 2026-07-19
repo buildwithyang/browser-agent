@@ -40,7 +40,6 @@ def quick_request(**updates) -> QuickInsightRequest:
         url="https://www.linkedin.com/jobs/view/1",
         title="Senior Go Engineer",
         selectedText=LONG_JD,
-        agent=AgentName.BROWSER_AGENT,
     )
     values.update(updates)
     return QuickInsightRequest(**values)
@@ -52,7 +51,6 @@ def task_request(action_id: str = "deep_analysis", **updates) -> TaskRequest:
         title="Senior Go Engineer",
         selectedText=LONG_JD,
         actionId=action_id,
-        agent=AgentName.JOB_MATCH,
     )
     values.update(updates)
     return TaskRequest(**values)
@@ -181,7 +179,7 @@ def test_quick_insight_service_routes_agent_and_injects_user_resume() -> None:
 
     response = service.quick_insight(quick_request(), user_id="user-1")
 
-    assert response.request.agent is AgentName.JOB_MATCH
+    assert response.workspace.default_action_id == "analyze"
     assert isinstance(response.insight.cards[0], ScoreInsightCard)
     assert "INJECTED USER CV" in captured["messages"][1]["content"]
 
@@ -204,7 +202,11 @@ def test_current_task_service_returns_document_and_merges_prior_result() -> None
         priorResult="@@SECTION conclusion\nMatch 82.",
     )
 
-    response = service.execute(request, user_id=None)
+    response = service.execute(
+        request,
+        user_id=None,
+        agent_override=AgentName.JOB_MATCH,
+    )
 
     assert response.document.text.startswith("@@SECTION conclusion")
     assert [section.id for section in response.document.sections] == [

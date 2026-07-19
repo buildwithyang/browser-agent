@@ -16,13 +16,27 @@ router = APIRouter(tags=["tasks-legacy"])
 
 @router.post("/tasks", response_model=LegacyTaskResponse, deprecated=True)
 def create_legacy_task(task: LegacyTaskRequest, request: Request) -> LegacyTaskResponse:
+    """Serve the deployed `/tasks` protocol through the shared TaskService."""
+
     service = get_task_service(request)
     try:
         user_id = _user_id(request)
         if is_quick_request(task):
             return from_quick_response(
-                service.quick_insight(to_quick_request(task), user_id=user_id)
+                service.quick_insight(
+                    to_quick_request(task),
+                    user_id=user_id,
+                    agent_override=task.agent,
+                ),
+                legacy_request=task,
             )
-        return from_task_response(service.execute(to_task_request(task), user_id=user_id))
+        return from_task_response(
+            service.execute(
+                to_task_request(task),
+                user_id=user_id,
+                agent_override=task.agent,
+            ),
+            legacy_request=task,
+        )
     except (RateLimitError, ValueError, TaskExecutionError) as exc:
         raise _map_error(exc) from exc

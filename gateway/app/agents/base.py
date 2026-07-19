@@ -12,6 +12,7 @@ from app.modules.task.schema import (
     Insight,
     QuickInsightRequest,
     TaskRequest,
+    WorkspaceRequest,
 )
 
 DEFAULT_MODEL = "gpt-4o-mini"
@@ -30,7 +31,7 @@ def language_directive(lang: str) -> str:
     return LANGUAGE_DIRECTIVES.get(lang, LANGUAGE_DIRECTIVES["auto"])
 
 
-AgentRequest = QuickInsightRequest | TaskRequest
+AgentRequest = QuickInsightRequest | TaskRequest | WorkspaceRequest
 AgentContent = TypeVar("AgentContent", Insight, DocumentContent)
 
 

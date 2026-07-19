@@ -2,7 +2,32 @@ import pytest
 
 from app.agents.base import AgentContext, AgentExecution, OpenAIChatAgent
 from app.agents.model_router import ModelRouter, ModelTier
+from app.modules.task.router import normalize_resource_url
 from app.modules.task.schema import DocumentContent, Insight, QuickInsightRequest
+
+
+def test_linkedin_search_and_view_urls_share_resource() -> None:
+    assert normalize_resource_url(
+        "https://www.linkedin.com/jobs/search/?currentJobId=4442412976"
+    ) == "https://www.linkedin.com/jobs/view/4442412976"
+    assert normalize_resource_url(
+        "https://www.linkedin.com/jobs/view/4442412976?trackingId=x"
+    ) == "https://www.linkedin.com/jobs/view/4442412976"
+
+
+def test_indeed_vjk_and_jk_share_resource() -> None:
+    assert normalize_resource_url(
+        "https://ae.indeed.com/?vjk=a5f6724841c417a3"
+    ) == "https://ae.indeed.com/viewjob?jk=a5f6724841c417a3"
+    assert normalize_resource_url(
+        "https://ae.indeed.com/viewjob?jk=a5f6724841c417a3&utm_source=email"
+    ) == "https://ae.indeed.com/viewjob?jk=a5f6724841c417a3"
+
+
+def test_regular_url_drops_fragment_and_utm_parameters_and_sorts_query() -> None:
+    assert normalize_resource_url(
+        "https://Example.com/path?z=2&utm_campaign=x&a=1&UTM_source=y#section"
+    ) == "https://example.com/path?a=1&z=2"
 
 
 # --- ModelRouter.pick: 选「容得下的最小层」,超上限走 default ----------------

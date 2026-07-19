@@ -75,7 +75,7 @@ def test_service_blocks_after_max(tmp_path):
         agents={AgentName.SUMMARY_PAGE: agent}, repository=repo, resume_service=None,
         default_model="m", rate_limit_max=2, rate_limit_window_seconds=3600,
     )
-    task = QuickInsightRequest(url="https://x", agent=AgentName.SUMMARY_PAGE)
+    task = QuickInsightRequest(url="https://x")
     svc.quick_insight(task, user_id=USER)
     svc.quick_insight(task, user_id=USER)
     with pytest.raises(RateLimitError):

@@ -3,17 +3,16 @@ from pydantic import ValidationError
 
 from app.modules.task.legacy.schema import LegacyTaskRequest, LegacyTaskResponse
 from app.modules.task.schema import (
-    AgentName,
     QuickInsightRequest,
     ScoreInsightCard,
     TaskRequest,
 )
 
 
-def test_quick_insight_request_defaults_to_browser_agent() -> None:
+def test_quick_insight_request_has_no_public_agent_field() -> None:
     request = QuickInsightRequest(url="https://example.com")
 
-    assert request.agent is AgentName.BROWSER_AGENT
+    assert "agent" not in request.model_dump()
     assert request.lang == "auto"
 
 
@@ -28,11 +27,9 @@ def test_task_request_accepts_camel_case_fields() -> None:
     assert request.prior_result == "Previous analysis"
 
 
-def test_browser_agent_enum_serializes_as_string() -> None:
-    request = QuickInsightRequest(url="https://example.com", agent="browser_agent")
-
-    assert request.agent is AgentName.BROWSER_AGENT
-    assert request.model_dump(mode="json")["agent"] == "browser_agent"
+def test_quick_insight_request_rejects_internal_agent_name() -> None:
+    with pytest.raises(ValidationError, match="agent"):
+        QuickInsightRequest(url="https://example.com", agent="browser_agent")
 
 
 def test_score_card_rejects_score_outside_range() -> None:

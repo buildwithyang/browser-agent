@@ -8,7 +8,7 @@ assert len(LONG_JD) >= MIN_JOB_CONTENT_CHARS
 
 
 def task(url: str, selected: str = LONG_JD) -> QuickInsightRequest:
-    return QuickInsightRequest(url=url, selectedText=selected, agent=AgentName.BROWSER_AGENT)
+    return QuickInsightRequest(url=url, selectedText=selected)
 
 
 def test_linkedin_job_with_full_selection_routes_to_job_match():

@@ -55,12 +55,11 @@ def test_quick_insight_returns_typed_insight_response() -> None:
         QuickInsightRequest(
             url="https://example.com",
             pageText="Page",
-            agent=AgentName.BROWSER_AGENT,
         ),
         user_id=None,
     )
 
-    assert response.request.agent is AgentName.SUMMARY_PAGE
+    assert response.workspace.default_action_id == "ask_more"
     assert response.insight.title == "Page Summary"
     assert response.actions[0].id == "ask_more"
     assert response.meta.input_chars == len("quick prompt")
@@ -71,7 +70,6 @@ def test_current_task_returns_document_response() -> None:
         TaskRequest(
             url="https://example.com",
             actionId="ask_more",
-            agent=AgentName.SUMMARY_PAGE,
         ),
         user_id=None,
     )
