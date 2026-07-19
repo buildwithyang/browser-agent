@@ -24,6 +24,9 @@ POST /tasks/workspace
 
 Quick Insight 始终先于聊天出现。用户在浮层选择 Action 后才进入 Side Panel；切换 Action 只决定下一条消息采用哪种任务能力，不会新建聊天或清空历史。
 
+- Quick Insight 中的 Actions 使用紧凑标签并按面板宽度自动换行。
+- Side Panel 使用浅色响应式布局；Chrome 不提供扩展设置默认宽度的 API，用户可自行拖动面板边界。
+
 ## 页面路由与 Actions
 
 扩展不判断页面属于哪个 Agent，也不在公开请求中发送 `agent`。Context Routing 和业务资源 URL 归一化都在网关完成，因此后端可更新规则而无需重新发布扩展。
@@ -50,6 +53,8 @@ agent-bridge:workspace:v1:<owner>:<resourceUrl>
 - Workspace 只保存在当前 Chrome 配置中，不做服务端 Thread 或跨设备同步。
 
 Workspace 持久化 `Quick Insight`、Actions、选中 Action、完整 `histories` 和当前 `currentDocument`。每个响应都会整体替换文档字段；`Ask More` 不生成新产物，但网关会回传并保留已有文档。尚无文档时才返回 `document: null`。整页正文、当前选区和图片文字线索不会写入长期 Workspace；每次发送前都从当前标签页重新采集。
+
+- `resume` 结果当前显示网页预览入口，原型阶段固定打开 `https://browser.buildwithyang.com`；Cover Letter 等其他文档仍在 Side Panel 内显示并可复制。
 
 ## 共享历史与消息上限
 
