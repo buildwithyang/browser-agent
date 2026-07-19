@@ -4,6 +4,7 @@ import { canSend } from "./workspace.js";
 export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
 export const WORKSPACE_UPDATED = "AGENT_BRIDGE_WORKSPACE_UPDATED";
+export const WORKSPACE_RESET = "AGENT_BRIDGE_WORKSPACE_RESET";
 
 const COPY = {
   en: {
@@ -55,6 +56,18 @@ export function resolveUiLang(lang, uiLanguage = "en") {
   if (lang === "zh" || lang === "en") return lang;
   const browserLocale = typeof uiLanguage === "string" ? uiLanguage : "en";
   return browserLocale.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+/** Resolve a Workspace lifecycle event to the tab that the panel should reload. */
+export function workspaceLifecycleTarget(message, currentTabId) {
+  if (message?.type === WORKSPACE_UPDATED && message.tabId) return message.tabId;
+  if (
+    message?.type === WORKSPACE_RESET
+    && (!message.tabId || message.tabId === currentTabId)
+  ) {
+    return currentTabId;
+  }
+  return null;
 }
 
 /** Build a DOM-independent rendering model for one complete Workspace state. */
@@ -404,8 +417,9 @@ async function initSidePanel() {
 
   /** Reload and switch the panel after a successful background seed. */
   const onWorkspaceUpdated = (message) => {
-    if (message?.type === WORKSPACE_UPDATED && message.tabId) {
-      loadWorkspaceForTab(elements, model, message.tabId).catch(() => {});
+    const targetTabId = workspaceLifecycleTarget(message, model.tabId);
+    if (targetTabId !== null) {
+      loadWorkspaceForTab(elements, model, targetTabId).catch(() => {});
     }
   };
   /** Follow the active browser tab even when it has no established Workspace. */

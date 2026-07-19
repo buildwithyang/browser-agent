@@ -13,6 +13,48 @@ export class GatewayHttpError extends Error {
   }
 }
 
+/** Error raised when a request crosses an authentication identity boundary. */
+export class AuthSnapshotChangedError extends Error {
+  /** Create a stable error type for silent stale-operation cancellation. */
+  constructor() {
+    super("Authentication changed while the Workspace operation was running");
+    this.name = "AuthSnapshotChangedError";
+  }
+}
+
+/** Create one immutable token-and-owner identity snapshot. */
+export function createAuthSnapshot(token, ownerId) {
+  return Object.freeze({
+    token: typeof token === "string" ? token : "",
+    ownerId: typeof ownerId === "string" && ownerId.trim()
+      ? ownerId.trim()
+      : "anonymous",
+  });
+}
+
+/** Return whether two authentication snapshots represent exactly one credential generation. */
+export function authSnapshotsEqual(left, right) {
+  return !!left
+    && !!right
+    && left.token === right.token
+    && left.ownerId === right.ownerId;
+}
+
+/** Apply a completed response only while its request owner is still current. */
+export async function applyForCurrentOwner({
+  snapshot,
+  readCurrentSnapshot,
+  apply,
+  onOwnerMismatch,
+}) {
+  const current = await readCurrentSnapshot();
+  if (snapshot.ownerId !== current.ownerId) {
+    if (typeof onOwnerMismatch === "function") await onOwnerMismatch();
+    throw new AuthSnapshotChangedError();
+  }
+  return apply();
+}
+
 /** Return the session-storage key that maps one tab to its active local Workspace. */
 export function activeWorkspaceKey(tabId) {
   return `${ACTIVE_WORKSPACE_PREFIX}:${tabId}`;
@@ -39,6 +81,21 @@ export async function clearAuthWorkspaceState({ localStore, sessionStore, authKe
     localStore.remove(authKeys),
     clearWorkspaceSessionNamespace(sessionStore),
   ]);
+}
+
+/** Clear auth and Workspace sessions only if a failed request still owns current credentials. */
+export async function clearAuthWorkspaceStateIfCurrent({
+  snapshot,
+  readCurrentSnapshot,
+  localStore,
+  sessionStore,
+  authKeys,
+  onCleared,
+}) {
+  if (!authSnapshotsEqual(snapshot, await readCurrentSnapshot())) return false;
+  await clearAuthWorkspaceState({ localStore, sessionStore, authKeys });
+  if (typeof onCleared === "function") await onCleared();
+  return true;
 }
 
 /** Load a tab Workspace only when its mapping belongs to the current stable owner. */

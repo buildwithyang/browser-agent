@@ -67,10 +67,36 @@ test("Side Panel resolves auto and browser language from Chrome UI locale", () =
 test("Side Panel follows Workspace updates and active tabs with cleanup", async () => {
   const source = await readFile(new URL("./sidepanel.js", import.meta.url), "utf8");
   assert.match(source, /AGENT_BRIDGE_WORKSPACE_UPDATED/);
+  assert.match(source, /AGENT_BRIDGE_WORKSPACE_RESET/);
   assert.match(source, /chrome\.tabs\.onActivated\.addListener/);
   assert.match(source, /chrome\.tabs\.onActivated\.removeListener/);
   assert.match(source, /chrome\.runtime\.onMessage\.removeListener/);
   assert.match(source, /type:\s*WORKSPACE_SEND,\s*tabId:\s*requestTabId/s);
+});
+
+test("Workspace reset reloads the current panel while updates can switch tabs", () => {
+  assert.equal(typeof sidepanel.workspaceLifecycleTarget, "function");
+  assert.equal(
+    sidepanel.workspaceLifecycleTarget(
+      { type: "AGENT_BRIDGE_WORKSPACE_RESET" },
+      7
+    ),
+    7
+  );
+  assert.equal(
+    sidepanel.workspaceLifecycleTarget(
+      { type: "AGENT_BRIDGE_WORKSPACE_UPDATED", tabId: 9 },
+      7
+    ),
+    9
+  );
+  assert.equal(
+    sidepanel.workspaceLifecycleTarget(
+      { type: "AGENT_BRIDGE_WORKSPACE_RESET", tabId: 9 },
+      7
+    ),
+    null
+  );
 });
 
 test("Side Panel keeps Actions beside the composer instead of a dropdown", async () => {

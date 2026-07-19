@@ -181,6 +181,72 @@ test("401 cleanup removes all Workspace session namespaces but keeps local recor
   assert.deepEqual(sessionStore.data, { unrelated: "keep" });
 });
 
+test("completed response is discarded when the current owner changed", async () => {
+  const applyForCurrentOwner = requiredExport("applyForCurrentOwner");
+  const createAuthSnapshot = requiredExport("createAuthSnapshot");
+  const AuthSnapshotChangedError = requiredExport("AuthSnapshotChangedError");
+  const snapshotA = createAuthSnapshot("token-a", "user-a");
+  const snapshotB = createAuthSnapshot("token-b", "user-b");
+  let persistCalls = 0;
+  let resetNotifications = 0;
+
+  await assert.rejects(
+    applyForCurrentOwner({
+      snapshot: snapshotA,
+      readCurrentSnapshot: async () => snapshotB,
+      apply: async () => {
+        persistCalls += 1;
+      },
+      onOwnerMismatch: async () => {
+        resetNotifications += 1;
+      },
+    }),
+    (error) => error instanceof AuthSnapshotChangedError
+  );
+
+  assert.equal(Object.isFrozen(snapshotA), true);
+  assert.deepEqual(snapshotA, { token: "token-a", ownerId: "user-a" });
+  assert.equal(persistCalls, 0);
+  assert.equal(resetNotifications, 1);
+});
+
+test("stale user A 401 cannot clear current user B credentials or sessions", async () => {
+  const clearAuthWorkspaceStateIfCurrent = requiredExport("clearAuthWorkspaceStateIfCurrent");
+  const createAuthSnapshot = requiredExport("createAuthSnapshot");
+  const snapshotA = createAuthSnapshot("token-a", "user-a");
+  const snapshotB = createAuthSnapshot("token-b", "user-b");
+  const localStore = fakeStorageArea({
+    [TOKEN_KEY]: "token-b",
+    [EXPIRES_KEY]: "2999-01-01T00:00:00Z",
+    [WORKSPACE_OWNER_KEY]: "user-b",
+  });
+  const mappingKey = activeWorkspaceKey(2);
+  const sessionStore = fakeStorageArea({
+    [mappingKey]: { ownerId: "user-b", storageKey: "workspace-b" },
+  });
+  let resetNotifications = 0;
+
+  const cleared = await clearAuthWorkspaceStateIfCurrent({
+    snapshot: snapshotA,
+    readCurrentSnapshot: async () => snapshotB,
+    localStore,
+    sessionStore,
+    authKeys: [TOKEN_KEY, EXPIRES_KEY, WORKSPACE_OWNER_KEY],
+    onCleared: async () => {
+      resetNotifications += 1;
+    },
+  });
+
+  assert.equal(cleared, false);
+  assert.equal(localStore.data[TOKEN_KEY], "token-b");
+  assert.equal(localStore.data[WORKSPACE_OWNER_KEY], "user-b");
+  assert.deepEqual(sessionStore.data[mappingKey], {
+    ownerId: "user-b",
+    storageKey: "workspace-b",
+  });
+  assert.equal(resetNotifications, 0);
+});
+
 test("double OPEN for one tab is ordered and older cleanup keeps the newer pending seed", async () => {
   const createKeyedQueue = requiredExport("createKeyedQueue");
   const queue = createKeyedQueue();

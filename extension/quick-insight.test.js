@@ -53,6 +53,7 @@ test("Quick Insight actions open the shared Workspace", async () => {
   assert.match(source, /type:\s*"AGENT_BRIDGE_WORKSPACE_UPDATED",\s*tabId/s);
   assert.match(source, /workspaceSeedQueue\.run\(tabId/);
   assert.match(source, /workspaceSendQueue/);
+  assert.match(source, /AGENT_BRIDGE_WORKSPACE_RESET/);
   assert.equal(source.includes(["AGENT_BRIDGE", "CONTINUE"].join("_")), false);
   assert.equal(source.includes(["current", "task"].join("-")), false);
   assert.equal(source.includes(["prior", "Result"].join("")), false);

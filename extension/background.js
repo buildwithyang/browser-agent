@@ -20,9 +20,12 @@ import {
   workspaceStorageKey,
 } from "./workspace.js";
 import {
+  AuthSnapshotChangedError,
   activeWorkspaceKey,
-  clearAuthWorkspaceState,
+  applyForCurrentOwner,
+  clearAuthWorkspaceStateIfCurrent,
   clearWorkspaceSessionNamespace,
+  createAuthSnapshot,
   createKeyedQueue,
   enqueueLatestByKey,
   initialSelectionKey,
@@ -76,10 +79,18 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-function getGatewayConfig() {
-  return chrome.storage.local
-    .get({ [TOKEN_KEY]: "" })
-    .then((cfg) => ({ base: DEFAULT_GATEWAY, token: cfg[TOKEN_KEY] }));
+/** Read token and owner in one storage operation to prevent mixed identity generations. */
+async function readAuthSnapshot() {
+  const values = await chrome.storage.local.get({
+    [TOKEN_KEY]: "",
+    [WORKSPACE_OWNER_KEY]: ANONYMOUS_WORKSPACE_OWNER,
+  });
+  return createAuthSnapshot(values[TOKEN_KEY], values[WORKSPACE_OWNER_KEY]);
+}
+
+/** Return immutable gateway configuration for one outbound request generation. */
+async function getGatewayConfig() {
+  return { base: DEFAULT_GATEWAY, authSnapshot: await readAuthSnapshot() };
 }
 
 async function menuLang() {
@@ -172,12 +183,22 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   );
 });
 
-/** Clear authentication identity and every identity-bound session namespace after a 401. */
-async function clearAuthNamespace() {
-  await clearAuthWorkspaceState({
+/** Broadcast a Workspace reset globally or to one exact tab. */
+function notifyWorkspaceReset(tabId) {
+  chrome.runtime.sendMessage({ type: "AGENT_BRIDGE_WORKSPACE_RESET", tabId }, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
+/** Clear auth only when a 401 still belongs to the current credential generation. */
+async function clearAuthNamespace(authSnapshot) {
+  return clearAuthWorkspaceStateIfCurrent({
+    snapshot: authSnapshot,
+    readCurrentSnapshot: readAuthSnapshot,
     localStore: chrome.storage.local,
     sessionStore: chrome.storage.session,
     authKeys: [TOKEN_KEY, EXPIRES_KEY, WORKSPACE_OWNER_KEY],
+    onCleared: () => notifyWorkspaceReset(),
   });
 }
 
@@ -194,18 +215,19 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
     clearInterval(keepAlive);
   };
 
+  let requestAuthSnapshot = null;
   return getGatewayConfig()
-    .then(({ base, token }) =>
-      fetch(taskUrl(base, "quick-insight"), {
+    .then(({ base, authSnapshot }) => {
+      requestAuthSnapshot = authSnapshot;
+      return fetch(taskUrl(base, "quick-insight"), {
         method: "POST",
-        headers: buildAuthHeaders(token),
+        headers: buildAuthHeaders(authSnapshot.token),
         body: JSON.stringify(buildQuickInsightBody(payload, lang)),
         signal: controller.signal,
       }).then(async (response) => ({
-        base,
         task: await readGatewayResponse(response),
-      }))
-    )
+      }));
+    })
     .then(({ task }) => {
       done();
       showResult(tabId, {
@@ -228,7 +250,8 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
       done();
       console.error("[Agent Bridge] gateway request failed:", error);
       if (shouldClearToken(error.status)) {
-        await clearAuthNamespace();
+        const cleared = await clearAuthNamespace(requestAuthSnapshot);
+        if (!cleared) return false;
         const loginUrl = webBaseUrl(DEFAULT_GATEWAY);
         const strings = loginStrings(errLang(lang));
         // Keep the established Overlay sign-in countdown; Workspace 401 uses a retryable inline error.
@@ -266,14 +289,8 @@ async function seedWorkspace(tabId, message) {
   const descriptor = message.workspace || {};
   const resourceUrl = descriptor.resource_url || descriptor.resourceUrl || message.source || "";
   if (!resourceUrl) throw new Error("Workspace resource is unavailable");
-  const ownerData = await chrome.storage.local.get({
-    [WORKSPACE_OWNER_KEY]: ANONYMOUS_WORKSPACE_OWNER,
-  });
-  const ownerId = typeof ownerData[WORKSPACE_OWNER_KEY] === "string"
-    && ownerData[WORKSPACE_OWNER_KEY].trim()
-    ? ownerData[WORKSPACE_OWNER_KEY].trim()
-    : ANONYMOUS_WORKSPACE_OWNER;
-  const storageKey = workspaceStorageKey(ownerId, resourceUrl);
+  const authSnapshot = await readAuthSnapshot();
+  const storageKey = workspaceStorageKey(authSnapshot.ownerId, resourceUrl);
   const stored = await chrome.storage.local.get(storageKey);
   const state = mergeWorkspaceSeed(stored[storageKey], {
     resourceUrl,
@@ -287,7 +304,7 @@ async function seedWorkspace(tabId, message) {
     chrome.storage.local.set({ [storageKey]: state }),
     chrome.storage.session.set({
       [activeWorkspaceKey(tabId)]: {
-        ownerId,
+        ownerId: authSnapshot.ownerId,
         storageKey,
         resourceUrl,
         lang: message.lang || "en",
@@ -298,16 +315,10 @@ async function seedWorkspace(tabId, message) {
 }
 
 /** Load the active tab mapping and its owner-scoped Workspace from split storage areas. */
-async function loadActiveWorkspace(tabId) {
-  const ownerData = await chrome.storage.local.get({
-    [WORKSPACE_OWNER_KEY]: ANONYMOUS_WORKSPACE_OWNER,
-  });
-  const ownerId = typeof ownerData[WORKSPACE_OWNER_KEY] === "string"
-    && ownerData[WORKSPACE_OWNER_KEY].trim()
-    ? ownerData[WORKSPACE_OWNER_KEY].trim()
-    : ANONYMOUS_WORKSPACE_OWNER;
+async function loadActiveWorkspace(tabId, ownerId = null) {
+  const currentOwnerId = ownerId || (await readAuthSnapshot()).ownerId;
   return loadOwnerScopedWorkspace(tabId, {
-    ownerId,
+    ownerId: currentOwnerId,
     sessionStore: chrome.storage.session,
     workspaceStore: chrome.storage.local,
   });
@@ -326,31 +337,29 @@ async function collectPageContext(tabId) {
   return restoreInitialSelection(fresh, selectionData[selectionKey]);
 }
 
-/** Execute one stateless Workspace transition and persist only canonical response state. */
-async function sendWorkspaceTurn(tabId, message) {
+/** Execute one stateless Workspace transition under one immutable auth snapshot. */
+async function sendWorkspaceTurn(tabId, message, authSnapshot) {
   const userMessage = typeof message.message === "string" ? message.message.trim() : "";
-  const active = await loadActiveWorkspace(tabId);
+  const active = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
   if (!active) throw new Error("Open a Quick Insight Action before sending");
   if (!userMessage) throw new Error("Message cannot be empty");
   return enqueueLatestByKey(
     workspaceSendQueue,
     active.mapping.storageKey,
-    () => loadActiveWorkspace(tabId),
+    () => loadActiveWorkspace(tabId, authSnapshot.ownerId),
     async (latest) => {
       if (!latest || latest.mapping.storageKey !== active.mapping.storageKey) {
         throw new Error("The active Workspace changed before this message was sent");
       }
       if (!canSend(latest.state)) throw new Error("Workspace message limit reached");
-
       const pageContext = await collectPageContext(tabId);
-      const { base, token } = await getGatewayConfig();
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000);
       const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
       try {
-        const response = await fetch(taskUrl(base, "workspace"), {
+        const response = await fetch(taskUrl(DEFAULT_GATEWAY, "workspace"), {
           method: "POST",
-          headers: buildAuthHeaders(token),
+          headers: buildAuthHeaders(authSnapshot.token),
           body: JSON.stringify(buildWorkspaceBody(pageContext, {
             resourceUrl: latest.mapping.resourceUrl,
             actionId: message.actionId,
@@ -362,9 +371,16 @@ async function sendWorkspaceTurn(tabId, message) {
           signal: controller.signal,
         });
         const workspaceResponse = await readGatewayResponse(response);
-        const state = applyWorkspaceResponse(latest.state, workspaceResponse);
-        await chrome.storage.local.set({ [latest.mapping.storageKey]: state });
-        return { state, lang: latest.lang };
+        return applyForCurrentOwner({
+          snapshot: authSnapshot,
+          readCurrentSnapshot: readAuthSnapshot,
+          onOwnerMismatch: () => notifyWorkspaceReset(tabId),
+          apply: async () => {
+            const state = applyWorkspaceResponse(latest.state, workspaceResponse);
+            await chrome.storage.local.set({ [latest.mapping.storageKey]: state });
+            return { state, lang: latest.lang };
+          },
+        });
       } finally {
         clearTimeout(timeout);
         clearInterval(keepAlive);
@@ -431,24 +447,49 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-/** Route Side Panel SEND through fresh context collection, fetch, auth, and persistence. */
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== WORKSPACE_SEND || !message.tabId) return undefined;
-  sendWorkspaceTurn(message.tabId, message)
-    .then(({ state, lang }) => sendResponse({ ok: true, state, lang }))
-    .catch(async (error) => {
-      if (shouldClearToken(error.status)) {
-        await clearAuthNamespace();
-        const strings = loginStrings(errLang(await resolveLang()));
+/** Execute one Side Panel SEND and apply snapshot-conditional authentication recovery. */
+async function dispatchWorkspaceSend(tabId, message, sendResponse) {
+  const authSnapshot = await readAuthSnapshot();
+  try {
+    const { state, lang } = await sendWorkspaceTurn(tabId, message, authSnapshot);
+    sendResponse({ ok: true, state, lang });
+  } catch (error) {
+    if (error instanceof AuthSnapshotChangedError) {
+      sendResponse({
+        ok: false,
+        error: error.message,
+        recoverable: true,
+      });
+      return;
+    }
+    if (shouldClearToken(error.status)) {
+      const cleared = await clearAuthNamespace(authSnapshot);
+      if (!cleared) {
         sendResponse({
           ok: false,
-          error: `${strings.hint} ${webBaseUrl(DEFAULT_GATEWAY)}`,
+          error: "Authentication changed; the stale response was discarded.",
           recoverable: true,
         });
         return;
       }
-      sendResponse({ ok: false, error: error.message, recoverable: true });
-    });
+      const strings = loginStrings(errLang(await resolveLang()));
+      sendResponse({
+        ok: false,
+        error: `${strings.hint} ${webBaseUrl(DEFAULT_GATEWAY)}`,
+        recoverable: true,
+      });
+      return;
+    }
+    sendResponse({ ok: false, error: error.message, recoverable: true });
+  }
+}
+
+/** Route Side Panel SEND through fresh context collection, fetch, auth, and persistence. */
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== WORKSPACE_SEND || !message.tabId) return undefined;
+  dispatchWorkspaceSend(message.tabId, message, sendResponse).catch((error) => {
+    sendResponse({ ok: false, error: error.message, recoverable: true });
+  });
   return true;
 });
 
@@ -1008,7 +1049,10 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
   handleExternalMessage(msg, {
     store,
     now: Date.now(),
-    onOwnerChange: () => clearWorkspaceSessionNamespace(chrome.storage.session),
+    onOwnerChange: async () => {
+      await clearWorkspaceSessionNamespace(chrome.storage.session);
+      notifyWorkspaceReset();
+    },
   }).then((res) => {
     if (res) sendResponse(res);
   });
