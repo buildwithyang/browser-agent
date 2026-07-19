@@ -98,6 +98,13 @@ CREATE TABLE IF NOT EXISTS public.task_records (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- 创建时间
 );
 
+-- 既有部署可安全重复执行此升级块，补齐任务明细列。
+ALTER TABLE public.task_records ADD COLUMN IF NOT EXISTS url TEXT;
+ALTER TABLE public.task_records ADD COLUMN IF NOT EXISTS title TEXT;
+ALTER TABLE public.task_records ADD COLUMN IF NOT EXISTS prompt TEXT;
+ALTER TABLE public.task_records ADD COLUMN IF NOT EXISTS page_text TEXT;
+ALTER TABLE public.task_records ADD COLUMN IF NOT EXISTS result TEXT;
+
 -- 按用户查用量（计费 / 限流基础）
 CREATE INDEX IF NOT EXISTS idx_task_records_user_created_at
     ON public.task_records (user_id, created_at);

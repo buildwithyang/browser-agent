@@ -39,7 +39,7 @@ class TaskRepository:
                         result_chars=record.result_chars,
                         duration_ms=record.duration_ms,
                         error=record.error or None,
-                        # debug 明细：未开启 debug 时这些为 None -> 落库 NULL。
+                        # 任务明细始终随记录持久化；缺少上下文时字段可为 None。
                         url=record.url,
                         title=record.title,
                         prompt=record.prompt,
