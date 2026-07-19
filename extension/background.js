@@ -857,11 +857,36 @@ function renderPanel(payload) {
     .sec-body > :first-child { margin-top: .2em; }
     .sec-body > :last-child { margin-bottom: 0; }
 
-    .ab-actions { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
-    .ab-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 12px; background: var(--signal-soft); color: var(--signal); border: 1px solid var(--signal); border-radius: 8px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+    .ab-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .ab-action {
+      display: inline-flex;
+      width: auto;
+      min-height: 32px;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 12px;
+      border: 1px solid var(--signal);
+      border-radius: 999px;
+      color: var(--signal);
+      background: var(--signal-soft);
+      cursor: pointer;
+      font-size: 12.5px;
+      font-weight: 600;
+      line-height: 1.25;
+    }
     .ab-action:hover { filter: brightness(1.12); }
     .ab-action:disabled { opacity: .6; cursor: default; }
-    .ab-action-err { margin-top: 8px; color: var(--alert); font-size: 12.5px; }
+    .ab-action-err:empty { display: none; }
+    .ab-action-err:not(:empty) {
+      flex: 0 0 100%;
+      color: var(--alert);
+      font-size: 12.5px;
+    }
 
     /* error: name what broke and hand over the fix. */
     .error-head { display: flex; align-items: center; gap: 7px; color: var(--alert); font-weight: 600; font-size: 13.5px; margin-bottom: 9px; }

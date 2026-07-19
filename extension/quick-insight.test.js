@@ -63,3 +63,17 @@ test("content script supports fresh Workspace context collection", async () => {
   const source = await readFile(new URL("./content.js", import.meta.url), "utf8");
   assert.match(source, /AGENT_BRIDGE_COLLECT_CONTEXT/);
 });
+
+test("Quick Insight actions use wrapping content-width tags", async () => {
+  const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /\.ab-actions\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/s
+  );
+  assert.doesNotMatch(
+    source,
+    /\.ab-actions\s*\{[^}]*flex-direction:\s*column;/s
+  );
+  assert.match(source, /\.ab-action\s*\{[^}]*border-radius:\s*999px;/s);
+  assert.match(source, /\.ab-action-err:empty\s*\{[^}]*display:\s*none;/s);
+});
