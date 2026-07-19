@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.agents.base import AgentContext, AgentExecution, TaskAgent
 from app.modules.task.schema import (
+    Action,
     AgentName,
     DocumentContent,
     Insight,
@@ -14,6 +15,11 @@ class WorkspaceAgent(TaskAgent):
     """Fake stateless agent used to exercise the workspace transition."""
 
     name = AgentName.SUMMARY_PAGE
+
+    def actions(self, ctx: AgentContext) -> list[Action]:
+        """Declare no Quick Insight actions in Workspace-only API tests."""
+
+        return []
 
     def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
         """Quick Insight is outside the workspace endpoint test."""
@@ -103,7 +109,7 @@ def test_workspace_endpoint_returns_complete_history_transition(monkeypatch) -> 
     assert body["histories"][-1]["action_id"] == "ask_more"
     assert body["histories"][-2]["id"]
     assert body["histories"][-1]["created_at"]
-    assert body["document"]["text"] == "assistant answer"
+    assert body["document"] is None
     assert body["meta"]["model"] == "fake"
 
 

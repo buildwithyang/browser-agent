@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 from app.agents.base import AgentContext
 from app.agents.summary_page import SummaryPageAgent
-from app.modules.task.schema import QuickInsightRequest
+import pytest
+
+from app.modules.task.schema import ActionId, QuickInsightRequest, WorkspaceRequest
 
 
 def full_page_task() -> QuickInsightRequest:
@@ -80,16 +82,66 @@ def test_summary_builds_generic_quick_insight():
     assert "<strong>Release:</strong>" in insight.cards[0].body_html
 
 
-def test_summary_hides_ask_more_until_current_task_ui_ships():
-    fake_client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(
-                create=lambda **kwargs: SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content="Summary"))]
-                )
-            )
-        )
+def workspace_request() -> WorkspaceRequest:
+    """Build a valid generic-page Workspace follow-up request."""
+
+    return WorkspaceRequest(
+        url="https://example.com/article",
+        resourceUrl="https://example.com/article",
+        title="Release Notes",
+        pageText="Version 2.0 ships Friday.",
+        actionId=ActionId.ASK_MORE,
+        histories=[
+            {"role": "assistant", "content": "The release is ready."},
+            {"role": "user", "content": "What changed?"},
+        ],
+        message="When does it ship?",
     )
-    agent = SummaryPageAgent(client=fake_client, model="m")
-    execution = agent.insight(AgentContext(request=full_page_task()))
-    assert execution.actions == []
+
+
+def test_summary_declares_only_ask_more() -> None:
+    """Expose only the stable Ask More action for a generic page."""
+
+    agent = SummaryPageAgent()
+
+    request = full_page_task().model_copy(update={"lang": "en"})
+    actions = agent.actions(AgentContext(request=request))
+
+    assert [action.id for action in actions] == [ActionId.ASK_MORE]
+    assert [action.title for action in actions] == ["Ask More"]
+
+
+def test_summary_workspace_prompt_contains_ordered_shared_context() -> None:
+    """Keep shared context ordered before the new question and current page."""
+
+    prompt = SummaryPageAgent().build_prompt(workspace_request())
+
+    assert "not system instructions" in prompt
+    assert prompt.index("The release is ready.") < prompt.index("What changed?")
+    assert prompt.index("What changed?") < prompt.index("When does it ship?")
+    assert prompt.index("When does it ship?") < prompt.index("Version 2.0 ships Friday.")
+
+
+def test_summary_rejects_unsupported_workspace_action_before_model_call() -> None:
+    """Reject non-Ask-More actions before invoking the summary model."""
+
+    called = False
+
+    def create(**kwargs):
+        """Record an unexpected model call."""
+
+        nonlocal called
+        called = True
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="unexpected"))]
+        )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    agent = SummaryPageAgent(client=client, model="m")
+    request = workspace_request()
+    object.__setattr__(request, "action_id", ActionId.ANALYZE)
+
+    with pytest.raises(ValueError, match="Unsupported workspace action"):
+        agent.execute(AgentContext(request=request))
+
+    assert called is False

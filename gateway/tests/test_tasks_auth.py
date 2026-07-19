@@ -11,7 +11,7 @@ from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.auth.repo import ExtensionTokenRepository
 from app.modules.auth.token_service import ExtensionTokenService
-from app.modules.task.schema import AgentName, DocumentContent, Insight
+from app.modules.task.schema import Action, AgentName, DocumentContent, Insight
 from app.modules.task.service import TaskService
 
 USER = uuid.uuid4().hex
@@ -38,6 +38,11 @@ def _wire(monkeypatch, *, settings, token_service):
     )
     class FakeAgent(TaskAgent):
         name = AgentName.SUMMARY_PAGE
+
+        def actions(self, ctx: AgentContext) -> list[Action]:
+            """Declare no actions for authentication boundary tests."""
+
+            return []
 
         def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
             return AgentExecution(

@@ -5,8 +5,16 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from app.agents.base import AgentContext, AgentExecution, OpenAIChatAgent, language_directive
+from app.agents.base import (
+    AgentContext,
+    AgentExecution,
+    OpenAIChatAgent,
+    format_workspace_context,
+    language_directive,
+)
 from app.modules.task.schema import (
+    Action,
+    ActionId,
     AgentName,
     DetailsInsightCard,
     DocumentContent,
@@ -18,6 +26,7 @@ from app.modules.task.schema import (
     Section,
     TaskRequest,
     TextInsightCard,
+    WorkspaceRequest,
 )
 from app.render import render_markdown
 
@@ -53,8 +62,87 @@ QUICK_INSIGHT_SYSTEM_PROMPT = (
     + QUICK_INSIGHT_INSTRUCTION
 )
 
+WORKSPACE_SYSTEM_PROMPT = (
+    "You are Agent Bridge's senior recruiting and job-application assistant. "
+    "Follow the selected Workspace action and answer only from the supplied job, resume, "
+    "draft, and conversation context. Never invent experience or qualifications. "
+    "Return clean Markdown without @@SECTION transport markers."
+)
+
+WORKSPACE_ACTION_INSTRUCTIONS = {
+    ActionId.ANALYZE: (
+        "Produce a complete job analysis grounded in the job description and resume. "
+        "Cover the business and role, hard requirements, strengths, gaps, realistic fit, "
+        "application risks, and concrete next steps."
+    ),
+    ActionId.TAILOR_RESUME: (
+        "Produce the complete ATS-friendly resume tailored to this job, not suggestions or "
+        "a partial patch. Preserve factual accuracy, prioritize relevant keywords and "
+        "quantified achievements, and revise the supplied current draft when present."
+    ),
+    ActionId.WRITE_COVER_LETTER: (
+        "Produce the complete ready-to-send cover letter tailored to this job. Keep every "
+        "claim grounded in the resume and revise the supplied current draft when present."
+    ),
+    ActionId.ASK_MORE: (
+        "Answer the user's open question directly, using the resume, job description, shared "
+        "conversation, and current page as context."
+    ),
+}
+
+WORKSPACE_DOCUMENT_KINDS = {
+    ActionId.ANALYZE: "analysis",
+    ActionId.TAILOR_RESUME: "resume",
+    ActionId.WRITE_COVER_LETTER: "cover_letter",
+    ActionId.ASK_MORE: "",
+}
+
+WORKSPACE_ACTION_TITLES = {
+    "en": {
+        ActionId.ANALYZE: "Analyze",
+        ActionId.TAILOR_RESUME: "Tailor Resume",
+        ActionId.WRITE_COVER_LETTER: "Generate Cover Letter",
+        ActionId.ASK_MORE: "Ask More",
+    },
+    "zh": {
+        ActionId.ANALYZE: "分析岗位",
+        ActionId.TAILOR_RESUME: "定制简历",
+        ActionId.WRITE_COVER_LETTER: "撰写求职信",
+        ActionId.ASK_MORE: "继续提问",
+    },
+}
+
+WORKSPACE_DOCUMENT_TITLES = {
+    "en": {
+        ActionId.ANALYZE: "Job Analysis",
+        ActionId.TAILOR_RESUME: "Tailored Resume",
+        ActionId.WRITE_COVER_LETTER: "Cover Letter",
+        ActionId.ASK_MORE: "",
+    },
+    "zh": {
+        ActionId.ANALYZE: "岗位分析",
+        ActionId.TAILOR_RESUME: "定制简历",
+        ActionId.WRITE_COVER_LETTER: "求职信",
+        ActionId.ASK_MORE: "",
+    },
+}
+
+DOCUMENT_EDIT_ACTIONS = {
+    ActionId.TAILOR_RESUME,
+    ActionId.WRITE_COVER_LETTER,
+}
+
+JOB_WORKSPACE_ACTION_IDS = (
+    ActionId.ANALYZE,
+    ActionId.TAILOR_RESUME,
+    ActionId.WRITE_COVER_LETTER,
+    ActionId.ASK_MORE,
+)
+
 
 def _insight_title(lang: str) -> str:
+    """Return the localized Quick Insight title."""
+
     return "Job Match" if lang == "en" else "岗位匹配"
 
 # 各区块的展示标题(按语言切换)、是否提供"复制"按钮、是否允许折叠。
@@ -135,6 +223,8 @@ _SECTION_RE = re.compile(r"^@@SECTION\s+(\w+)\s*$", re.MULTILINE)
 
 
 class JobMatchAgent(OpenAIChatAgent):
+    """Stateless job Agent for match insights and Workspace application tasks."""
+
     name = AgentName.JOB_MATCH
     requires_resume = True
     system_prompt = SYSTEM_PROMPT
@@ -188,7 +278,78 @@ class JobMatchAgent(OpenAIChatAgent):
             )
 
     def validate(self, ctx: AgentContext) -> None:
+        """Validate job evidence and any Workspace Action before model execution."""
+
         self._validate_request(ctx.request)
+        if isinstance(ctx.request, WorkspaceRequest):
+            self._workspace_action(ctx.request)
+
+    def actions(self, ctx: AgentContext) -> list[Action]:
+        """Declare the ordered job Workspace modes for this request language."""
+
+        title_lang = "en" if ctx.request.lang == "en" else "zh"
+        titles = WORKSPACE_ACTION_TITLES[title_lang]
+        return [
+            Action(id=action_id, title=titles[action_id])
+            for action_id in JOB_WORKSPACE_ACTION_IDS
+        ]
+
+    def _workspace_action(self, task: WorkspaceRequest) -> ActionId:
+        """Return a supported typed Action or reject mutated/invalid input early."""
+
+        try:
+            action_id = ActionId(task.action_id)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported workspace action: {task.action_id}") from exc
+        if action_id not in WORKSPACE_ACTION_INSTRUCTIONS:
+            raise ValueError(f"Unsupported workspace action: {task.action_id}")
+        return action_id
+
+    def _workspace_page_context(self, task: WorkspaceRequest) -> str:
+        """Render the current job page without treating it as trusted instructions."""
+
+        return "\n".join(
+            [
+                f"Title: {task.title}",
+                f"URL: {task.url}",
+                "Job description (selected text):",
+                task.selected_text.strip(),
+                "Image clues (alt/caption/aria-label):",
+                task.image_text.strip() or "(none)",
+            ]
+        )
+
+    def _build_workspace_prompt(self, task: WorkspaceRequest, cv: str) -> str:
+        """Build one action-specific prompt from request-scoped Workspace state."""
+
+        action_id = self._workspace_action(task)
+        lines = [
+            "# Workspace action",
+            WORKSPACE_ACTION_INSTRUCTIONS[action_id],
+            "",
+            "# Resume",
+            cv,
+        ]
+        if action_id in DOCUMENT_EDIT_ACTIONS and task.current_document is not None:
+            lines.extend(
+                [
+                    "",
+                    "# Current document draft",
+                    f"Kind: {task.current_document.kind}",
+                    f"Title: {task.current_document.title}",
+                    task.current_document.text,
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                format_workspace_context(
+                    task,
+                    page_context=self._workspace_page_context(task),
+                ),
+            ]
+        )
+        return "\n".join(lines)
 
     def _requested_sections(self, task: TaskRequest) -> list[str]:
         sections = ACTION_SECTIONS.get(task.action_id)
@@ -204,6 +365,8 @@ class JobMatchAgent(OpenAIChatAgent):
         return lines
 
     def build_prompt(self, task: PageContext, cv_text: str | None = None) -> str:
+        """Build Quick Insight, Workspace, or unchanged legacy task prompts."""
+
         # 兜底:任何路径构造 prompt 前都先校验,确保模型不会在稀疏内容上瞎编。
         self._validate_request(task)
         cv = self._resolve_cv_text(cv_text)[:MAX_CV_CHARS]
@@ -224,6 +387,8 @@ class JobMatchAgent(OpenAIChatAgent):
                     task.image_text.strip() or "(无)",
                 ]
             )
+        if isinstance(task, WorkspaceRequest):
+            return self._build_workspace_prompt(task, cv)
         if not isinstance(task, TaskRequest):
             raise TypeError("Current task execution requires TaskRequest")
         section_lines = self._section_request_lines(self._requested_sections(task))
@@ -264,7 +429,14 @@ class JobMatchAgent(OpenAIChatAgent):
     def _complete_request(
         self, task: PageContext, cv_text: str | None = None
     ) -> tuple[str, str, str]:
-        system_prompt = QUICK_INSIGHT_SYSTEM_PROMPT if isinstance(task, QuickInsightRequest) else self.system_prompt
+        """Execute the correct prompt protocol for a typed job request."""
+
+        if isinstance(task, QuickInsightRequest):
+            system_prompt = QUICK_INSIGHT_SYSTEM_PROMPT
+        elif isinstance(task, WorkspaceRequest):
+            system_prompt = WORKSPACE_SYSTEM_PROMPT
+        else:
+            system_prompt = self.system_prompt
         system = system_prompt + "\n\n" + language_directive(task.lang)
         prompt = self.build_prompt(task, cv_text=cv_text)
         output, model = self.complete_prompt(system=system, prompt=prompt)
@@ -352,19 +524,38 @@ class JobMatchAgent(OpenAIChatAgent):
             raise ValueError("Quick Insight response is invalid") from exc
 
     def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        """Generate a typed match insight; Actions are declared separately."""
+
         result, prompt, model = self._complete_request(ctx.request, ctx.resume_text)
         return AgentExecution(
             content=self.build_insight(result, ctx.request.lang),
             raw_result=result,
             prompt=prompt,
             model=model,
-            # Current Task UI is not shipped yet; do not expose dead actions.
-            actions=[],
         )
 
     def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
-        if not isinstance(ctx.request, TaskRequest):
-            raise TypeError("Current task execution requires TaskRequest")
+        """Execute an action-specific Workspace task or the legacy section flow."""
+
+        if not isinstance(ctx.request, TaskRequest | WorkspaceRequest):
+            raise TypeError("Task execution requires TaskRequest or WorkspaceRequest")
+        if isinstance(ctx.request, WorkspaceRequest):
+            action_id = self._workspace_action(ctx.request)
+            result, prompt, model = self._complete_request(ctx.request, ctx.resume_text)
+            html = render_markdown(result)
+            title_lang = "en" if ctx.request.lang == "en" else "zh"
+            return AgentExecution(
+                content=DocumentContent(
+                    kind=WORKSPACE_DOCUMENT_KINDS[action_id],
+                    title=WORKSPACE_DOCUMENT_TITLES[title_lang][action_id],
+                    text=result,
+                    html=html,
+                    sections=[Section(id="result", title="", html=html)],
+                ),
+                raw_result=result,
+                prompt=prompt,
+                model=model,
+            )
         result, prompt, model = self._complete_request(ctx.request, ctx.resume_text)
         sections = self.build_sections(result, ctx.request.lang)
         html = "".join(

@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.agents.base import AgentContext, AgentExecution, TaskAgent
 from app.modules.task.schema import (
+    Action,
     AgentName,
     DocumentContent,
     Insight,
@@ -12,6 +13,11 @@ from app.modules.task.schema import (
 
 class LegacyAgent(TaskAgent):
     name = AgentName.SUMMARY_PAGE
+
+    def actions(self, ctx: AgentContext) -> list[Action]:
+        """Declare no actions for the deprecated transport adapter test."""
+
+        return []
 
     def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
         return AgentExecution(

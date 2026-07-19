@@ -3,7 +3,7 @@ import pytest
 from app.agents.base import AgentContext, AgentExecution, OpenAIChatAgent
 from app.agents.model_router import ModelRouter, ModelTier
 from app.modules.task.router import normalize_resource_url
-from app.modules.task.schema import DocumentContent, Insight, QuickInsightRequest
+from app.modules.task.schema import Action, DocumentContent, Insight, QuickInsightRequest
 
 
 def test_linkedin_search_and_view_urls_share_resource() -> None:
@@ -117,6 +117,11 @@ def test_from_json_allows_empty_url_and_key():
 
 class DummyAgent(OpenAIChatAgent):
     name = "dummy"
+
+    def actions(self, ctx: AgentContext) -> list[Action]:
+        """Declare no UI actions for model-router unit tests."""
+
+        return []
 
     def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
         raise NotImplementedError

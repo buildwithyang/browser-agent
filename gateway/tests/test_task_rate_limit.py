@@ -14,6 +14,7 @@ from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.task.repo import TaskRepository
 from app.modules.task.schema import (
+    Action,
     AgentName,
     DocumentContent,
     Insight,
@@ -58,6 +59,11 @@ def test_service_blocks_after_max(tmp_path):
 
     class Agent(TaskAgent):
         name = AgentName.SUMMARY_PAGE
+
+        def actions(self, ctx: AgentContext) -> list[Action]:
+            """Declare no actions for the rate-limit fake."""
+
+            return []
 
         def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
             return AgentExecution(

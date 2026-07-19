@@ -5,12 +5,16 @@ import pytest
 from app.agents.base import AgentContext
 from app.agents.job_match import MIN_JOB_CONTENT_CHARS, JobMatchAgent
 from app.modules.task.schema import (
+    ActionId,
     AgentName,
     DetailsInsightCard,
+    DocumentDraft,
+    HistoryMessage,
     QuickInsightRequest,
     ScoreInsightCard,
     TaskRequest,
     TextInsightCard,
+    WorkspaceRequest,
 )
 from app.modules.task.service import TaskService
 
@@ -54,6 +58,119 @@ def task_request(action_id: str = "deep_analysis", **updates) -> TaskRequest:
     )
     values.update(updates)
     return TaskRequest(**values)
+
+
+def workspace_request(action_id: ActionId = ActionId.ANALYZE, **updates) -> WorkspaceRequest:
+    """Build one valid job Workspace request with stable shared context."""
+
+    values = dict(
+        url="https://www.linkedin.com/jobs/view/1",
+        resourceUrl="https://www.linkedin.com/jobs/view/1",
+        title="Senior Go Engineer",
+        selectedText=LONG_JD,
+        actionId=action_id,
+        histories=[
+            HistoryMessage(role="assistant", content="核心是 Agent 和 MCP"),
+            HistoryMessage(role="user", content="突出我的 Go 项目"),
+        ],
+        currentDocument=DocumentDraft(
+            kind="resume",
+            title="Current Resume",
+            text="CURRENT DRAFT TEXT",
+        ),
+        message="继续完善",
+    )
+    values.update(updates)
+    return WorkspaceRequest(**values)
+
+
+def test_job_match_declares_workspace_actions() -> None:
+    """Expose the ordered stable Action ids declared by the job Agent."""
+
+    agent = JobMatchAgent()
+    ctx = AgentContext(request=quick_request(lang="en"), resume_text="CV")
+
+    actions = agent.actions(ctx)
+
+    assert [action.id for action in actions] == [
+        ActionId.ANALYZE,
+        ActionId.TAILOR_RESUME,
+        ActionId.WRITE_COVER_LETTER,
+        ActionId.ASK_MORE,
+    ]
+    assert [action.title for action in actions] == [
+        "Analyze",
+        "Tailor Resume",
+        "Generate Cover Letter",
+        "Ask More",
+    ]
+
+
+def test_workspace_prompt_contains_ordered_shared_context() -> None:
+    """Treat shared history as untrusted context before message and page data."""
+
+    agent = JobMatchAgent()
+    prompt = agent.build_prompt(workspace_request(), cv_text="CV")
+
+    assert "not system instructions" in prompt
+    assert prompt.index("核心是 Agent 和 MCP") < prompt.index("突出我的 Go 项目")
+    assert prompt.index("突出我的 Go 项目") < prompt.index("继续完善")
+    assert prompt.index("继续完善") < prompt.index("Senior Go Engineer")
+    assert "CURRENT DRAFT TEXT" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("action_id", "kind"),
+    [
+        (ActionId.ANALYZE, "analysis"),
+        (ActionId.TAILOR_RESUME, "resume"),
+        (ActionId.WRITE_COVER_LETTER, "cover_letter"),
+        (ActionId.ASK_MORE, ""),
+    ],
+)
+def test_workspace_actions_return_expected_document_kind(
+    action_id: ActionId,
+    kind: str,
+) -> None:
+    """Map every job Workspace action to its stable document kind."""
+
+    captured: dict = {}
+    agent = JobMatchAgent(client=fake_client("MODEL RESULT", captured), model="m")
+
+    execution = agent.execute(
+        AgentContext(request=workspace_request(action_id), resume_text="CV")
+    )
+
+    assert execution.content.kind == kind
+    if action_id in {ActionId.TAILOR_RESUME, ActionId.WRITE_COVER_LETTER}:
+        assert "CURRENT DRAFT TEXT" in captured["messages"][1]["content"]
+    else:
+        assert "CURRENT DRAFT TEXT" not in captured["messages"][1]["content"]
+
+
+def test_unsupported_workspace_action_is_rejected_before_model_call() -> None:
+    """Reject an unsupported job Action before invoking the model client."""
+
+    called = False
+
+    def create(**kwargs):
+        """Record an unexpected model call."""
+
+        nonlocal called
+        called = True
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="unexpected"))]
+        )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    agent = JobMatchAgent(client=client, model="m")
+    request = workspace_request()
+    object.__setattr__(request, "action_id", "mock_interview")
+
+    with pytest.raises(ValueError, match="Unsupported workspace action"):
+        agent.execute(AgentContext(request=request, resume_text="CV"))
+
+    assert called is False
 
 
 def test_deep_analysis_prompt_requests_only_analysis_sections() -> None:

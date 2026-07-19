@@ -74,7 +74,7 @@ class TaskService:
 
         resource_url = normalize_resource_url(request.url)
         routed, agent = self._resolve_agent(request, agent_override=agent_override)
-        execution, meta = self._execute_agent(
+        execution, meta, ctx = self._execute_agent(
             request,
             agent_name=routed,
             agent=agent,
@@ -84,7 +84,7 @@ class TaskService:
         return QuickInsightResponse(
             request=request,
             insight=execution.content,
-            actions=execution.actions,
+            actions=agent.actions(ctx),
             workspace=WorkspaceDescriptor(
                 resource_url=resource_url,
                 default_action_id=(
@@ -106,7 +106,7 @@ class TaskService:
         """Execute the legacy task document flow with an internal Agent override."""
 
         routed, agent = self._resolve_agent(request, agent_override=agent_override)
-        execution, meta = self._execute_agent(
+        execution, meta, _ = self._execute_agent(
             request,
             agent_name=routed,
             agent=agent,
@@ -128,7 +128,7 @@ class TaskService:
             raise ValueError("resourceUrl does not match normalized url")
 
         routed, agent = self._resolve_agent(request)
-        execution, meta = self._execute_agent(
+        execution, meta, _ = self._execute_agent(
             request,
             agent_name=routed,
             agent=agent,
@@ -154,7 +154,11 @@ class TaskService:
             resource_url=resource_url,
             selected_action_id=request.action_id,
             histories=histories,
-            document=execution.content,
+            document=(
+                None
+                if request.action_id == ActionId.ASK_MORE
+                else execution.content
+            ),
             meta=meta,
         )
 
@@ -184,7 +188,7 @@ class TaskService:
         agent: TaskAgent,
         user_id: str | None,
         operation: Callable[[AgentContext], AgentExecution[ContentT]],
-    ) -> tuple[AgentExecution[ContentT], ExecutionMeta]:
+    ) -> tuple[AgentExecution[ContentT], ExecutionMeta, AgentContext]:
         """Run one validated Agent call and capture metrics consistently."""
 
         self._enforce_rate_limit(user_id)
@@ -225,7 +229,7 @@ class TaskService:
                 "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
                 agent_name, model, len(prompt) / 1000, duration_ms, len(result),
             )
-            return execution, meta
+            return execution, meta, ctx
         except Exception as exc:
             duration_ms = int((time.perf_counter() - t0) * 1000)
             self._persist(
