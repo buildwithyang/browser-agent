@@ -6,6 +6,8 @@
 
 > 📦 安装、截图与环境变量配置请看 [安装说明](deploy/INSTALL.zh-CN.md)。
 
+> 下文 Shared Workspace 已在当前源码中实现；云端网关部署和 Chrome 应用商店发布仍是两个独立的上线步骤。
+
 ## 大愿景（Vision）
 
 **尊重用户的注意力，让 AI 成为工作流的一部分。**
@@ -40,51 +42,51 @@ Offer
 
 ## Agent Bridge 做什么
 
-Agent Bridge 由 Chrome 扩展、网关和 AI Agent 组成。用户在 LinkedIn、Indeed 等招聘网站查看岗位时，可以明确地把当前 JD 交给 Agent：
+Agent Bridge 由 Chrome 扩展、网关和 AI Agent 组成。浏览器先给出聚焦的 **Quick Insight**，用户选择 Action 后进入持久的 Side Panel，在不重复页面上下文的情况下继续完成任务：
 
 ```text
 LinkedIn / Indeed 岗位页面
   ↓ 右键
-Agent Bridge
+Quick Insight
+  ↓ 选择 Action
+Side Panel 共享 Workspace
   ↓
-岗位 JD + 用户当前生效的 CV
+当前页面 + 生效 CV + 共享历史
   ↓
-岗位匹配分析 + 定制化申请材料
-  ↓
-直接在当前页面展示结果
+分析、定制简历或 Cover Letter
 ```
 
 不用复制粘贴，不用在岗位页面和聊天工具之间来回切换。当前页面就是上下文，Agent 负责把上下文变成行动。
 
 ## 当前能力
 
-- 采集当前岗位页面的 URL、标题、选中文本和可见正文。
-- 将 LinkedIn、Indeed 岗位 JD 与用户当前生效的 CV 对比。
-- 解释公司业务、目标市场和岗位职责。
-- 根据岗位核心要求给出克制、真实的匹配分。
-- 逐项展示已匹配、部分匹配和缺失的技能及依据。
-- 用户确认岗位值得投递后，按需生成定制化 Cover Letter。
-- 给出具体 CV 修改建议，包括 ATS 关键词、内容前置和成果量化改写。
+- 任意网页先显示 Quick Insight；LinkedIn / Indeed 在选中完整 JD 时显示岗位匹配洞察，普通网页显示摘要。
+- 对比岗位 JD 与当前生效 CV，展示业务与岗位重点、最大优势和最大差距。
+- 岗位页提供 **Analyze**、**Tailor Resume**、**Generate Cover Letter**、**Ask More** 四个 Action；普通网页只提供 **Ask More**。
+- 同一页面的所有 Action 进入一个 Side Panel Workspace，共享一份按时间排列的历史，并展示最近一次文档类 Action 返回的产物。
+- 按“登录用户 + 规范化网页资源”在当前 Chrome 配置中恢复 Workspace。
+- 基于共享上下文持续修改简历或 Cover Letter，不必重新开始聊天。
 - 在面向云端、多租户的网页端管理多份 CV，并选择当前生效版本。
-- 在当前岗位页面内直接展示结果。
+- Context Routing 和网页资源归一化都由网关负责，新增路由规则不需要重新发布扩展。
 
-> 定制化 CV 文件生成、投递记录和模拟面试属于产品方向，目前还没有形成完整的端到端能力。
+Workspace 历史只保存在当前 Chrome 配置中，不作为服务端会话保存。每次请求的“已有历史 + 当前消息”最多 10 条；最后一次合法请求的 Assistant 回复仍会保留，因此最终本地时间线最多可有 11 条。
 
 ## 使用流程
 
 1. 在网页端上传一份或多份 CV，并选择当前生效的 CV。
-2. 打开 LinkedIn、Indeed 或其他招聘网站的岗位详情页。
-3. 右键选择 **分析与简历匹配**。
-4. 查看匹配结论、业务介绍和逐项技能匹配。
-5. 判断岗位值得投递后，点击 **生成求职信**。
-6. 使用生成的 Cover Letter 和 CV 修改建议准备申请材料。
+2. 打开任意网页；如需匹配 LinkedIn / Indeed 岗位，先选中完整 JD。
+3. 右键选择 **Browser Agent**。
+4. 阅读 Quick Insight，并选择下一步 Action。
+5. 在 Side Panel 中继续。切换 Action 只改变下一条消息的处理方式，不会清空共享历史。
+6. 完成后复制最新的定制简历或 Cover Letter。
 
-系统会先生成岗位匹配分析；只有用户明确需要时，才继续生成 Cover Letter 和 CV 建议，避免在不合适的岗位上浪费时间与模型调用。
+Quick Insight 先回答“我应该知道什么”，Workspace 再回答“下一步应该做什么”，用户不需要从一个空白聊天框开始。
 
 ## 产品原则
 
 - **尊重用户注意力：** 由用户决定哪一个页面值得 AI 介入。
 - **工作流优先：** 结果直接出现在工作发生的页面，而不是停留在聊天窗口。
+- **一个资源，一个 Workspace：** 同一登录用户在同一规范化网页上的 Action 共享一份本地历史。
 - **真实匹配：** 核心要求缺失就应降低评分，不给安慰分。
 - **用户数据隔离：** CV 和申请数据始终按登录用户隔离。
 - **隐私优先：** 页面正文、CV 原文和完整 Prompt 都属于敏感数据；长期存储默认优先保留运营指标，而不是原文。
@@ -94,17 +96,21 @@ Agent Bridge
 
 ```text
 Chrome 扩展
-  ↓
+  ├─ Quick Insight 浮层
+  ├─ Side Panel Workspace
+  └─ 按用户与资源隔离的本地状态
+       ↓
 FastAPI 网关
   ├─ 登录与会话
   ├─ CV 管理
-  ├─ 任务编排
-  └─ 岗位匹配 Agent
+  ├─ Context Router 与资源 URL 归一化
+  ├─ 无状态任务编排
+  └─ 岗位匹配 / 普通网页摘要 Agent
        ↓
 OpenAI 兼容模型
 ```
 
-项目面向云端、多租户设计。网关遵循 API、Service、Repository、DB 分层；岗位 Agent 保持无状态，每次请求由调用方注入当前用户的 CV，避免跨用户缓存数据。
+项目面向云端、多租户设计。网关遵循 API、Service、Repository、DB 分层；Agent 保持无状态，每次请求携带页面上下文、共享历史并注入当前用户的 CV，避免跨用户缓存数据。公开的 Quick Insight 与 Workspace 接口不暴露 Agent 选择器，路由由后端负责。
 
 ## 本地开发
 
@@ -145,11 +151,12 @@ npm test
 - CV 与 JD 匹配分析
 - 公司业务与岗位介绍
 - 技能差距与真实评分
-- 按需生成 Cover Letter 和 CV 修改建议
+- 多个 Action 共享 Side Panel 历史
+- 按需生成定制简历和 Cover Letter 草稿
 
 ### 下一步：完成投递
 
-- 基于用户真实经历生成定制化 CV
+- 导出并管理基于真实经历生成的定制化 CV 版本
 - 收藏岗位并记录投递进度
 - 关联保存每次投递使用的 CV 和 Cover Letter
 
@@ -158,4 +165,3 @@ npm test
 - 根据 JD 和用户 CV 生成面试问题
 - 模拟面试与反馈
 - 跟进提醒和申请阶段辅助
-

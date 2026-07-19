@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - Public Quick Insight and Workspace requests do not accept an `agent` selector.
+- `POST /tasks/current-task` is deleted because it was never deployed; only the deployed legacy `POST /tasks` remains compatible.
 - LinkedIn and Indeed Actions are `analyze`, `tailor_resume`, `write_cover_letter`, and `ask_more`; generic pages expose only `ask_more`.
 - `len(histories) + 1 <= 10`, where `1` is the current user message.
 - Workspace history is stored only in `chrome.storage.local`; no server Thread or DB tables are added.
@@ -18,6 +19,40 @@
 - Page content update detection and cross-device synchronization are out of scope.
 
 ---
+
+### Task 0: Remove the task debug-store switch
+
+**Files:**
+- Modify: `gateway/app/config.py`
+- Modify: `gateway/app/main.py`
+- Modify: `gateway/app/modules/task/service.py`
+- Delete: `gateway/tests/test_task_debug_store.py`
+
+**Interfaces:**
+- Removes: `Settings.task_debug_store`
+- Removes: `TaskService(..., debug_store: bool)`
+- Preserves: task detail persistence as the single unconditional behavior
+
+- [ ] **Step 1: Remove the obsolete setting and constructor parameter**
+
+Delete `task_debug_store` from Settings and `debug_store` from `TaskService.__init__`; remove the corresponding `main.py` wiring. Keep `_persist()` writing the existing detail columns on every task record.
+
+- [ ] **Step 2: Remove switch-specific tests**
+
+Delete `gateway/tests/test_task_debug_store.py`; the product no longer offers metrics-only behavior.
+
+- [ ] **Step 3: Run the gateway baseline**
+
+Run: `cd gateway && .venv/bin/pytest -q`
+
+Expected: all remaining gateway tests pass.
+
+- [ ] **Step 4: Commit the cleanup**
+
+```bash
+git add gateway/app/config.py gateway/app/main.py gateway/app/modules/task/service.py gateway/tests/test_task_debug_store.py
+git commit -m "refactor: remove task debug store switch"
+```
 
 ### Task 1: Gateway Workspace identity and wire schemas
 
@@ -28,6 +63,7 @@
 - Modify: `gateway/app/modules/task/service.py`
 - Modify: `gateway/app/modules/task/legacy/api.py`
 - Modify: `gateway/app/modules/task/legacy/adapter.py`
+- Modify: `gateway/tests/test_task_v2_api.py`
 - Test: `gateway/tests/test_task_workspace_schema.py`
 - Test: `gateway/tests/test_task_workspace_api.py`
 - Test: `gateway/tests/test_routing.py`
@@ -88,7 +124,7 @@ class WorkspaceRequest(PageContext):
         return self
 ```
 
-The API calls `TaskService.workspace`; the service recomputes `resource_url`, rejects mismatches, appends the validated user and assistant messages, and returns all histories. Keep `/tasks/current-task` and `/tasks` unchanged for installed-extension compatibility.
+The API calls `TaskService.workspace`; the service recomputes `resource_url`, rejects mismatches, appends the validated user and assistant messages, and returns all histories. Delete `/tasks/current-task` and its route tests. Keep only the deployed `/tasks` compatibility entry under `modules/task/legacy/`; isolate any transport types that it still needs there.
 
 - [ ] **Step 4: Run focused gateway tests**
 
@@ -302,13 +338,13 @@ git commit -m "feat: add shared workspace side panel"
 
 - [ ] **Step 1: Update user and module documentation**
 
-Document that Context Routing and resource normalization live in the gateway, Workspace history remains local to one Chrome profile, Actions share one history, and `/tasks/current-task` is deprecated compatibility behavior.
+Document that Context Routing and resource normalization live in the gateway, Workspace history remains local to one Chrome profile, Actions share one history, `/tasks/current-task` was never published and is removed, and only `/tasks` remains as the deployed legacy compatibility entry.
 
 - [ ] **Step 2: Run plan/spec consistency scans**
 
-Run: `rg -n "agent.*browser_agent|Current Task|priorResult" docs/superpowers/specs/2026-07-18-shared-workspace-design.md gateway/app/modules/task/README.md extension/README.md`
+Run: `rg -n "agent.*browser_agent|Current Task|current-task|priorResult" docs/superpowers/specs/2026-07-18-shared-workspace-design.md gateway/app/modules/task/README.md extension/README.md`
 
-Expected: matches appear only in explicit legacy/deprecation explanations.
+Expected: matches appear only in explicit `/tasks` legacy explanations or the statement that unpublished `/tasks/current-task` was removed.
 
 - [ ] **Step 3: Run full verification**
 
