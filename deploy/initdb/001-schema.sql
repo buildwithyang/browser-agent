@@ -77,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_resume_user_active
     ON public.resume_resumes (user_id, is_active);
 
 -- =====================================================================
--- task：任务记录（metrics-only，刻意不存 prompt / 结果 / 页面正文 / URL）
+-- task：任务记录（持久化完整任务明细）
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS public.task_records (
     id                VARCHAR(32) PRIMARY KEY,                        -- 任务 ID（uuid hex）
@@ -90,6 +90,11 @@ CREATE TABLE IF NOT EXISTS public.task_records (
     result_chars      INTEGER NOT NULL DEFAULT 0,                    -- 结果字符数
     duration_ms       INTEGER,                                       -- 耗时（毫秒）
     error             VARCHAR(512),                                  -- 失败原因（可空）
+    url               TEXT,                                          -- 页面 URL（可空）
+    title             TEXT,                                          -- 页面标题（可空）
+    prompt            TEXT,                                          -- Agent prompt（可空）
+    page_text         TEXT,                                          -- 页面正文（可空）
+    result            TEXT,                                          -- Agent 原始结果（可空）
     created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- 创建时间
 );
 

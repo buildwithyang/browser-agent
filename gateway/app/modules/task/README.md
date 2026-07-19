@@ -1,6 +1,6 @@
 # Agent Bridge - Task Module
 
-Task 模块负责浏览器任务的同步请求生命周期：接收页面上下文、路由到对应 Agent、注入请求级用户简历、执行并记录 metrics-only 指标。
+Task 模块负责浏览器任务的同步请求生命周期：接收页面上下文、路由到对应 Agent、注入请求级用户简历、执行并在数据库已配置时持久化任务记录。
 
 ## 场景接口
 
@@ -8,7 +8,7 @@ Task 模块负责浏览器任务的同步请求生命周期：接收页面上下
 - `POST /tasks/current-task`：返回 `TaskResponse`，只包含 `DocumentContent(text, html, sections)`。
 - `POST /tasks`：deprecated 旧扩展兼容入口；协议类型和转换集中在 `legacy/`，内部仍调用新 `TaskService`，没有第二套业务实现。
 
-两个新接口都支持 bearer token / session 身份解析、托管模式强制登录、按用户限流和 metrics-only 落库。匿名自部署仍可运行；`job_match` 在登录态下注入用户当前生效简历，匿名模式回退 `AGENT_BRIDGE_CV_PATH`。
+两个新接口都支持 bearer token / session 身份解析、托管模式强制登录、按用户限流和任务记录持久化。匿名自部署仍可运行；`job_match` 在登录态下注入用户当前生效简历，匿名模式回退 `AGENT_BRIDGE_CV_PATH`。
 
 ## Agent 契约
 
@@ -33,7 +33,7 @@ class TaskAgent(ABC):
 - `router.py`：Context Router 纯函数；LinkedIn / Indeed 只匹配 host，并要求至少 1000 字选中 JD。
 - `legacy/`：旧 `/tasks` transport schema 与 adapter，只做协议转换。
 
-默认只持久化 `agent / model / status / input_chars / result_chars / duration_ms / user_id / 时间`，不存 URL、页面正文、简历、Prompt 或结果。`TASK_DEBUG_STORE` 仅用于明确开启的本地模型对比调试。
+数据库已配置时，任务记录会持久化指标以及可用的 URL、标题、Prompt、页面正文和原始结果。明细可能包含用户隐私，部署方应据此制定数据保留策略；无数据库时任务保持无状态运行。
 
 ```text
 task/

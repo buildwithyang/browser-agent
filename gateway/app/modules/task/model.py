@@ -12,10 +12,8 @@ from app.core.sql_types import UUIDHexString
 class TaskRecordModel(Base):
     """任务记录。
 
-    默认 metrics-only：只存运营指标(用量统计 / 计费 / 限流)。
-    当 TASK_DEBUG_STORE 开启时，额外存明细字段(url/title/prompt/page_text/result)，
-    用于离线对比不同模型的效果。这些字段含用户隐私(简历、浏览内容)，
-    生产/多租户务必保持关闭；未开启时这些列为 NULL。
+    Repository/DB 配置时持久化任务指标和明细字段(url/title/prompt/page_text/result)。
+    明细字段可能包含用户隐私，调用方应按部署的数据保留策略处理。
     """
 
     __tablename__ = "task_records"
@@ -35,7 +33,7 @@ class TaskRecordModel(Base):
     result_chars: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    # --- debug 明细(仅 TASK_DEBUG_STORE 开启时写入;含隐私;默认 NULL)----------
+    # 任务明细（含隐私；个别字段在失败或缺少页面上下文时可以为 NULL）。
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
