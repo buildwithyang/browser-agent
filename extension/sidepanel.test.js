@@ -142,3 +142,20 @@ test("Side Panel keeps Actions beside the composer instead of a dropdown", async
   assert.match(html, /id="composer"/);
   assert.doesNotMatch(html, /<select/i);
 });
+
+test("Side Panel uses a light responsive shell without industrial decoration", async () => {
+  const [html, css, source] = await Promise.all([
+    readFile(new URL("./sidepanel.html", import.meta.url), "utf8"),
+    readFile(new URL("./sidepanel.css", import.meta.url), "utf8"),
+    readFile(new URL("./sidepanel.js", import.meta.url), "utf8"),
+  ]);
+
+  assert.doesNotMatch(html, /brand-mark|signal-rule/);
+  assert.doesNotMatch(source, /message-index|empty-index/);
+  assert.match(css, /color-scheme:\s*light/);
+  assert.match(css, /grid-template-rows:\s*auto minmax\(0,\s*1fr\) auto/);
+  assert.match(css, /html,\s*body\s*\{[^}]*overflow-x:\s*hidden/s);
+  assert.match(css, /\.workspace-header h1\s*\{[^}]*-webkit-line-clamp:\s*2/s);
+  assert.match(css, /\.action-chip\s*\{[^}]*border-radius:\s*999px/s);
+  assert.match(css, /\.message-content\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+});

@@ -182,10 +182,9 @@ function renderInsight(container, view) {
 
 /** Render the single chronological shared history without grouping by Action. */
 function renderHistories(container, view) {
-  view.histories.forEach((history, index) => {
+  view.histories.forEach((history) => {
     const message = document.createElement("article");
     message.className = `message ${history.role === "user" ? "user" : "assistant"}`;
-    message.append(textElement("span", "message-index", String(index + 1).padStart(2, "0")));
     const body = document.createElement("div");
     body.className = "message-body";
     body.append(
@@ -262,7 +261,6 @@ function renderTimeline(elements, view, connected) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     empty.append(
-      textElement("span", "empty-index", "00"),
       textElement("h2", "", view.strings.offline),
       textElement("p", "", view.strings.empty)
     );
