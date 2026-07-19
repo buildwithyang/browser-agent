@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, TypeVar
 
 from app.agents.base import AgentContext, AgentExecution, TaskAgent
+from app.render import render_markdown
 from app.modules.resume import ResumeService
 from app.modules.task.repo import TaskRepository
 from app.modules.task.router import normalize_resource_url, route_browser_task
@@ -20,6 +21,7 @@ from app.modules.task.schema import (
     PageContext,
     QuickInsightRequest,
     QuickInsightResponse,
+    Section,
     TaskRecordData,
     TaskRequest,
     TaskResponse,
@@ -154,12 +156,33 @@ class TaskService:
             resource_url=resource_url,
             selected_action_id=request.action_id,
             histories=histories,
-            document=(
-                None
-                if request.action_id == ActionId.ASK_MORE
-                else execution.content
-            ),
+            document=self._workspace_document(request, execution.content),
             meta=meta,
+        )
+
+    @staticmethod
+    def _workspace_document(
+        request: WorkspaceRequest,
+        generated: DocumentContent,
+    ) -> DocumentContent | None:
+        """Return the complete latest artifact after one Workspace transition."""
+
+        if request.action_id != ActionId.ASK_MORE:
+            return generated
+        draft = request.current_document
+        if draft is None:
+            return None
+        rendered = render_markdown(draft.text)
+        return DocumentContent(
+            kind=draft.kind,
+            title=draft.title,
+            text=draft.text,
+            html=rendered,
+            sections=(
+                [Section(id="result", title="", html=rendered)]
+                if rendered
+                else []
+            ),
         )
 
     def _resolve_agent(

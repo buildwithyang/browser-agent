@@ -49,7 +49,7 @@ agent-bridge:workspace:v1:<owner>:<resourceUrl>
 - 同一用户、同一业务资源可在扩展重新加载后恢复；不同用户或不同资源不会读取彼此的历史。
 - Workspace 只保存在当前 Chrome 配置中，不做服务端 Thread 或跨设备同步。
 
-Workspace 持久化 `Quick Insight`、Actions、选中 Action、完整 `histories` 和当前 `currentDocument`。每个响应都会整体替换文档字段；`Ask More` 返回 `document: null`，因此不会作为文档产物展示。整页正文、当前选区和图片文字线索不会写入长期 Workspace；每次发送前都从当前标签页重新采集。
+Workspace 持久化 `Quick Insight`、Actions、选中 Action、完整 `histories` 和当前 `currentDocument`。每个响应都会整体替换文档字段；`Ask More` 不生成新产物，但网关会回传并保留已有文档。尚无文档时才返回 `document: null`。整页正文、当前选区和图片文字线索不会写入长期 Workspace；每次发送前都从当前标签页重新采集。
 
 ## 共享历史与消息上限
 
@@ -154,5 +154,7 @@ npm run package
 ## 隐私
 
 云端包会把当前页面文本、共享历史、最新文档，以及岗位匹配所需的生效简历发送到托管网关及其配置的模型服务。源码版把这些内容发送到本地网关，再由本地网关转发到 `gateway/.env` 配置的模型服务。
+
+当前内部用户阶段的网关会把任务 URL、页面正文、完整 Prompt（岗位任务中可能包含 CV）和模型结果写入任务明细。面向公开用户部署前必须配置相应的数据库访问、脱敏和数据保留策略。
 
 扩展不会把完整页面正文长期写入 Workspace，但会在当前 Chrome 配置中保存生成的 Quick Insight、聊天历史和最新文档。清除扩展本地存储会同时清除这些 Workspace。

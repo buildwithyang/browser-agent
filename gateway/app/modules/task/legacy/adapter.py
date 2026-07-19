@@ -4,7 +4,6 @@ import html
 import re
 
 from app.modules.task.legacy.schema import (
-    LegacyAction,
     LegacyJobOverview,
     LegacyQuickInsight,
     LegacySection,
@@ -126,10 +125,10 @@ def from_quick_response(
         model=response.meta.model,
         result=result,
         result_html=summary_html,
-        actions=[
-            LegacyAction(id=action.id, label=action.title, task_type=action.id)
-            for action in response.actions
-        ],
+        # The deployed extension sends legacy Action clicks to the removed
+        # `/tasks/current-task` route. Keep its response action-free while the
+        # new extension consumes Actions from `/tasks/quick-insight` directly.
+        actions=[],
         insight=legacy_insight,
         started_at=response.meta.started_at,
         finished_at=response.meta.finished_at,

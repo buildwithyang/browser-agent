@@ -123,6 +123,37 @@ test("response accepts the gateway's snake_case Workspace fields", () => {
   assert.equal(next.updatedAt, "2026-07-19T00:00:00Z");
 });
 
+test("response rejects missing canonical state instead of clearing the Workspace", () => {
+  const current = createWorkspace({
+    resourceUrl: "https://example.com/",
+    histories: [{ role: "assistant", content: "keep me" }],
+    currentDocument: { kind: "resume", text: "keep draft" },
+  });
+
+  assert.throws(() => applyWorkspaceResponse(current, null), /Workspace response/i);
+  assert.throws(
+    () => applyWorkspaceResponse(current, { document: null }),
+    /histories/i
+  );
+  assert.throws(
+    () => applyWorkspaceResponse(current, { histories: [] }),
+    /document/i
+  );
+  assert.throws(
+    () => applyWorkspaceResponse(current, { histories: [], document: null }),
+    /resource/i
+  );
+  assert.throws(
+    () => applyWorkspaceResponse(current, {
+      resource_url: "https://example.com/",
+      selected_action_id: "ask_more",
+      histories: [],
+      document: {},
+    }),
+    /document/i
+  );
+});
+
 /** Build a minimal wire-compatible HistoryMessage fixture. */
 function history(role, content) {
   return { role, content };

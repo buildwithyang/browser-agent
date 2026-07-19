@@ -194,10 +194,11 @@ export function restoreInitialSelection(pageContext, initialSelection) {
 /** Parse a gateway response and reject every non-2xx status with a useful detail. */
 export async function readGatewayResponse(response) {
   let body = null;
+  let parseFailed = false;
   try {
     body = await response.json();
   } catch {
-    body = null;
+    parseFailed = true;
   }
   if (!response.ok) {
     const detail = typeof body?.detail === "string"
@@ -206,6 +207,14 @@ export async function readGatewayResponse(response) {
         ? body.message
         : `Gateway request failed (${response.status})`;
     throw new GatewayHttpError(response.status, detail);
+  }
+  if (
+    parseFailed
+    || !body
+    || typeof body !== "object"
+    || Array.isArray(body)
+  ) {
+    throw new TypeError("Gateway returned no valid JSON object");
   }
   return body;
 }

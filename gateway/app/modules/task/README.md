@@ -78,11 +78,13 @@ Task 模块负责浏览器任务的一次请求生命周期：接收页面上下
 
 实际 `HistoryMessage` 还包含网关生成的 `id`、`created_at`，以及产生该消息的 `action_id`。上例省略了部分重复字段以突出状态转换。
 
-扩展用响应中的 `histories` / `document` 整体替换本地状态，不能在客户端自行 append。`ask_more` 同样返回完整历史，但 `document` 为 `null`。
+扩展用响应中的 `histories` / `document` 整体替换本地状态，不能在客户端自行 append。`ask_more` 同样返回完整历史；若请求带有 `currentDocument`，网关把它重新生成安全 HTML 后原样保留，只有尚无文档时才返回 `null`。
 
 ### Legacy `POST /tasks`
 
 线上已发布的旧扩展仍使用 deprecated `POST /tasks`。它的 transport schema 和 adapter 隔离在 `legacy/`，内部复用同一个 `TaskService`，不维护第二套业务实现。
+
+Legacy 响应固定不返回新 Workspace Actions，避免旧扩展把按钮点击发送到已删除的 `/tasks/current-task`。
 
 `POST /tasks/current-task` 从未部署到线上，当前代码已删除该路由且不保留 alias。新扩展使用 `POST /tasks/workspace`；旧线上扩展只依赖 `POST /tasks`。
 

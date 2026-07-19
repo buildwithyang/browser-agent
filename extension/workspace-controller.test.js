@@ -358,3 +358,18 @@ test("gateway success returns parsed JSON", async () => {
     body
   );
 });
+
+test("gateway rejects a successful response with invalid JSON", async () => {
+  const response = {
+    ok: true,
+    status: 200,
+    json: async () => {
+      throw new SyntaxError("Unexpected end of JSON input");
+    },
+  };
+
+  await assert.rejects(
+    () => readGatewayResponse(response),
+    /valid JSON/i
+  );
+});

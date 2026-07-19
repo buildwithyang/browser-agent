@@ -97,8 +97,8 @@ def test_current_task_returns_document_response() -> None:
     assert response.meta.input_chars == len("task prompt")
 
 
-def test_workspace_ask_more_keeps_answer_history_without_document() -> None:
-    """Return no document for Ask More while retaining the assistant answer."""
+def test_workspace_ask_more_preserves_current_document() -> None:
+    """Keep the latest artifact while Ask More appends to the shared history."""
 
     response = service().workspace(
         WorkspaceRequest(
@@ -106,11 +106,20 @@ def test_workspace_ask_more_keeps_answer_history_without_document() -> None:
             resourceUrl="https://example.com/",
             actionId=ActionId.ASK_MORE,
             histories=[HistoryMessage(role="assistant", content="Earlier answer")],
+            currentDocument={
+                "kind": "resume",
+                "title": "Tailored Resume",
+                "text": "# Existing draft\n\nGo and Agent experience.",
+            },
             message="Follow up",
         ),
         user_id=None,
     )
 
-    assert response.document is None
+    assert response.document is not None
+    assert response.document.kind == "resume"
+    assert response.document.title == "Tailored Resume"
+    assert response.document.text == "# Existing draft\n\nGo and Agent experience."
+    assert "<h1>Existing draft</h1>" in response.document.html
     assert response.histories[-1].content == "document"
     assert response.histories[-1].action_id is ActionId.ASK_MORE

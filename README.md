@@ -89,7 +89,7 @@ Quick Insight answers “What should I know?” first. The Workspace then answer
 - **One resource, one Workspace:** Actions share one local history for the signed-in user and normalized webpage.
 - **Truthful matching:** missing core requirements must lower the score; the agent should not give comfort scores.
 - **User data isolation:** CVs and application data are scoped to the signed-in user.
-- **Privacy by default:** page content, CV text, and full prompts are sensitive; long-term storage should favor operational metrics over raw content.
+- **Explicit data handling:** page content, CV text, and full prompts are sensitive. The current internal-user phase persists task details for debugging; a public production rollout must define redaction, access, and retention controls.
 - **Vendor-neutral models:** the gateway supports OpenAI-compatible model endpoints and prompt-length routing.
 
 ## Architecture

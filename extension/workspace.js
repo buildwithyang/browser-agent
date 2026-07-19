@@ -62,13 +62,47 @@ export function createWorkspace(seed = {}) {
 /** Replace canonical Workspace fields with one complete gateway response. */
 export function applyWorkspaceResponse(state, response) {
   const current = createWorkspace(state);
-  const incoming = response && typeof response === "object" ? response : {};
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new TypeError("Workspace response must be an object");
+  }
+  const incoming = response;
+  if (!Array.isArray(incoming.histories)) {
+    throw new TypeError("Workspace response histories must be an array");
+  }
+  for (let index = 0; index < incoming.histories.length; index += 1) {
+    if (
+      !(index in incoming.histories)
+      || !isValidHistoryMessage(incoming.histories[index])
+    ) {
+      throw new TypeError("Workspace response histories contain an invalid message");
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(incoming, "document")) {
+    throw new TypeError("Workspace response document is required");
+  }
+  if (
+    incoming.document !== null
+    && (
+      typeof incoming.document !== "object"
+      || Array.isArray(incoming.document)
+      || typeof incoming.document.text !== "string"
+    )
+  ) {
+    throw new TypeError("Workspace response document is invalid");
+  }
   const incomingResourceUrl = incoming.resourceUrl ?? incoming.resource_url;
   const incomingSelectedActionId = incoming.selectedActionId ?? incoming.selected_action_id;
+  if (typeof incomingResourceUrl !== "string" || !incomingResourceUrl.trim()) {
+    throw new TypeError("Workspace response resource URL is required");
+  }
+  if (
+    typeof incomingSelectedActionId !== "string"
+    || !incomingSelectedActionId.trim()
+  ) {
+    throw new TypeError("Workspace response selected Action is required");
+  }
   const resourceUrl =
-    typeof incomingResourceUrl === "string" && incomingResourceUrl.trim()
-      ? incomingResourceUrl
-      : current.resourceUrl;
+    incomingResourceUrl;
   return {
     ...current,
     resourceUrl,
