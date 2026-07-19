@@ -11,6 +11,8 @@ from app.modules.task.schema import (
     QuickInsightRequest,
     WorkspaceRequest,
     WorkspaceResponse,
+    DOCUMENT_DRAFT_TEXT_MAX_CHARS,
+    DOCUMENT_TEXT_MAX_CHARS,
 )
 
 
@@ -88,6 +90,22 @@ def test_document_content_rejects_text_over_assistant_limit() -> None:
         DocumentContent(text="a" * 100_001)
 
 
+def test_any_valid_document_content_can_become_the_next_document_draft() -> None:
+    document = DocumentContent(text="a" * DOCUMENT_TEXT_MAX_CHARS)
+
+    request = WorkspaceRequest(
+        url="https://example.com",
+        resourceUrl="https://example.com/",
+        actionId="ask_more",
+        currentDocument={"kind": "resume", "title": "Draft", "text": document.text},
+        message="next",
+    )
+
+    assert DOCUMENT_DRAFT_TEXT_MAX_CHARS == DOCUMENT_TEXT_MAX_CHARS
+    assert request.current_document is not None
+    assert request.current_document.text == document.text
+
+
 def test_empty_valid_document_can_become_assistant_history() -> None:
     document = DocumentContent()
 
@@ -132,7 +150,7 @@ def test_document_draft_contains_only_editable_source_fields() -> None:
     [
         ("kind", "k" * 101),
         ("title", "t" * 501),
-        ("text", "x" * 50_001),
+        ("text", "x" * 100_001),
     ],
 )
 def test_workspace_rejects_oversized_current_document_field(

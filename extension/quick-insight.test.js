@@ -46,6 +46,13 @@ test("Quick Insight actions open the shared Workspace", async () => {
   assert.match(source, /type:\s*"AGENT_BRIDGE_OPEN_WORKSPACE"/);
   assert.match(source, /actionId: message\.actionId/);
   assert.match(source, /chrome\.sidePanel\.open\(\{ tabId \}\)/);
+  assert.match(
+    source,
+    /chrome\.sidePanel\.setOptions\(\{\s*tabId,\s*path:\s*"sidepanel\.html",\s*enabled:\s*true/s
+  );
+  assert.match(source, /type:\s*"AGENT_BRIDGE_WORKSPACE_UPDATED",\s*tabId/s);
+  assert.match(source, /workspaceSeedQueue\.run\(tabId/);
+  assert.match(source, /workspaceSendQueue/);
   assert.equal(source.includes(["AGENT_BRIDGE", "CONTINUE"].join("_")), false);
   assert.equal(source.includes(["current", "task"].join("-")), false);
   assert.equal(source.includes(["prior", "Result"].join("")), false);

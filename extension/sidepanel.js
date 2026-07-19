@@ -3,6 +3,7 @@ import { canSend } from "./workspace.js";
 
 export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
+export const WORKSPACE_UPDATED = "AGENT_BRIDGE_WORKSPACE_UPDATED";
 
 const COPY = {
   en: {
@@ -49,14 +50,16 @@ const COPY = {
   },
 };
 
-/** Normalize the language to the two Side Panel interface locales. */
-function uiLang(lang) {
-  return lang === "zh" ? "zh" : "en";
+/** Resolve explicit or browser-following language preferences to a supported locale. */
+export function resolveUiLang(lang, uiLanguage = "en") {
+  if (lang === "zh" || lang === "en") return lang;
+  const browserLocale = typeof uiLanguage === "string" ? uiLanguage : "en";
+  return browserLocale.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
 /** Build a DOM-independent rendering model for one complete Workspace state. */
-export function workspaceView(state = {}, lang = "en") {
-  const locale = uiLang(lang);
+export function workspaceView(state = {}, lang = "browser", uiLanguage = "en") {
+  const locale = resolveUiLang(lang, uiLanguage);
   const strings = COPY[locale];
   const actions = Array.isArray(state.actions)
     ? state.actions.filter((action) => action && typeof action.id === "string")
@@ -258,7 +261,7 @@ function updateComposer(elements, model, view) {
 
 /** Render every Side Panel region from the latest canonical Workspace state. */
 function render(elements, model) {
-  const view = workspaceView(model.state || {}, model.lang);
+  const view = workspaceView(model.state || {}, model.lang, model.uiLanguage);
   model.selectedActionId = model.selectedActionId || view.selectedActionId;
   document.documentElement.lang = view.lang;
   elements.title.textContent = view.pageTitle;
@@ -279,7 +282,9 @@ function render(elements, model) {
 async function submitMessage(elements, model) {
   const message = elements.messageInput.value.trim();
   if (!message || !model.tabId || !model.selectedActionId || model.loading) return;
-  const view = workspaceView(model.state || {}, model.lang);
+  const requestTabId = model.tabId;
+  const requestActionId = model.selectedActionId;
+  const view = workspaceView(model.state || {}, model.lang, model.uiLanguage);
   if (!view.canSend) return;
 
   model.loading = true;
@@ -288,10 +293,11 @@ async function submitMessage(elements, model) {
   try {
     const response = await sendRuntime({
       type: WORKSPACE_SEND,
-      tabId: model.tabId,
-      actionId: model.selectedActionId,
+      tabId: requestTabId,
+      actionId: requestActionId,
       message,
     });
+    if (model.tabId !== requestTabId) return;
     if (!response?.ok) {
       throw new Error(response?.error || view.strings.retry);
     }
@@ -300,12 +306,15 @@ async function submitMessage(elements, model) {
     model.selectedActionId = response.state?.selectedActionId || model.selectedActionId;
     elements.messageInput.value = "";
   } catch (error) {
+    if (model.tabId !== requestTabId) return;
     model.error = error?.message || view.strings.retry;
   } finally {
-    model.loading = false;
-    render(elements, model);
-    if (!model.error) elements.timeline.scrollTop = elements.timeline.scrollHeight;
-    elements.messageInput.focus();
+    if (model.tabId === requestTabId) {
+      model.loading = false;
+      render(elements, model);
+      if (!model.error) elements.timeline.scrollTop = elements.timeline.scrollHeight;
+      elements.messageInput.focus();
+    }
   }
 }
 
@@ -329,19 +338,57 @@ function sidePanelElements() {
   };
 }
 
+/** Reload one tab's Workspace while ignoring responses superseded by a newer tab switch. */
+async function loadWorkspaceForTab(elements, model, tabId) {
+  model.tabId = tabId;
+  model.state = null;
+  model.selectedActionId = null;
+  model.loading = !!tabId;
+  model.error = "";
+  render(elements, model);
+  if (!tabId) return;
+
+  try {
+    const response = await sendRuntime({ type: WORKSPACE_GET, tabId });
+    if (model.tabId !== tabId) return;
+    if (response?.ok) {
+      model.state = response.state;
+      model.lang = response.lang || "browser";
+      model.selectedActionId = response.state?.selectedActionId || null;
+    } else if (response?.error) {
+      model.error = response.error;
+    }
+  } catch (error) {
+    if (model.tabId !== tabId) return;
+    const locale = resolveUiLang(model.lang, model.uiLanguage);
+    model.error = error?.message || COPY[locale].retry;
+  } finally {
+    if (model.tabId === tabId) {
+      model.loading = false;
+      render(elements, model);
+      if (model.state) elements.messageInput.focus();
+    }
+  }
+}
+
 /** Load the active Workspace and install accessible composer interactions. */
 async function initSidePanel() {
   const elements = sidePanelElements();
   const model = {
     tabId: await activeTabId(),
     state: null,
-    lang: "en",
+    lang: "browser",
+    uiLanguage: chrome.i18n.getUILanguage() || "en",
     selectedActionId: null,
     loading: false,
     error: "",
   };
   elements.messageInput.addEventListener("input", () => {
-    updateComposer(elements, model, workspaceView(model.state || {}, model.lang));
+    updateComposer(
+      elements,
+      model,
+      workspaceView(model.state || {}, model.lang, model.uiLanguage)
+    );
   });
   elements.messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -355,21 +402,26 @@ async function initSidePanel() {
   });
   render(elements, model);
 
-  if (!model.tabId) return;
-  try {
-    const response = await sendRuntime({ type: WORKSPACE_GET, tabId: model.tabId });
-    if (response?.ok) {
-      model.state = response.state;
-      model.lang = response.lang || "en";
-      model.selectedActionId = response.state?.selectedActionId || null;
-    } else if (response?.error) {
-      model.error = response.error;
+  /** Reload and switch the panel after a successful background seed. */
+  const onWorkspaceUpdated = (message) => {
+    if (message?.type === WORKSPACE_UPDATED && message.tabId) {
+      loadWorkspaceForTab(elements, model, message.tabId).catch(() => {});
     }
-  } catch (error) {
-    model.error = error?.message || COPY.en.retry;
-  }
-  render(elements, model);
-  if (model.state) elements.messageInput.focus();
+  };
+  /** Follow the active browser tab even when it has no established Workspace. */
+  const onTabActivated = ({ tabId }) => {
+    loadWorkspaceForTab(elements, model, tabId).catch(() => {});
+  };
+  /** Release long-lived extension listeners when Chrome destroys this panel document. */
+  const cleanup = () => {
+    chrome.runtime.onMessage.removeListener(onWorkspaceUpdated);
+    chrome.tabs.onActivated.removeListener(onTabActivated);
+  };
+  chrome.runtime.onMessage.addListener(onWorkspaceUpdated);
+  chrome.tabs.onActivated.addListener(onTabActivated);
+  window.addEventListener("unload", cleanup, { once: true });
+
+  await loadWorkspaceForTab(elements, model, model.tabId);
 }
 
 // Node tests import workspaceView without a DOM or extension runtime.

@@ -103,7 +103,7 @@ export function shouldClearToken(status) {
 
 // store: { get(key) -> Promise<any>, set(obj) -> Promise<void> }；now: epoch ms。
 // 返回要回给网页的响应对象（PING -> PONG / AUTH_TOKEN -> ACK），未知消息返回 undefined。
-export async function handleExternalMessage(msg, { store, now }) {
+export async function handleExternalMessage(msg, { store, now, onOwnerChange }) {
   if (!msg || typeof msg !== "object") return undefined;
 
   if (msg.type === "PING") {
@@ -120,11 +120,16 @@ export async function handleExternalMessage(msg, { store, now }) {
     && typeof msg.userId === "string"
     && msg.userId.trim()
   ) {
+    const previousOwnerId = await store.get(WORKSPACE_OWNER_KEY);
+    const nextOwnerId = msg.userId.trim();
+    if (previousOwnerId !== nextOwnerId && typeof onOwnerChange === "function") {
+      await onOwnerChange(previousOwnerId, nextOwnerId);
+    }
     // One storage write keeps an extension-token rotation bound to the same owner.
     await store.set({
       [TOKEN_KEY]: msg.token.trim(),
       [EXPIRES_KEY]: msg.expiresAt || null,
-      [WORKSPACE_OWNER_KEY]: msg.userId.trim(),
+      [WORKSPACE_OWNER_KEY]: nextOwnerId,
     });
     return { type: "AUTH_TOKEN_ACK", ok: true };
   }

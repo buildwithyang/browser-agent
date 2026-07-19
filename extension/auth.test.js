@@ -125,6 +125,48 @@ test("AUTH_TOKEN atomically stores token, expiry, and stable workspace owner", a
   }]);
 });
 
+test("AUTH_TOKEN invalidates every active session namespace when owner changes", async () => {
+  const store = fakeStore({ [WORKSPACE_OWNER_KEY]: "user-a" });
+  const changes = [];
+
+  const response = await handleExternalMessage(
+    {
+      type: "AUTH_TOKEN",
+      token: "token-b",
+      userId: "user-b",
+    },
+    {
+      store,
+      now: 1000,
+      onOwnerChange: async (previousOwnerId, nextOwnerId) => {
+        changes.push({ previousOwnerId, nextOwnerId });
+      },
+    }
+  );
+
+  assert.deepEqual(response, { type: "AUTH_TOKEN_ACK", ok: true });
+  assert.deepEqual(changes, [{ previousOwnerId: "user-a", nextOwnerId: "user-b" }]);
+  assert.equal(store.data[WORKSPACE_OWNER_KEY], "user-b");
+});
+
+test("AUTH_TOKEN rotation for the same owner keeps active session namespace", async () => {
+  const store = fakeStore({ [WORKSPACE_OWNER_KEY]: "user-a" });
+  let invalidations = 0;
+
+  await handleExternalMessage(
+    { type: "AUTH_TOKEN", token: "rotated", userId: "user-a" },
+    {
+      store,
+      now: 1000,
+      onOwnerChange: async () => {
+        invalidations += 1;
+      },
+    }
+  );
+
+  assert.equal(invalidations, 0);
+});
+
 test("AUTH_TOKEN rejects a missing stable workspace owner", async () => {
   const store = fakeStore();
   const res = await handleExternalMessage(

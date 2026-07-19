@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import {
+import * as controller from "./workspace-controller.js";
+import { EXPIRES_KEY, TOKEN_KEY, WORKSPACE_OWNER_KEY } from "./auth.js";
+
+const {
   GatewayHttpError,
   activeWorkspaceKey,
   initialSelectionKey,
@@ -9,7 +12,51 @@ import {
   mergeWorkspaceSeed,
   readGatewayResponse,
   restoreInitialSelection,
-} from "./workspace-controller.js";
+} = controller;
+
+/** Return one required controller export with an assertion failure if it is missing. */
+function requiredExport(name) {
+  assert.equal(typeof controller[name], "function", `${name} must be exported`);
+  return controller[name];
+}
+
+/** Build a Chrome-storage-compatible fake with observable reads and removals. */
+function fakeStorageArea(initial = {}) {
+  const data = { ...initial };
+  const getCalls = [];
+  const removeCalls = [];
+  return {
+    data,
+    getCalls,
+    removeCalls,
+    async get(query) {
+      getCalls.push(query);
+      if (query === null) return { ...data };
+      if (typeof query === "string") return { [query]: data[query] };
+      if (Array.isArray(query)) {
+        return Object.fromEntries(query.map((key) => [key, data[key]]));
+      }
+      return Object.assign({}, query, data);
+    },
+    async remove(keys) {
+      const list = Array.isArray(keys) ? keys : [keys];
+      removeCalls.push(list);
+      list.forEach((key) => delete data[key]);
+    },
+    async set(values) {
+      Object.assign(data, values);
+    },
+  };
+}
+
+/** Create a manually resolved promise for deterministic queue tests. */
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 test("Workspace GET waits for asynchronous seed before loading session state", async () => {
   const events = [];
@@ -50,6 +97,148 @@ test("Workspace seed refreshes page metadata while preserving canonical conversa
   assert.deepEqual(next.currentDocument, existing.currentDocument);
   assert.equal("pageText" in next, false);
   assert.equal("selectedText" in next, false);
+});
+
+test("explicit Quick Insight Action overrides an existing selected Action", () => {
+  const next = mergeWorkspaceSeed(
+    {
+      resourceUrl: "https://x/job/1",
+      actions: [
+        { id: "analyze", title: "Analyze" },
+        { id: "write_cover_letter", title: "Write cover letter" },
+      ],
+      selectedActionId: "analyze",
+      histories: [{ role: "assistant", content: "Keep me" }],
+    },
+    {
+      resourceUrl: "https://x/job/1",
+      actions: [
+        { id: "analyze", title: "Analyze" },
+        { id: "write_cover_letter", title: "Write cover letter" },
+      ],
+      actionId: "write_cover_letter",
+      defaultActionId: "analyze",
+    }
+  );
+
+  assert.equal(next.selectedActionId, "write_cover_letter");
+  assert.equal(next.histories.length, 1);
+});
+
+test("user B cannot load a tab mapping owned by user A", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const mappingKey = activeWorkspaceKey(7);
+  const sessionStore = fakeStorageArea({
+    [mappingKey]: {
+      ownerId: "user-a",
+      storageKey: "workspace-a",
+      resourceUrl: "https://x/job/1",
+    },
+  });
+  const workspaceStore = fakeStorageArea({
+    "workspace-a": { histories: [{ role: "assistant", content: "private" }] },
+  });
+
+  const active = await loadOwnerScopedWorkspace(7, {
+    ownerId: "user-b",
+    sessionStore,
+    workspaceStore,
+  });
+
+  assert.equal(active, null);
+  assert.equal(sessionStore.data[mappingKey], undefined);
+  assert.deepEqual(workspaceStore.getCalls, []);
+});
+
+test("401 cleanup removes all Workspace session namespaces but keeps local records", async () => {
+  const clearAuthWorkspaceState = requiredExport("clearAuthWorkspaceState");
+  const localStore = fakeStorageArea({
+    [TOKEN_KEY]: "token-a",
+    [EXPIRES_KEY]: "2999-01-01T00:00:00Z",
+    [WORKSPACE_OWNER_KEY]: "user-a",
+    "agent-bridge:workspace:v1:user-a:resource": { histories: [] },
+  });
+  const sessionStore = fakeStorageArea({
+    [activeWorkspaceKey(1)]: { ownerId: "user-a", storageKey: "one" },
+    [activeWorkspaceKey(2)]: { ownerId: "user-a", storageKey: "two" },
+    [initialSelectionKey(1)]: { url: "https://x/1", selectedText: "JD 1" },
+    [initialSelectionKey(2)]: { url: "https://x/2", selectedText: "JD 2" },
+    unrelated: "keep",
+  });
+
+  await clearAuthWorkspaceState({
+    localStore,
+    sessionStore,
+    authKeys: [TOKEN_KEY, EXPIRES_KEY, WORKSPACE_OWNER_KEY],
+  });
+
+  assert.equal(localStore.data[TOKEN_KEY], undefined);
+  assert.equal(localStore.data[EXPIRES_KEY], undefined);
+  assert.equal(localStore.data[WORKSPACE_OWNER_KEY], undefined);
+  assert.deepEqual(localStore.data["agent-bridge:workspace:v1:user-a:resource"], {
+    histories: [],
+  });
+  assert.deepEqual(sessionStore.data, { unrelated: "keep" });
+});
+
+test("double OPEN for one tab is ordered and older cleanup keeps the newer pending seed", async () => {
+  const createKeyedQueue = requiredExport("createKeyedQueue");
+  const queue = createKeyedQueue();
+  const firstGate = deferred();
+  const secondGate = deferred();
+  const events = [];
+
+  const first = queue.run(7, async () => {
+    events.push("first:start");
+    await firstGate.promise;
+    events.push("first:end");
+  });
+  await Promise.resolve();
+  const second = queue.run(7, async () => {
+    events.push("second:start");
+    await secondGate.promise;
+    events.push("second:end");
+  });
+
+  assert.deepEqual(events, ["first:start"]);
+  firstGate.resolve();
+  await first;
+  await Promise.resolve();
+  assert.deepEqual(events, ["first:start", "first:end", "second:start"]);
+  assert.ok(queue.pending(7), "newer seed must remain pending after older completion");
+  secondGate.resolve();
+  await second;
+  assert.equal(queue.pending(7), undefined);
+});
+
+test("same-key concurrent SEND reloads latest state while different keys run independently", async () => {
+  const createKeyedQueue = requiredExport("createKeyedQueue");
+  const enqueueLatestByKey = requiredExport("enqueueLatestByKey");
+  const queue = createKeyedQueue();
+  const firstGate = deferred();
+  let latest = 0;
+  const seen = [];
+
+  const first = enqueueLatestByKey(queue, "workspace-a", async () => latest, async (state) => {
+    seen.push(["a:first", state]);
+    await firstGate.promise;
+    latest = state + 1;
+  });
+  await Promise.resolve();
+  const second = enqueueLatestByKey(queue, "workspace-a", async () => latest, async (state) => {
+    seen.push(["a:second", state]);
+    latest = state + 1;
+  });
+  const other = enqueueLatestByKey(queue, "workspace-b", async () => 10, async (state) => {
+    seen.push(["b:first", state]);
+  });
+
+  await other;
+  assert.deepEqual(seen, [["a:first", 0], ["b:first", 10]]);
+  firstGate.resolve();
+  await Promise.all([first, second]);
+  assert.deepEqual(seen, [["a:first", 0], ["b:first", 10], ["a:second", 1]]);
+  assert.equal(latest, 2);
 });
 
 test("initial selection is restored only for the same URL and an empty fresh selection", () => {

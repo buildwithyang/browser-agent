@@ -21,8 +21,13 @@ import {
 } from "./workspace.js";
 import {
   activeWorkspaceKey,
+  clearAuthWorkspaceState,
+  clearWorkspaceSessionNamespace,
+  createKeyedQueue,
+  enqueueLatestByKey,
   initialSelectionKey,
   loadAfterPendingSeed,
+  loadOwnerScopedWorkspace,
   mergeWorkspaceSeed,
   readGatewayResponse,
   restoreInitialSelection,
@@ -32,7 +37,8 @@ const MENU_ID = "browser-agent";
 const OPEN_WORKSPACE = "AGENT_BRIDGE_OPEN_WORKSPACE";
 const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
-const workspaceSeedPromises = new Map();
+const workspaceSeedQueue = createKeyedQueue();
+const workspaceSendQueue = createKeyedQueue();
 
 // 菜单文字跟随语言偏好:zh/en 强制;"browser"/"auto" 按浏览器界面语言。
 const MENU_TITLES = {
@@ -166,12 +172,13 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   );
 });
 
-/** Clear authentication identity and the active tab namespace after a 401. */
-async function clearAuthNamespace(tabId) {
-  await Promise.all([
-    chrome.storage.local.remove([TOKEN_KEY, EXPIRES_KEY, WORKSPACE_OWNER_KEY]),
-    chrome.storage.session.remove(activeWorkspaceKey(tabId)),
-  ]);
+/** Clear authentication identity and every identity-bound session namespace after a 401. */
+async function clearAuthNamespace() {
+  await clearAuthWorkspaceState({
+    localStore: chrome.storage.local,
+    sessionStore: chrome.storage.session,
+    authKeys: [TOKEN_KEY, EXPIRES_KEY, WORKSPACE_OWNER_KEY],
+  });
 }
 
 /** Dispatch Quick Insight while preserving the existing overlay loading/login behavior. */
@@ -221,10 +228,10 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
       done();
       console.error("[Agent Bridge] gateway request failed:", error);
       if (shouldClearToken(error.status)) {
-        await clearAuthNamespace(tabId);
+        await clearAuthNamespace();
         const loginUrl = webBaseUrl(DEFAULT_GATEWAY);
         const strings = loginStrings(errLang(lang));
-        // 保持已上线的 Overlay 登录倒计时体验；Workspace 401 走内联可重试错误。
+        // Keep the established Overlay sign-in countdown; Workspace 401 uses a retryable inline error.
         showResult(tabId, {
           state: "error",
           source,
@@ -262,7 +269,11 @@ async function seedWorkspace(tabId, message) {
   const ownerData = await chrome.storage.local.get({
     [WORKSPACE_OWNER_KEY]: ANONYMOUS_WORKSPACE_OWNER,
   });
-  const storageKey = workspaceStorageKey(ownerData[WORKSPACE_OWNER_KEY], resourceUrl);
+  const ownerId = typeof ownerData[WORKSPACE_OWNER_KEY] === "string"
+    && ownerData[WORKSPACE_OWNER_KEY].trim()
+    ? ownerData[WORKSPACE_OWNER_KEY].trim()
+    : ANONYMOUS_WORKSPACE_OWNER;
+  const storageKey = workspaceStorageKey(ownerId, resourceUrl);
   const stored = await chrome.storage.local.get(storageKey);
   const state = mergeWorkspaceSeed(stored[storageKey], {
     resourceUrl,
@@ -276,6 +287,7 @@ async function seedWorkspace(tabId, message) {
     chrome.storage.local.set({ [storageKey]: state }),
     chrome.storage.session.set({
       [activeWorkspaceKey(tabId)]: {
+        ownerId,
         storageKey,
         resourceUrl,
         lang: message.lang || "en",
@@ -287,13 +299,18 @@ async function seedWorkspace(tabId, message) {
 
 /** Load the active tab mapping and its owner-scoped Workspace from split storage areas. */
 async function loadActiveWorkspace(tabId) {
-  const mappingKey = activeWorkspaceKey(tabId);
-  const mappingData = await chrome.storage.session.get(mappingKey);
-  const mapping = mappingData[mappingKey];
-  if (!mapping?.storageKey) return null;
-  const stored = await chrome.storage.local.get(mapping.storageKey);
-  const state = stored[mapping.storageKey];
-  return state ? { mapping, state, lang: mapping.lang || "en" } : null;
+  const ownerData = await chrome.storage.local.get({
+    [WORKSPACE_OWNER_KEY]: ANONYMOUS_WORKSPACE_OWNER,
+  });
+  const ownerId = typeof ownerData[WORKSPACE_OWNER_KEY] === "string"
+    && ownerData[WORKSPACE_OWNER_KEY].trim()
+    ? ownerData[WORKSPACE_OWNER_KEY].trim()
+    : ANONYMOUS_WORKSPACE_OWNER;
+  return loadOwnerScopedWorkspace(tabId, {
+    ownerId,
+    sessionStore: chrome.storage.session,
+    workspaceStore: chrome.storage.local,
+  });
 }
 
 /** Ask the existing content script for current page context immediately before SEND. */
@@ -311,63 +328,88 @@ async function collectPageContext(tabId) {
 
 /** Execute one stateless Workspace transition and persist only canonical response state. */
 async function sendWorkspaceTurn(tabId, message) {
-  const active = await loadActiveWorkspace(tabId);
   const userMessage = typeof message.message === "string" ? message.message.trim() : "";
+  const active = await loadActiveWorkspace(tabId);
   if (!active) throw new Error("Open a Quick Insight Action before sending");
   if (!userMessage) throw new Error("Message cannot be empty");
-  if (!canSend(active.state)) throw new Error("Workspace message limit reached");
+  return enqueueLatestByKey(
+    workspaceSendQueue,
+    active.mapping.storageKey,
+    () => loadActiveWorkspace(tabId),
+    async (latest) => {
+      if (!latest || latest.mapping.storageKey !== active.mapping.storageKey) {
+        throw new Error("The active Workspace changed before this message was sent");
+      }
+      if (!canSend(latest.state)) throw new Error("Workspace message limit reached");
 
-  const pageContext = await collectPageContext(tabId);
-  const { base, token } = await getGatewayConfig();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120000);
-  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
-  try {
-    const response = await fetch(taskUrl(base, "workspace"), {
-      method: "POST",
-      headers: buildAuthHeaders(token),
-      body: JSON.stringify(buildWorkspaceBody(pageContext, {
-        resourceUrl: active.mapping.resourceUrl,
-        actionId: message.actionId,
-        histories: active.state.histories,
-        currentDocument: active.state.currentDocument,
-        message: userMessage,
-        lang: active.lang,
-      })),
-      signal: controller.signal,
-    });
-    const workspaceResponse = await readGatewayResponse(response);
-    const state = applyWorkspaceResponse(active.state, workspaceResponse);
-    await chrome.storage.local.set({ [active.mapping.storageKey]: state });
-    return { state, lang: active.lang };
-  } finally {
-    clearTimeout(timeout);
-    clearInterval(keepAlive);
-  }
+      const pageContext = await collectPageContext(tabId);
+      const { base, token } = await getGatewayConfig();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000);
+      const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+      try {
+        const response = await fetch(taskUrl(base, "workspace"), {
+          method: "POST",
+          headers: buildAuthHeaders(token),
+          body: JSON.stringify(buildWorkspaceBody(pageContext, {
+            resourceUrl: latest.mapping.resourceUrl,
+            actionId: message.actionId,
+            histories: latest.state.histories,
+            currentDocument: latest.state.currentDocument,
+            message: userMessage,
+            lang: latest.lang,
+          })),
+          signal: controller.signal,
+        });
+        const workspaceResponse = await readGatewayResponse(response);
+        const state = applyWorkspaceResponse(latest.state, workspaceResponse);
+        await chrome.storage.local.set({ [latest.mapping.storageKey]: state });
+        return { state, lang: latest.lang };
+      } finally {
+        clearTimeout(timeout);
+        clearInterval(keepAlive);
+      }
+    }
+  );
+}
+
+/** Notify every Side Panel that one tab now owns a freshly seeded Workspace. */
+function notifyWorkspaceUpdated(tabId) {
+  chrome.runtime.sendMessage({ type: "AGENT_BRIDGE_WORKSPACE_UPDATED", tabId }, () => {
+    void chrome.runtime.lastError;
+  });
 }
 
 /** Open Side Panel inside the user gesture, then seed its Workspace asynchronously. */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== OPEN_WORKSPACE || !sender.tab?.id) return undefined;
   const tabId = sender.tab.id;
-  const openPromise = chrome.sidePanel.open({ tabId });
-  const seedPromise = seedWorkspace(tabId, {
-    actionId: message.actionId,
-    workspace: message.workspace,
-    insight: message.insight,
-    actions: message.actions,
-    pageTitle: message.pageTitle,
-    source: message.source,
-    lang: message.lang,
+  const optionsPromise = chrome.sidePanel.setOptions({
+    tabId,
+    path: "sidepanel.html",
+    enabled: true,
   });
-  workspaceSeedPromises.set(tabId, seedPromise);
+  const openPromise = chrome.sidePanel.open({ tabId });
+  const seedPromise = workspaceSeedQueue.run(tabId, async () => {
+    const workspace = await seedWorkspace(tabId, {
+      actionId: message.actionId,
+      workspace: message.workspace,
+      insight: message.insight,
+      actions: message.actions,
+      pageTitle: message.pageTitle,
+      source: message.source,
+      lang: message.lang,
+    });
+    notifyWorkspaceUpdated(tabId);
+    return workspace;
+  });
   Promise.all([
+    optionsPromise,
     openPromise,
     seedPromise,
   ])
-    .then(([, workspace]) => sendResponse({ ok: true, ...workspace }))
-    .catch((error) => sendResponse({ ok: false, error: error.message }))
-    .finally(() => workspaceSeedPromises.delete(tabId));
+    .then(([, , workspace]) => sendResponse({ ok: true, ...workspace }))
+    .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
 });
 
@@ -375,7 +417,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== WORKSPACE_GET || !message.tabId) return undefined;
   loadAfterPendingSeed(
-    workspaceSeedPromises.get(message.tabId),
+    workspaceSeedQueue.pending(message.tabId),
     () => loadActiveWorkspace(message.tabId)
   )
     .then((active) => {
@@ -396,7 +438,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     .then(({ state, lang }) => sendResponse({ ok: true, state, lang }))
     .catch(async (error) => {
       if (shouldClearToken(error.status)) {
-        await clearAuthNamespace(message.tabId);
+        await clearAuthNamespace();
         const strings = loginStrings(errLang(await resolveLang()));
         sendResponse({
           ok: false,
@@ -610,7 +652,7 @@ function renderPanel(payload) {
             lang: payload.lang,
           },
           (resp) => {
-            // Side Panel 已在用户手势内打开；只在后台 seed 失败时保留可见反馈。
+            // The Side Panel opened inside the user gesture; show feedback only if seeding fails.
             if (!resp || !resp.ok) {
               err.textContent =
                 payload.lang === "en"
@@ -963,7 +1005,11 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     get: (key) => chrome.storage.local.get(key).then((obj) => obj[key]),
     set: (obj) => chrome.storage.local.set(obj)
   };
-  handleExternalMessage(msg, { store, now: Date.now() }).then((res) => {
+  handleExternalMessage(msg, {
+    store,
+    now: Date.now(),
+    onOwnerChange: () => clearWorkspaceSessionNamespace(chrome.storage.session),
+  }).then((res) => {
     if (res) sendResponse(res);
   });
   return true; // 异步 sendResponse

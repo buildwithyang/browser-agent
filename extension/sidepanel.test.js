@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { workspaceView } from "./sidepanel.js";
+import * as sidepanel from "./sidepanel.js";
+
+const { workspaceView } = sidepanel;
 
 test("manifest declares the Side Panel entry point and release version", async () => {
   const manifest = JSON.parse(
@@ -52,6 +54,23 @@ test("view model localizes the send limit and disables further turns", () => {
   const view = workspaceView({ actions: [], histories }, "zh");
   assert.equal(view.canSend, false);
   assert.match(view.limitText, /上限/);
+});
+
+test("Side Panel resolves auto and browser language from Chrome UI locale", () => {
+  assert.equal(typeof sidepanel.resolveUiLang, "function");
+  assert.equal(sidepanel.resolveUiLang("zh", "en-US"), "zh");
+  assert.equal(sidepanel.resolveUiLang("en", "zh-CN"), "en");
+  assert.equal(sidepanel.resolveUiLang("auto", "zh-CN"), "zh");
+  assert.equal(sidepanel.resolveUiLang("browser", "en-US"), "en");
+});
+
+test("Side Panel follows Workspace updates and active tabs with cleanup", async () => {
+  const source = await readFile(new URL("./sidepanel.js", import.meta.url), "utf8");
+  assert.match(source, /AGENT_BRIDGE_WORKSPACE_UPDATED/);
+  assert.match(source, /chrome\.tabs\.onActivated\.addListener/);
+  assert.match(source, /chrome\.tabs\.onActivated\.removeListener/);
+  assert.match(source, /chrome\.runtime\.onMessage\.removeListener/);
+  assert.match(source, /type:\s*WORKSPACE_SEND,\s*tabId:\s*requestTabId/s);
 });
 
 test("Side Panel keeps Actions beside the composer instead of a dropdown", async () => {

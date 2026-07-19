@@ -23,6 +23,69 @@ export function initialSelectionKey(tabId) {
   return `${INITIAL_SELECTION_PREFIX}:${tabId}`;
 }
 
+/** Remove every tab-scoped Workspace mapping and saved initial selection. */
+export async function clearWorkspaceSessionNamespace(sessionStore) {
+  const values = await sessionStore.get(null);
+  const keys = Object.keys(values || {}).filter(
+    (key) => key.startsWith(`${ACTIVE_WORKSPACE_PREFIX}:`)
+      || key.startsWith(`${INITIAL_SELECTION_PREFIX}:`)
+  );
+  if (keys.length) await sessionStore.remove(keys);
+}
+
+/** Clear authentication and all identity-bound session state while preserving local records. */
+export async function clearAuthWorkspaceState({ localStore, sessionStore, authKeys }) {
+  await Promise.all([
+    localStore.remove(authKeys),
+    clearWorkspaceSessionNamespace(sessionStore),
+  ]);
+}
+
+/** Load a tab Workspace only when its mapping belongs to the current stable owner. */
+export async function loadOwnerScopedWorkspace(
+  tabId,
+  { ownerId, sessionStore, workspaceStore }
+) {
+  const mappingKey = activeWorkspaceKey(tabId);
+  const mappingData = await sessionStore.get(mappingKey);
+  const mapping = mappingData[mappingKey];
+  if (!mapping?.storageKey) return null;
+  if (mapping.ownerId !== ownerId) {
+    await sessionStore.remove(mappingKey);
+    return null;
+  }
+  const stored = await workspaceStore.get(mapping.storageKey);
+  const state = stored[mapping.storageKey];
+  return state ? { mapping, state, lang: mapping.lang || "en" } : null;
+}
+
+/** Create an operation queue that serializes work per key without coupling other keys. */
+export function createKeyedQueue() {
+  const pendingByKey = new Map();
+  return {
+    /** Enqueue one operation after the latest operation for the same key. */
+    run(key, operation) {
+      const previous = pendingByKey.get(key);
+      const current = previous
+        ? previous.catch(() => undefined).then(operation)
+        : Promise.resolve().then(operation);
+      pendingByKey.set(key, current);
+      return current.finally(() => {
+        if (pendingByKey.get(key) === current) pendingByKey.delete(key);
+      });
+    },
+    /** Return the latest pending operation for one key, if any. */
+    pending(key) {
+      return pendingByKey.get(key);
+    },
+  };
+}
+
+/** Reload canonical state inside a keyed critical section before applying an operation. */
+export function enqueueLatestByKey(queue, key, loadLatest, operation) {
+  return queue.run(key, async () => operation(await loadLatest()));
+}
+
 /** Serialize a Side Panel GET behind the user-gesture seed that opened the panel. */
 export async function loadAfterPendingSeed(pendingSeed, loadWorkspace) {
   if (pendingSeed) await pendingSeed;
@@ -35,10 +98,10 @@ export function mergeWorkspaceSeed(existing, seed = {}) {
   const actions = Array.isArray(seed.actions) ? seed.actions : [];
   const actionIds = new Set(actions.map((action) => action?.id).filter(Boolean));
   const priorSelectedActionId = existing?.selectedActionId || current.selectedActionId;
-  const selectedActionId = actionIds.has(priorSelectedActionId)
-    ? priorSelectedActionId
-    : actionIds.has(seed.actionId)
-      ? seed.actionId
+  const selectedActionId = actionIds.has(seed.actionId)
+    ? seed.actionId
+    : actionIds.has(priorSelectedActionId)
+      ? priorSelectedActionId
       : seed.defaultActionId;
 
   return createWorkspace({
