@@ -12,6 +12,8 @@ Task 模块负责浏览器任务的同步请求生命周期：接收页面上下
 
 Quick Insight 返回的 `resource_url` 是 Workspace 业务资源标识。LinkedIn 和 Indeed 职位 URL 会按岗位 ID 归一；普通 URL 会移除 fragment 和全部 `utm_*` 参数，并稳定排序其余 query。`POST /tasks/workspace` 会根据当前 `url` 重新计算并校验该标识，不信任客户端直接传入的 `resourceUrl`。
 
+`currentDocument` 只接收有界的 `kind`、`title`、`text` 源字段，不接收可由服务端重新生成的 HTML 或 sections。用户输入和用户历史单条最多 10,000 字符；Agent 文档正文及对应 Assistant 历史单条最多 100,000 字符。
+
 ## Agent 契约
 
 `agents/base.py` 的 `TaskAgent` 是稳定接口：

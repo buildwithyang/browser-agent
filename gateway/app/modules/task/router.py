@@ -53,9 +53,10 @@ def normalize_resource_url(url: str) -> str:
         for name, value in query
         if not name.lower().startswith("utm_")
     )
-    netloc = host
+    # urlsplit removes IPv6 brackets from hostname; URL authority requires them.
+    netloc = f"[{host}]" if ":" in host else host
     if parsed.port is not None:
-        netloc = f"{host}:{parsed.port}"
+        netloc = f"{netloc}:{parsed.port}"
     return urlunsplit(
         (scheme, netloc, parsed.path or "/", urlencode(filtered_query), "")
     )

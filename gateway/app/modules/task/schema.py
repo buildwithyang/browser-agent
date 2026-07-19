@@ -43,6 +43,12 @@ Recommendation = Literal["strong_apply", "apply", "cautious", "skip"]
 PAGE_TEXT_MAX_CHARS = 200_000
 SELECTED_TEXT_MAX_CHARS = 100_000
 IMAGE_TEXT_MAX_CHARS = 50_000
+USER_MESSAGE_MAX_CHARS = 10_000
+# Assistant histories are copied from DocumentContent.text, so both share one cap.
+DOCUMENT_TEXT_MAX_CHARS = 100_000
+DOCUMENT_DRAFT_KIND_MAX_CHARS = 100
+DOCUMENT_DRAFT_TITLE_MAX_CHARS = 500
+DOCUMENT_DRAFT_TEXT_MAX_CHARS = 50_000
 
 
 class PageContext(BaseModel):
@@ -70,7 +76,7 @@ class TaskRequest(PageContext):
 
     action_id: str = Field(alias="actionId", min_length=1, max_length=100)
     prior_result: str | None = Field(default=None, alias="priorResult", max_length=50_000)
-    message: str = Field(default="", max_length=10_000)
+    message: str = Field(default="", max_length=USER_MESSAGE_MAX_CHARS)
 
 
 class Section(BaseModel):
@@ -147,19 +153,29 @@ class HistoryMessage(BaseModel):
 
     id: UUID = Field(default_factory=uuid4)
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=10_000)
+    content: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
     action_id: ActionId | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @model_validator(mode="after")
+    def validate_user_content(self) -> "HistoryMessage":
+        """Apply the smaller interactive-input limit only to user history."""
+
+        if self.role == "user" and not 1 <= len(self.content) <= USER_MESSAGE_MAX_CHARS:
+            raise ValueError(
+                f"user history content must contain 1 to {USER_MESSAGE_MAX_CHARS} characters"
+            )
+        return self
 
 
 class DocumentDraft(BaseModel):
     """客户端回传的最新文档草稿，供本次无状态生成使用。"""
 
-    kind: str = ""
-    title: str = ""
-    text: str = ""
-    html: str = ""
-    sections: list[Section] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field("", max_length=DOCUMENT_DRAFT_KIND_MAX_CHARS)
+    title: str = Field("", max_length=DOCUMENT_DRAFT_TITLE_MAX_CHARS)
+    text: str = Field("", max_length=DOCUMENT_DRAFT_TEXT_MAX_CHARS)
 
 
 class WorkspaceRequest(PageContext):
@@ -172,7 +188,7 @@ class WorkspaceRequest(PageContext):
         default=None,
         alias="currentDocument",
     )
-    message: str = Field(min_length=1, max_length=10_000)
+    message: str = Field(min_length=1, max_length=USER_MESSAGE_MAX_CHARS)
 
     @model_validator(mode="after")
     def validate_message_limit(self) -> "WorkspaceRequest":
@@ -188,7 +204,7 @@ class DocumentContent(BaseModel):
 
     kind: str = ""
     title: str = ""
-    text: str = ""
+    text: str = Field("", max_length=DOCUMENT_TEXT_MAX_CHARS)
     html: str = ""
     sections: list[Section] = Field(default_factory=list)
 
@@ -223,7 +239,7 @@ class WorkspaceResponse(BaseModel):
 
 
 class TaskResponse(BaseModel):
-    """Current Task 文档响应；Quick Insight 不使用此模型。"""
+    """已部署 legacy `/tasks` 的内部文档响应。"""
 
     request: TaskRequest
     document: DocumentContent

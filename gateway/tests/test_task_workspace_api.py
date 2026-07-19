@@ -41,6 +41,21 @@ class FailingIfCalledAgent(WorkspaceAgent):
         raise AssertionError("agent must not run for mismatched resourceUrl")
 
 
+class LongAssistantAgent(WorkspaceAgent):
+    """Return a document larger than the user-input message limit."""
+
+    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
+        """Produce a valid 10,001-character assistant document."""
+
+        content = "a" * 10_001
+        return AgentExecution(
+            content=DocumentContent(text=content),
+            raw_result=content,
+            prompt="workspace prompt",
+            model="fake",
+        )
+
+
 def _wire(monkeypatch, agent: TaskAgent) -> None:
     """Install a deterministic TaskService in the FastAPI app state."""
 
@@ -119,3 +134,22 @@ def test_quick_insight_rejects_invalid_url_before_agent_execution(monkeypatch) -
 
     assert response.status_code == 400
     assert response.json()["detail"] == "url must be an absolute HTTP(S) URL"
+
+
+def test_workspace_accepts_assistant_document_over_user_message_limit(
+    monkeypatch,
+) -> None:
+    _wire(monkeypatch, LongAssistantAgent())
+
+    response = TestClient(main.app).post(
+        "/tasks/workspace",
+        json={
+            "url": "https://example.com/article",
+            "resourceUrl": "https://example.com/article",
+            "actionId": "ask_more",
+            "message": "question",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["histories"][-1]["content"]) == 10_001

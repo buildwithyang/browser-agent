@@ -30,6 +30,10 @@ def test_regular_url_drops_fragment_and_utm_parameters_and_sorts_query() -> None
     ) == "https://example.com/path?a=1&z=2"
 
 
+def test_regular_ipv6_url_preserves_bracketed_host_and_port() -> None:
+    assert normalize_resource_url("http://[::1]:8000/a") == "http://[::1]:8000/a"
+
+
 # --- ModelRouter.pick: 选「容得下的最小层」,超上限走 default ----------------
 
 def make_router() -> ModelRouter:
