@@ -5,6 +5,7 @@ export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
 export const WORKSPACE_UPDATED = "AGENT_BRIDGE_WORKSPACE_UPDATED";
 export const WORKSPACE_RESET = "AGENT_BRIDGE_WORKSPACE_RESET";
+/** Fixed public website used to preview tailored resumes outside the Side Panel. */
 export const CV_PREVIEW_URL = "https://browser.buildwithyang.com";
 
 const COPY = {
