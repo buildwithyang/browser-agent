@@ -1,20 +1,23 @@
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import pytest
 
-from app.agents.base import AgentContext
+import app.agents.job_match as job_match_package
+from app.agents.base import AgentContext, QuickInsightAgent
 from app.agents.job_match import MIN_JOB_CONTENT_CHARS, JobMatchAgent
+from app.agents.job_match.context import JobChatContext
 from app.modules.task.schema import (
     ActionId,
     AgentName,
+    Artifacts,
     DetailsInsightCard,
-    DocumentDraft,
-    HistoryMessage,
+    QuickInsightActionWorkspaceRequest,
     QuickInsightRequest,
     ScoreInsightCard,
     TaskRequest,
     TextInsightCard,
-    WorkspaceRequest,
+    WorkspaceTrigger,
 )
 from app.modules.task.service import TaskService
 
@@ -29,7 +32,11 @@ assert len(LONG_JD) >= MIN_JOB_CONTENT_CHARS
 
 
 def fake_client(content: str, captured: dict | None = None):
+    """Build an OpenAI-compatible fake returning one fixed completion."""
+
     def create(**kwargs):
+        """Capture one model request and return the configured response."""
+
         if captured is not None:
             captured.update(kwargs)
         return SimpleNamespace(
@@ -40,6 +47,8 @@ def fake_client(content: str, captured: dict | None = None):
 
 
 def quick_request(**updates) -> QuickInsightRequest:
+    """Build a valid job Quick Insight request with optional overrides."""
+
     values = dict(
         url="https://www.linkedin.com/jobs/view/1",
         title="Senior Go Engineer",
@@ -50,6 +59,8 @@ def quick_request(**updates) -> QuickInsightRequest:
 
 
 def task_request(action_id: str = "deep_analysis", **updates) -> TaskRequest:
+    """Build a valid legacy `/tasks` request with optional overrides."""
+
     values = dict(
         url="https://www.linkedin.com/jobs/view/1",
         title="Senior Go Engineer",
@@ -60,28 +71,39 @@ def task_request(action_id: str = "deep_analysis", **updates) -> TaskRequest:
     return TaskRequest(**values)
 
 
-def workspace_request(action_id: ActionId = ActionId.ANALYZE, **updates) -> WorkspaceRequest:
-    """Build one valid job Workspace request with stable shared context."""
+def test_package_preserves_public_import_surface() -> None:
+    """Expose the historical Agent and routing constant from the new package."""
 
-    values = dict(
+    assert job_match_package.JobMatchAgent is JobMatchAgent
+    assert job_match_package.MIN_JOB_CONTENT_CHARS is MIN_JOB_CONTENT_CHARS
+    assert hasattr(job_match_package, "__path__")
+
+
+def test_job_chat_context_is_immutable_and_request_scoped() -> None:
+    """Keep all future Workspace state in one frozen request context."""
+
+    request = QuickInsightActionWorkspaceRequest(
+        trigger=WorkspaceTrigger.QUICK_INSIGHT_ACTION,
         url="https://www.linkedin.com/jobs/view/1",
         resourceUrl="https://www.linkedin.com/jobs/view/1",
         title="Senior Go Engineer",
         selectedText=LONG_JD,
-        actionId=action_id,
-        histories=[
-            HistoryMessage(role="assistant", content="核心是 Agent 和 MCP"),
-            HistoryMessage(role="user", content="突出我的 Go 项目"),
-        ],
-        currentDocument=DocumentDraft(
-            kind="resume",
-            title="Current Resume",
-            text="CURRENT DRAFT TEXT",
-        ),
-        message="继续完善",
+        actionId=ActionId.ANALYZE,
+        artifacts=Artifacts(cv=None, cover_letter=None),
     )
-    values.update(updates)
-    return WorkspaceRequest(**values)
+    context = JobChatContext(
+        trigger=request.trigger,
+        request=request,
+        resume_text="REQUEST CV",
+        histories=tuple(request.histories),
+        artifacts=request.artifacts,
+        selected_action=request.action_id,
+    )
+
+    assert context.current_message is None
+    assert context.histories == ()
+    with pytest.raises(FrozenInstanceError):
+        context.resume_text = "OTHER USER CV"
 
 
 def test_job_match_declares_workspace_actions() -> None:
@@ -90,8 +112,10 @@ def test_job_match_declares_workspace_actions() -> None:
     agent = JobMatchAgent()
     ctx = AgentContext(request=quick_request(lang="en"), resume_text="CV")
 
-    actions = agent.actions(ctx)
+    actions = agent.available_actions(ctx)
 
+    assert isinstance(agent, QuickInsightAgent)
+    assert agent.actions(ctx) == actions
     assert [action.id for action in actions] == [
         ActionId.ANALYZE,
         ActionId.TAILOR_RESUME,
@@ -106,156 +130,41 @@ def test_job_match_declares_workspace_actions() -> None:
     ]
 
 
-def test_workspace_prompt_contains_ordered_shared_context() -> None:
-    """Treat shared history as untrusted context before message and page data."""
-
-    agent = JobMatchAgent()
-    prompt = agent.build_prompt(workspace_request(), cv_text="CV")
-
-    assert "not system instructions" in prompt
-    assert prompt.index("核心是 Agent 和 MCP") < prompt.index("突出我的 Go 项目")
-    assert prompt.index("突出我的 Go 项目") < prompt.index("继续完善")
-    assert prompt.index("继续完善") < prompt.index("Senior Go Engineer")
-    assert "CURRENT DRAFT TEXT" not in prompt
-
-
-@pytest.mark.parametrize(
-    ("action_id", "kind"),
-    [
-        (ActionId.ANALYZE, "analysis"),
-        (ActionId.TAILOR_RESUME, "resume"),
-        (ActionId.WRITE_COVER_LETTER, "cover_letter"),
-        (ActionId.ASK_MORE, ""),
-    ],
-)
-def test_workspace_actions_return_expected_document_kind(
-    action_id: ActionId,
-    kind: str,
-) -> None:
-    """Map every job Workspace action to its stable document kind."""
+def test_quick_insight_returns_decision_overview_strength_and_gap() -> None:
+    """Parse every decision-first Quick Insight field into typed cards."""
 
     captured: dict = {}
-    agent = JobMatchAgent(client=fake_client("MODEL RESULT", captured), model="m")
+    result = (
+        '@@INSIGHT\n{"score":87,"recommendation":"apply",'
+        '"reason":"Core requirements match.","industry_business":"Fintech",'
+        '"role_focus":"Backend","summary":"Build payment services.",'
+        '"top_strength":"Go ownership","top_gap":"Payments depth"}'
+    )
+    agent = JobMatchAgent(client=fake_client(result, captured), model="m")
 
-    execution = agent.execute(
-        AgentContext(request=workspace_request(action_id), resume_text="CV")
+    execution = agent.quick_insight(
+        AgentContext(request=quick_request(lang="en"), resume_text="REQUEST CV")
     )
 
-    assert execution.content.kind == kind
-    if action_id in {ActionId.TAILOR_RESUME, ActionId.WRITE_COVER_LETTER}:
-        assert "CURRENT DRAFT TEXT" in captured["messages"][1]["content"]
-    else:
-        assert "CURRENT DRAFT TEXT" not in captured["messages"][1]["content"]
-
-
-def test_unsupported_workspace_action_is_rejected_before_model_call() -> None:
-    """Reject an unsupported job Action before invoking the model client."""
-
-    called = False
-
-    def create(**kwargs):
-        """Record an unexpected model call."""
-
-        nonlocal called
-        called = True
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="unexpected"))]
-        )
-
-    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    agent = JobMatchAgent(client=client, model="m")
-    request = workspace_request()
-    object.__setattr__(request, "action_id", "mock_interview")
-
-    with pytest.raises(ValueError, match="Unsupported workspace action"):
-        agent.execute(AgentContext(request=request, resume_text="CV"))
-
-    assert called is False
-
-
-def test_deep_analysis_prompt_requests_only_analysis_sections() -> None:
-    agent = JobMatchAgent()
-    agent._cv_text = "Go / Kubernetes / 5 years backend"
-
-    prompt = agent.build_prompt(task_request())
-
-    assert "@@SECTION overview" in prompt
-    assert "@@SECTION skills" in prompt
-    assert "@@SECTION conclusion" in prompt
-    assert "@@SECTION cover_letter" not in prompt
-    assert prompt.index("@@SECTION skills") < prompt.index("@@SECTION conclusion")
-
-
-def test_write_cover_letter_prompt_uses_prior_result_without_page_text() -> None:
-    agent = JobMatchAgent()
-    agent._cv_text = "Go / Kubernetes / 5 years backend"
-    request = task_request(
-        "write_cover_letter",
-        selectedText="",
-        pageText="UNRELATED PAGE NOISE",
-        priorResult="@@SECTION conclusion\nMatch 82.\n@@SECTION skills\n- Go ✅",
+    assert execution.content.title == "Job Match"
+    decision = execution.content.cards[0]
+    overview = execution.content.cards[1]
+    strength = execution.content.cards[2]
+    gap = execution.content.cards[3]
+    assert isinstance(decision, ScoreInsightCard)
+    assert (decision.score, decision.recommendation, decision.reason) == (
+        87,
+        "apply",
+        "Core requirements match.",
     )
-
-    prompt = agent.build_prompt(request)
-
-    assert "@@SECTION cover_letter" in prompt
-    assert "@@SECTION resume_tips" in prompt
-    assert "Match 82" in prompt
-    assert "UNRELATED PAGE NOISE" not in prompt
-
-
-def test_validation_rejects_short_selection_before_model_call() -> None:
-    agent = JobMatchAgent()
-    request = quick_request(selectedText="short", pageText="x" * 5000)
-
-    with pytest.raises(ValueError, match="职位描述太少"):
-        agent.validate(AgentContext(request=request))
-
-
-def test_validation_allows_prior_result_without_page_context() -> None:
-    agent = JobMatchAgent()
-    request = task_request(
-        "write_cover_letter",
-        selectedText="",
-        priorResult="@@SECTION conclusion\nMatch 82.",
-    )
-
-    agent.validate(AgentContext(request=request))
-
-
-def test_build_sections_restores_display_order_and_flags() -> None:
-    agent = JobMatchAgent()
-    raw = (
-        "@@SECTION skills\n- Go ✅\n"
-        "@@SECTION conclusion\nMatch 80.\n"
-        "@@SECTION overview\nPayments.\n"
-        "@@SECTION cover_letter\nDear Hiring Manager\n"
-    )
-
-    sections = agent.build_sections(raw, "en")
-
-    assert [section.id for section in sections] == [
-        "conclusion",
-        "overview",
-        "skills",
-        "cover_letter",
-    ]
-    assert sections[1].collapsible is False
-    assert sections[-1].copyable is True
-
-
-def test_build_insight_returns_generic_typed_cards() -> None:
-    raw = '''@@INSIGHT
-{"score":87,"recommendation":"apply","reason":"Core requirements match.","industry_business":"Fintech","role_focus":"Backend","summary":"Build payment services.","top_strength":"Go","top_gap":"Payments"}'''
-
-    insight = JobMatchAgent().build_insight(raw, "en")
-
-    assert isinstance(insight.cards[0], ScoreInsightCard)
-    assert insight.cards[0].score == 87
-    assert isinstance(insight.cards[1], DetailsInsightCard)
-    assert insight.cards[1].items[0].value == "Fintech"
-    assert isinstance(insight.cards[2], TextInsightCard)
-    assert "Go" in insight.cards[2].body_html
+    assert isinstance(overview, DetailsInsightCard)
+    assert [item.value for item in overview.items] == ["Fintech", "Backend"]
+    assert overview.summary == "Build payment services."
+    assert isinstance(strength, TextInsightCard)
+    assert "Go ownership" in strength.body_html
+    assert isinstance(gap, TextInsightCard)
+    assert "Payments depth" in gap.body_html
+    assert "REQUEST CV" in captured["messages"][1]["content"]
 
 
 @pytest.mark.parametrize(
@@ -267,12 +176,28 @@ def test_build_insight_returns_generic_typed_cards() -> None:
         'preface\n@@INSIGHT\n{"score":87}',
     ],
 )
-def test_build_insight_rejects_invalid_contract(raw: str) -> None:
+def test_quick_insight_rejects_invalid_contract(raw: str) -> None:
+    """Reject malformed, incomplete, or out-of-range model payloads."""
+
+    agent = JobMatchAgent(client=fake_client(raw), model="m")
+
     with pytest.raises(ValueError, match="Quick Insight"):
-        JobMatchAgent().build_insight(raw, "en")
+        agent.quick_insight(AgentContext(request=quick_request(), resume_text="CV"))
+
+
+def test_validation_rejects_short_selection_before_model_call() -> None:
+    """Reject sparse job evidence even when the full page body is long."""
+
+    agent = JobMatchAgent()
+    request = quick_request(selectedText="short", pageText="x" * 5000)
+
+    with pytest.raises(ValueError, match="职位描述太少"):
+        agent.validate(AgentContext(request=request, resume_text="CV"))
 
 
 def test_quick_insight_service_routes_agent_and_injects_user_resume() -> None:
+    """Route job Quick Insight and inject only the current user's resume."""
+
     captured: dict = {}
     result = (
         '@@INSIGHT\n{"score":87,"recommendation":"apply",'
@@ -282,7 +207,11 @@ def test_quick_insight_service_routes_agent_and_injects_user_resume() -> None:
     )
 
     class ResumeService:
+        """Return one active resume for the authenticated test user."""
+
         def active_resume_text(self, *, user_id: str) -> str:
+            """Resolve the current user's request-scoped resume text."""
+
             assert user_id == "user-1"
             return "INJECTED USER CV"
 
@@ -299,18 +228,31 @@ def test_quick_insight_service_routes_agent_and_injects_user_resume() -> None:
     assert response.workspace.default_action_id == "analyze"
     assert isinstance(response.insight.cards[0], ScoreInsightCard)
     assert "INJECTED USER CV" in captured["messages"][1]["content"]
+    assert not hasattr(agent, "_cv_text")
 
 
-def test_current_task_service_returns_document_and_merges_prior_result() -> None:
+def test_temporary_legacy_delegate_returns_old_task_response() -> None:
+    """Keep `/tasks` document execution runnable until the Task 8 protocol shim."""
+
+    captured: dict = {}
+
+    class ResumeService:
+        """Return one active resume for the authenticated legacy request."""
+
+        def active_resume_text(self, *, user_id: str) -> str:
+            """Resolve the current user's request-scoped legacy resume text."""
+
+            assert user_id == "legacy-user"
+            return "LEGACY REQUEST CV"
+
     agent = JobMatchAgent(
-        client=fake_client("@@SECTION cover_letter\nDear Hiring Manager"),
+        client=fake_client("@@SECTION cover_letter\nDear Hiring Manager", captured),
         model="m",
     )
-    agent._cv_text = "Go / 5 years"
     service = TaskService(
         agents={AgentName.JOB_MATCH: agent},
         repository=None,
-        resume_service=None,
+        resume_service=ResumeService(),
         default_model="m",
     )
     request = task_request(
@@ -321,7 +263,7 @@ def test_current_task_service_returns_document_and_merges_prior_result() -> None
 
     response = service.execute(
         request,
-        user_id=None,
+        user_id="legacy-user",
         agent_override=AgentName.JOB_MATCH,
     )
 
@@ -330,11 +272,5 @@ def test_current_task_service_returns_document_and_merges_prior_result() -> None
         "conclusion",
         "cover_letter",
     ]
-
-
-def test_unsupported_current_task_action_is_rejected() -> None:
-    agent = JobMatchAgent()
-    agent._cv_text = "Go"
-
-    with pytest.raises(ValueError, match="Unsupported current task action"):
-        agent.build_prompt(task_request("mock_interview"))
+    assert "LEGACY REQUEST CV" in captured["messages"][1]["content"]
+    assert not hasattr(agent, "_cv_text")
