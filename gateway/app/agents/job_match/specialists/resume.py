@@ -9,11 +9,12 @@ class ResumeTailoringAgent(StructuredJobMatchSpecialist):
 
     allowed_artifact_type = ArtifactType.CV
     scenario_instruction = (
-        "Own the resume-tailoring scenario. If the user asks for advice, explanation, or "
-        "what to emphasize, return a reply. Only an explicit create or rewrite instruction "
-        "may return artifact_draft with artifact_type cv. That draft must be the complete "
-        "ATS-friendly CV in Markdown, never suggestions or a partial patch, and every claim "
-        "must remain grounded in the canonical resume."
+        "Own the resume-tailoring scenario. Choose the result type from the actual current "
+        "user request, not from the selected Action alone. An advice question, explanation "
+        "request, or question about what to emphasize must return reply. Only an explicit "
+        "create or rewrite instruction may return artifact_draft with artifact_type cv. "
+        "That draft must be the complete ATS-friendly CV in Markdown, never suggestions or "
+        "a partial patch, and every claim must remain grounded in the canonical resume."
     )
 
 
