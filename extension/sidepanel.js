@@ -25,6 +25,7 @@ const COPY = {
     cv: "CV",
     copy: "Copy Markdown",
     copied: "Copied",
+    copyFailed: "Copy failed",
     openCv: "Open CV",
     updateMessage: "Update Agent Bridge to continue.",
     updateGateway: "If this still appears after updating, check the Gateway deployment.",
@@ -48,6 +49,7 @@ const COPY = {
     cv: "简历",
     copy: "复制 Markdown",
     copied: "已复制",
+    copyFailed: "复制失败",
     openCv: "打开简历",
     updateMessage: "请更新 Agent Bridge 后继续。",
     updateGateway: "更新后仍出现此提示，请检查 Gateway 部署。",
@@ -64,7 +66,10 @@ export function resolveUiLang(lang, uiLanguage = "en") {
 
 /** Resolve a Workspace lifecycle event to the tab that the panel should reload. */
 export function workspaceLifecycleTarget(message, currentTabId) {
-  if (message?.type === WORKSPACE_UPDATED && message.tabId) return message.tabId;
+  if (currentTabId === null || currentTabId === undefined) return null;
+  if (message?.type === WORKSPACE_UPDATED && message.tabId === currentTabId) {
+    return currentTabId;
+  }
   if (
     message?.type === WORKSPACE_RESET
     && (!message.tabId || message.tabId === currentTabId)
@@ -130,6 +135,14 @@ export function shouldSubmitMessage(event) {
   return event?.key === "Enter" && !event.shiftKey && !event.isComposing;
 }
 
+/** Apply the composer keyboard contract to one real DOM event and form. */
+export function handleComposerKeydown(event, form) {
+  if (!shouldSubmitMessage(event)) return false;
+  event.preventDefault();
+  form.requestSubmit();
+  return true;
+}
+
 /** Format one canonical UTC message timestamp for compact and full local display. */
 export function messageTimePresentation(createdAt, lang = "en") {
   const date = new Date(createdAt);
@@ -163,6 +176,68 @@ function sendRuntime(message) {
       resolve(response);
     });
   });
+}
+
+/** Send through an injected deterministic transport or the Extension runtime. */
+function sendRuntimeWith(dependencies, message) {
+  if (typeof dependencies?.sendRuntime === "function") {
+    return dependencies.sendRuntime(message);
+  }
+  return sendRuntime(message);
+}
+
+/** Advance the monotonic UI operation generation and optionally cancel a pending SEND. */
+function advanceOperationGeneration(model, cancelPendingSend = false) {
+  const generation = (Number.isInteger(model.operationGeneration)
+    ? model.operationGeneration
+    : 0) + 1;
+  model.operationGeneration = generation;
+  if (cancelPendingSend) model.pendingSendGeneration = null;
+  return generation;
+}
+
+/** Start one load generation, invalidating prior loads and identity-bound SENDs on tab change. */
+function beginLoadOperation(model, tabId, cancelPendingSend = false) {
+  const tabChanged = model.tabId !== tabId;
+  const generation = advanceOperationGeneration(
+    model,
+    cancelPendingSend || tabChanged
+  );
+  return Object.freeze({ generation, tabId, tabChanged });
+}
+
+/** Return whether one load still owns state application and its finally block. */
+function isCurrentLoadOperation(model, operation) {
+  return model.tabId === operation.tabId
+    && model.operationGeneration === operation.generation
+    && !model.pendingSendGeneration;
+}
+
+/** Start one SEND generation that takes priority over every overlapping load. */
+function beginSendOperation(model, tabId) {
+  const generation = advanceOperationGeneration(model);
+  model.pendingSendGeneration = generation;
+  return Object.freeze({ generation, tabId });
+}
+
+/** Settle the current SEND into a new generation that invalidates every overlapping load. */
+function settleSendOperation(model, operation) {
+  if (
+    model.tabId !== operation.tabId
+    || model.pendingSendGeneration !== operation.generation
+  ) {
+    return null;
+  }
+  const generation = advanceOperationGeneration(model);
+  model.pendingSendGeneration = null;
+  return Object.freeze({ generation, tabId: operation.tabId });
+}
+
+/** Return whether one settled operation still owns final state rendering. */
+function isCurrentSettledOperation(model, operation) {
+  return !!operation
+    && model.tabId === operation.tabId
+    && model.operationGeneration === operation.generation;
 }
 
 /** Resolve the active browser tab that owns the current Side Panel Workspace. */
@@ -222,14 +297,14 @@ function renderMarkdownInto(container, markdown, windowRef) {
 }
 
 /** Copy raw source text through an injected test seam or the browser Clipboard API. */
-async function copyTextValue(text, dependencies = {}) {
+async function copyTextValue(text, dependencies = {}, windowRef) {
   if (typeof dependencies.copyText === "function") {
     await dependencies.copyText(text);
     return;
   }
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-  }
+  const clipboard = windowRef?.navigator?.clipboard;
+  if (!clipboard?.writeText) throw new Error("Clipboard API is unavailable");
+  await clipboard.writeText(text);
 }
 
 /** Render one immutable Attachment inside its originating Assistant message. */
@@ -263,17 +338,24 @@ function renderAttachment(documentRef, attachment, view, dependencies) {
     const copyButton = textElement(documentRef, "button", "attachment-copy", view.strings.copy);
     copyButton.type = "button";
     copyButton.setAttribute("aria-label", `${view.strings.copy}: ${attachment.title}`);
+    copyButton.setAttribute("aria-live", "polite");
     copyButton.addEventListener("click", async () => {
       copyButton.disabled = true;
       try {
-        await copyTextValue(attachment.content, dependencies);
+        await copyTextValue(attachment.content, dependencies, documentRef.defaultView);
         copyButton.textContent = view.strings.copied;
+        copyButton.setAttribute("aria-label", `${view.strings.copied}: ${attachment.title}`);
       } catch {
-        copyButton.textContent = view.strings.copy;
+        copyButton.textContent = view.strings.copyFailed;
+        copyButton.setAttribute("aria-label", `${view.strings.copyFailed}: ${attachment.title}`);
       } finally {
-        documentRef.defaultView.setTimeout(() => {
+        const scheduleRestore = typeof dependencies.setTimeout === "function"
+          ? dependencies.setTimeout
+          : documentRef.defaultView.setTimeout.bind(documentRef.defaultView);
+        scheduleRestore(() => {
           copyButton.disabled = false;
           copyButton.textContent = view.strings.copy;
+          copyButton.setAttribute("aria-label", `${view.strings.copy}: ${attachment.title}`);
         }, 1400);
       }
     });
@@ -515,7 +597,7 @@ export function renderSidePanel(documentRef, model, dependencies = {}) {
 }
 
 /** Send one Workspace turn while retaining composer input until canonical success. */
-async function submitMessage(elements, model, dependencies) {
+export async function submitMessage(elements, model, dependencies = {}) {
   const message = elements.messageInput.value.trim();
   if (!message || !model.tabId || !model.selectedActionId || model.loading) return;
   const requestTabId = model.tabId;
@@ -526,15 +608,19 @@ async function submitMessage(elements, model, dependencies) {
   model.loading = true;
   model.error = null;
   model.retry = () => elements.messageForm.requestSubmit();
+  const operation = beginSendOperation(model, requestTabId);
+  let settledOperation = null;
   render(elements, model, dependencies);
   try {
-    const response = await sendRuntime({
+    const response = await sendRuntimeWith(dependencies, {
       type: WORKSPACE_SEND,
       tabId: requestTabId,
       actionId: requestActionId,
       message,
     });
-    if (model.tabId !== requestTabId) return;
+    settledOperation = settleSendOperation(model, operation);
+    if (!settledOperation) return;
+    model.retry = () => elements.messageForm.requestSubmit();
     if (!response?.ok) {
       model.error = workspaceResponseError(response, view.strings.retryFallback);
       return;
@@ -544,13 +630,15 @@ async function submitMessage(elements, model, dependencies) {
     model.selectedActionId = response.state?.selectedActionId || model.selectedActionId;
     elements.messageInput.value = "";
   } catch (error) {
-    if (model.tabId !== requestTabId) return;
+    settledOperation = settleSendOperation(model, operation);
+    if (!settledOperation) return;
+    model.retry = () => elements.messageForm.requestSubmit();
     model.error = workspaceResponseError(
       { error: error?.message || view.strings.retryFallback },
       view.strings.retryFallback
     );
   } finally {
-    if (model.tabId === requestTabId) {
+    if (isCurrentSettledOperation(model, settledOperation)) {
       model.loading = false;
       render(elements, model, dependencies);
       if (!isUpdateRequired(model.error)) elements.messageInput.focus();
@@ -559,11 +647,21 @@ async function submitMessage(elements, model, dependencies) {
 }
 
 /** Reload one tab's Workspace while ignoring responses superseded by a newer tab switch. */
-async function loadWorkspaceForTab(elements, model, tabId, dependencies) {
+export async function loadWorkspaceForTab(
+  elements,
+  model,
+  tabId,
+  dependencies = {},
+  options = {}
+) {
+  const operation = beginLoadOperation(model, tabId, !!options.cancelPendingSend);
+  const clearState = operation.tabChanged || !!options.clearState;
   model.tabId = tabId;
-  model.state = null;
-  model.selectedActionId = null;
-  model.renderedHistoryCount = -1;
+  if (clearState) {
+    model.state = null;
+    model.selectedActionId = null;
+    model.renderedHistoryCount = -1;
+  }
   model.loading = !!tabId;
   model.error = null;
   model.retry = () => loadWorkspaceForTab(elements, model, tabId, dependencies).catch(() => {});
@@ -571,8 +669,8 @@ async function loadWorkspaceForTab(elements, model, tabId, dependencies) {
   if (!tabId) return;
 
   try {
-    const response = await sendRuntime({ type: WORKSPACE_GET, tabId });
-    if (model.tabId !== tabId) return;
+    const response = await sendRuntimeWith(dependencies, { type: WORKSPACE_GET, tabId });
+    if (!isCurrentLoadOperation(model, operation)) return;
     if (response?.ok) {
       model.state = response.state;
       model.lang = response.lang || "browser";
@@ -582,14 +680,14 @@ async function loadWorkspaceForTab(elements, model, tabId, dependencies) {
       model.error = workspaceResponseError(response, COPY[locale].retryFallback);
     }
   } catch (error) {
-    if (model.tabId !== tabId) return;
+    if (!isCurrentLoadOperation(model, operation)) return;
     const locale = resolveUiLang(model.lang, model.uiLanguage);
     model.error = workspaceResponseError(
       { error: error?.message || COPY[locale].retryFallback },
       COPY[locale].retryFallback
     );
   } finally {
-    if (model.tabId === tabId) {
+    if (isCurrentLoadOperation(model, operation)) {
       model.loading = false;
       render(elements, model, dependencies);
       if (model.state && !isUpdateRequired(model.error)) elements.messageInput.focus();
@@ -608,6 +706,8 @@ async function initSidePanel() {
     uiLanguage: chrome.i18n.getUILanguage() || "en",
     selectedActionId: null,
     renderedHistoryCount: -1,
+    operationGeneration: 0,
+    pendingSendGeneration: null,
     loading: false,
     error: null,
     retry: null,
@@ -621,10 +721,7 @@ async function initSidePanel() {
     );
   });
   elements.messageInput.addEventListener("keydown", (event) => {
-    if (shouldSubmitMessage(event)) {
-      event.preventDefault();
-      elements.messageForm.requestSubmit();
-    }
+    handleComposerKeydown(event, elements.messageForm);
   });
   elements.messageForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -636,7 +733,11 @@ async function initSidePanel() {
   const onWorkspaceMessage = (message) => {
     const targetTabId = workspaceLifecycleTarget(message, model.tabId);
     if (targetTabId !== null) {
-      loadWorkspaceForTab(elements, model, targetTabId, dependencies).catch(() => {});
+      const reset = message.type === WORKSPACE_RESET;
+      loadWorkspaceForTab(elements, model, targetTabId, dependencies, {
+        cancelPendingSend: reset,
+        clearState: reset,
+      }).catch(() => {});
       return;
     }
     const isActiveError = !message?.tabId || message.tabId === model.tabId;
@@ -647,6 +748,7 @@ async function initSidePanel() {
         || message?.type === "AGENT_BRIDGE_WORKSPACE_ERROR"
       )
     ) {
+      advanceOperationGeneration(model, true);
       model.error = workspaceResponseError(message);
       model.loading = false;
       model.retry = () => elements.messageForm.requestSubmit();

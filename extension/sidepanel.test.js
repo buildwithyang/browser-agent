@@ -35,11 +35,16 @@ function message(index, overrides = {}) {
 }
 
 /** Build one immutable Attachment fixture. */
-function attachment({ type = "cover_letter", content = COVER_LETTER_MARKDOWN } = {}) {
+function attachment({
+  type = "cover_letter",
+  content = COVER_LETTER_MARKDOWN,
+  idIndex = type === "cv" ? 2 : 1,
+  version = 1,
+} = {}) {
   return {
-    id: fixtureId("2", type === "cv" ? 2 : 1),
+    id: fixtureId("2", idIndex),
     artifact_id: fixtureId("1", type === "cv" ? 2 : 1),
-    version: 1,
+    version,
     type,
     title: type === "cv" ? "Tailored CV" : "Cover Letter",
     content,
@@ -79,6 +84,7 @@ async function renderState(state, overrides = {}) {
   assert.equal(typeof sidepanel.renderSidePanel, "function");
   const dom = await panelDocument();
   const copied = [];
+  const { dependencies: dependencyOverrides = {}, ...modelOverrides } = overrides;
   const model = {
     state,
     lang: "en",
@@ -86,12 +92,24 @@ async function renderState(state, overrides = {}) {
     selectedActionId: state?.selectedActionId || null,
     loading: false,
     error: null,
-    ...overrides,
+    ...modelOverrides,
   };
   const elements = sidepanel.renderSidePanel(dom.window.document, model, {
     copyText: async (text) => copied.push(text),
+    ...dependencyOverrides,
   });
   return { copied, dom, elements, model };
+}
+
+/** Create one manually controlled Promise for operation-ordering tests. */
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 test("manifest declares the Side Panel entry point and release version", async () => {
@@ -184,6 +202,87 @@ test("Cover Letter Attachment stays in its Assistant Message, renders Markdown, 
   assert.deepEqual(copied, [COVER_LETTER_MARKDOWN]);
 });
 
+test("historical Attachment versions remain visible and copy their own raw Markdown", async () => {
+  const first = attachment({ content: "# Version one", idIndex: 11, version: 1 });
+  const second = attachment({ content: "# Version two", idIndex: 12, version: 2 });
+  const histories = [
+    message(1, { content: "First draft.", attachments: [first] }),
+    message(3, { content: "Revised draft.", attachments: [second] }),
+  ];
+  const artifacts = {
+    cv: null,
+    cover_letter: {
+      id: second.artifact_id,
+      type: second.type,
+      version: second.version,
+      title: second.title,
+      draft: second.content,
+      attachment: second,
+    },
+  };
+  const { copied, dom } = await renderState(workspace({ histories, artifacts }));
+  const attachments = [...dom.window.document.querySelectorAll(".attachment.cover-letter")];
+
+  assert.deepEqual(
+    attachments.map((item) => item.querySelector(".attachment-body")?.textContent.trim()),
+    ["Version one", "Version two"]
+  );
+  attachments[0].querySelector(".attachment-copy")?.click();
+  attachments[1].querySelector(".attachment-copy")?.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(copied, ["# Version one", "# Version two"]);
+});
+
+test("Cover Letter copy reports Clipboard absence and rejection before restoring", async () => {
+  const item = attachment();
+  const state = workspace({
+    histories: [message(1, { attachments: [item] })],
+    artifacts: {
+      cv: null,
+      cover_letter: {
+        id: item.artifact_id,
+        type: item.type,
+        version: item.version,
+        title: item.title,
+        draft: item.content,
+        attachment: item,
+      },
+    },
+  });
+
+  for (const dependencies of [
+    {},
+    { copyText: async () => { throw new Error("permission denied"); } },
+  ]) {
+    const dom = await panelDocument();
+    const model = {
+      state,
+      lang: "en",
+      uiLanguage: "en-US",
+      selectedActionId: "analyze",
+      loading: false,
+      error: null,
+    };
+    let restore = null;
+    const elements = sidepanel.renderSidePanel(dom.window.document, model, {
+      ...dependencies,
+      setTimeout: (callback) => { restore = callback; },
+    });
+    const button = dom.window.document.querySelector(".attachment-copy");
+
+    button?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(button?.textContent, "Copy failed");
+    assert.match(button?.getAttribute("aria-label") || "", /Copy failed/i);
+    assert.equal(button?.disabled, true);
+    assert.equal(typeof restore, "function");
+    restore();
+    assert.equal(button?.textContent, "Copy Markdown");
+    assert.equal(button?.disabled, false);
+    assert.ok(elements.timeline.contains(button));
+  }
+});
+
 test("CV Attachment opens the response URL safely and Side Panel has no preview constant", async () => {
   const responseUrl = "https://files.example.com/generated/cv-42?signature=response";
   const item = attachment({ type: "cv", content: responseUrl });
@@ -265,11 +364,180 @@ test("update-required and retryable errors render distinct accessible composer s
   assert.equal(retryable.elements.messageInput.disabled, false);
 });
 
-test("composer keyboard policy sends Enter and preserves Shift+Enter", () => {
-  assert.equal(typeof sidepanel.shouldSubmitMessage, "function");
-  assert.equal(sidepanel.shouldSubmitMessage({ key: "Enter", shiftKey: false, isComposing: false }), true);
-  assert.equal(sidepanel.shouldSubmitMessage({ key: "Enter", shiftKey: true, isComposing: false }), false);
-  assert.equal(sidepanel.shouldSubmitMessage({ key: "Enter", shiftKey: false, isComposing: true }), false);
+test("textarea dispatch submits Enter once and preserves native Shift+Enter", async () => {
+  assert.equal(typeof sidepanel.handleComposerKeydown, "function");
+  const dom = await panelDocument();
+  const textarea = dom.window.document.getElementById("message-input");
+  const form = dom.window.document.getElementById("message-form");
+  let submits = 0;
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submits += 1;
+  });
+  textarea?.addEventListener("keydown", (event) => {
+    sidepanel.handleComposerKeydown(event, form);
+  });
+
+  const enter = new dom.window.KeyboardEvent("keydown", {
+    key: "Enter",
+    bubbles: true,
+    cancelable: true,
+  });
+  textarea?.dispatchEvent(enter);
+  assert.equal(enter.defaultPrevented, true);
+  assert.equal(submits, 1);
+
+  const shiftEnter = new dom.window.KeyboardEvent("keydown", {
+    key: "Enter",
+    shiftKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  textarea?.dispatchEvent(shiftEnter);
+  assert.equal(shiftEnter.defaultPrevented, false);
+  assert.equal(submits, 1);
+});
+
+test("same-tab load generations allow only the latest response and finally block", async () => {
+  assert.equal(typeof sidepanel.loadWorkspaceForTab, "function");
+  const { elements, model } = await renderState(null, { tabId: 7 });
+  const oldRequest = deferred();
+  const newRequest = deferred();
+  const requests = [oldRequest, newRequest];
+  const dependencies = {
+    sendRuntime: () => requests.shift().promise,
+  };
+
+  const first = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  const second = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  const oldResponse = workspace({ pageTitle: "Old response" });
+  const newResponse = workspace({ pageTitle: "New response" });
+
+  oldRequest.resolve({ ok: true, state: oldResponse, lang: "en" });
+  await first;
+  assert.equal(model.state, null);
+  assert.equal(model.loading, true);
+
+  newRequest.resolve({ ok: true, state: newResponse, lang: "en" });
+  await second;
+  assert.equal(model.state?.pageTitle, "New response");
+  assert.equal(model.loading, false);
+});
+
+test("late older same-tab load cannot overwrite a completed newer load", async () => {
+  assert.equal(typeof sidepanel.loadWorkspaceForTab, "function");
+  const { elements, model } = await renderState(null, { tabId: 7 });
+  const oldRequest = deferred();
+  const newRequest = deferred();
+  const requests = [oldRequest, newRequest];
+  const dependencies = { sendRuntime: () => requests.shift().promise };
+
+  const first = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  const second = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  newRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Canonical new" }),
+    lang: "en",
+  });
+  await second;
+  oldRequest.resolve({ ok: false, error: "Stale load error" });
+  await first;
+
+  assert.equal(model.state?.pageTitle, "Canonical new");
+  assert.equal(model.loading, false);
+  assert.equal(model.error, null);
+});
+
+test("SEND invalidates overlapping GET state and keeps loading until SEND settles", async () => {
+  assert.equal(typeof sidepanel.submitMessage, "function");
+  assert.equal(typeof sidepanel.loadWorkspaceForTab, "function");
+  const initial = workspace({ pageTitle: "Initial" });
+  const { elements, model } = await renderState(initial, {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const sendRequest = deferred();
+  const getRequest = deferred();
+  const dependencies = {
+    sendRuntime: (request) => (
+      request.type === sidepanel.WORKSPACE_SEND ? sendRequest.promise : getRequest.promise
+    ),
+  };
+  elements.messageInput.value = "Please revise";
+
+  const send = sidepanel.submitMessage(elements, model, dependencies);
+  const load = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  getRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Stale GET" }),
+    lang: "en",
+  });
+  await load;
+  assert.equal(model.state?.pageTitle, "Initial");
+  assert.equal(model.loading, true);
+
+  sendRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Canonical SEND" }),
+    lang: "en",
+  });
+  await send;
+  assert.equal(model.state?.pageTitle, "Canonical SEND");
+  assert.equal(model.loading, false);
+  assert.equal(model.error, null);
+});
+
+test("late Workspace updates refresh only the currently active tab", () => {
+  assert.equal(sidepanel.workspaceLifecycleTarget({
+    type: sidepanel.WORKSPACE_UPDATED,
+    tabId: 7,
+  }, 8), null, "late tab A update must not switch active tab B");
+  assert.equal(sidepanel.workspaceLifecycleTarget({
+    type: sidepanel.WORKSPACE_UPDATED,
+    tabId: 8,
+  }, 8), 8, "active tab B update refreshes B");
+  assert.equal(sidepanel.workspaceLifecycleTarget({
+    type: sidepanel.WORKSPACE_UPDATED,
+    tabId: 8,
+  }, null), null, "no active tab means no update-driven tab selection");
+  assert.equal(sidepanel.workspaceLifecycleTarget({
+    type: sidepanel.WORKSPACE_RESET,
+  }, null), null, "global reset cannot manufacture an active tab");
+});
+
+test("tab switch and reset generations invalidate earlier loads", async () => {
+  assert.equal(typeof sidepanel.loadWorkspaceForTab, "function");
+  const { elements, model } = await renderState(workspace({ pageTitle: "Tab A" }), {
+    tabId: 7,
+  });
+  const tabARequest = deferred();
+  const tabBRequest = deferred();
+  const resetRequest = deferred();
+  const requests = [tabARequest, tabBRequest, resetRequest];
+  const dependencies = { sendRuntime: () => requests.shift().promise };
+
+  const tabALoad = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  const tabBLoad = sidepanel.loadWorkspaceForTab(elements, model, 8, dependencies);
+  tabARequest.resolve({ ok: true, state: workspace({ pageTitle: "Late A" }), lang: "en" });
+  await tabALoad;
+  assert.equal(model.tabId, 8);
+  assert.equal(model.state, null);
+  assert.equal(model.loading, true);
+
+  tabBRequest.resolve({ ok: true, state: workspace({ pageTitle: "Tab B" }), lang: "en" });
+  await tabBLoad;
+  assert.equal(model.state?.pageTitle, "Tab B");
+
+  const resetLoad = sidepanel.loadWorkspaceForTab(elements, model, 8, dependencies, {
+    cancelPendingSend: true,
+    clearState: true,
+  });
+  assert.equal(model.state, null);
+  resetRequest.resolve({ ok: false, error: "Workspace reset" });
+  await resetLoad;
+  assert.equal(model.state, null);
+  assert.match(model.error?.message || "", /reset/i);
+  assert.equal(model.loading, false);
 });
 
 test("light responsive CSS contains horizontal overflow and keeps rich content local", async () => {
