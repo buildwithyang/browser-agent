@@ -264,20 +264,17 @@ def test_specialist_rejects_results_outside_legal_matrix(
         "not json",
         "[]",
         '{"type":"reply"}',
-        '{"type":"reply","markdown":"answer","html":"<p>answer</p>"}',
-        '{"type":"reply","markdown":"<p>answer</p>"}',
-        '{"type":"reply","markdown":"<svg>answer</svg>"}',
-        '{"type":"reply","markdown":"<!-- HTML only -->"}',
+        '{"type":"reply","markdown":"   "}',
         '{"type":"artifact_draft","markdown":"ready","artifact_type":"cv",'
-        '"title":"CV","draft":"<article><h1>Candidate</h1></article>"}',
+        '"title":"CV","draft":"   "}',
         '{"type":"reply","markdown":"answer"}\n{"type":"reply","markdown":"second"}',
         '```json\n{"type":"reply","markdown":"answer"}\n```',
     ],
 )
-def test_specialist_rejects_malformed_or_html_only_results(
+def test_specialist_rejects_malformed_or_empty_structured_results(
     raw_result: str,
 ) -> None:
-    """Require exactly one complete Markdown-only structured JSON object."""
+    """Require exactly one structured JSON object with non-empty string content."""
 
     agent = ResumeTailoringAgent(complete_prompt=_completion(raw_result))
 
@@ -288,15 +285,18 @@ def test_specialist_rejects_malformed_or_html_only_results(
 @pytest.mark.parametrize(
     "markdown",
     [
+        "  <p>Raw HTML is still opaque result content.</p>  ",
+        "<svg><text>Raw SVG content</text></svg>",
+        "<!-- Raw HTML comment -->",
         "Use the generic type `<T>` in the implementation.",
         "## Recommendation\n\nUse <strong>Go ownership</strong> as supporting evidence.",
         "Hello <span>inline note</span> for the recruiter.",
     ],
 )
-def test_specialist_accepts_markdown_with_literal_notation_or_inline_html(
+def test_specialist_treats_raw_html_and_technical_notation_as_opaque_strings(
     markdown: str,
 ) -> None:
-    """Allow valid Markdown content that merely contains tag-like or inline HTML text."""
+    """Leave accepted Markdown syntax and sanitization to the Extension."""
 
     raw_result = json.dumps({"type": "reply", "markdown": markdown})
 
@@ -305,16 +305,16 @@ def test_specialist_accepts_markdown_with_literal_notation_or_inline_html(
     assert result.content.markdown == markdown
 
 
-def test_artifact_accepts_tag_like_title_and_markdown_code_fence() -> None:
-    """Avoid treating titles or valid fenced Markdown as an incomplete draft heuristic."""
+def test_artifact_treats_raw_html_title_and_markdown_as_opaque_strings() -> None:
+    """Avoid classifying Artifact title or draft syntax in Gateway."""
 
     raw_result = json.dumps(
         {
             "type": "artifact_draft",
-            "markdown": "Created the complete CV.",
+            "markdown": "<p>Created the complete CV.</p>",
             "artifact_type": "cv",
             "title": "C++ Engineer <T>",
-            "draft": "# Candidate\n\n## Technical Notes\n\n```diff\n@@ protocol marker\n```",
+            "draft": "<article><h1>Candidate</h1><p>Complete CV</p></article>",
         }
     )
 
@@ -324,6 +324,18 @@ def test_artifact_accepts_tag_like_title_and_markdown_code_fence() -> None:
 
     assert isinstance(result.content, ArtifactDraftResult)
     assert result.content.title == "C++ Engineer <T>"
+    assert result.content.draft.startswith("<article>")
+
+
+def test_specialist_rejects_extra_structured_html_field() -> None:
+    """Forbid an `html` transport field even though string content remains opaque."""
+
+    raw_result = json.dumps(
+        {"type": "reply", "markdown": "Accepted content", "html": "<p>duplicate</p>"}
+    )
+
+    with pytest.raises(ValueError, match="Specialist response is invalid"):
+        GeneralQAAgent(complete_prompt=_completion(raw_result)).handle(_context())
 
 
 @pytest.mark.parametrize(
