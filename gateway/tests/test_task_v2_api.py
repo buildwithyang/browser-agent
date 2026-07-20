@@ -46,11 +46,11 @@ def test_quick_insight_endpoint_has_stable_response_shape(monkeypatch) -> None:
     _wire(monkeypatch)
     response = TestClient(main.app).post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "2"},
+        headers={"X-Agent-Bridge-Protocol-Version": "3"},
         json={"url": "https://example.com", "pageText": "Page"},
     )
 
     assert response.status_code == 200
     assert response.json()["insight"]["title"] == "Page Summary"
-    assert response.json()["protocol_version"] == 2
+    assert response.json()["protocol_version"] == 3
     assert "document" not in response.json()

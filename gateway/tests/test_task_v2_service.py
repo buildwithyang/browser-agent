@@ -57,7 +57,7 @@ def test_quick_insight_returns_typed_insight_response() -> None:
     assert response.insight.title == "Page Summary"
     assert response.actions[0].id == "ask_more"
     assert response.meta.input_chars == len("quick prompt")
-    assert response.protocol_version == 2
+    assert response.protocol_version == 3
 
 
 def test_quick_insight_uses_explicit_agent_operations() -> None:

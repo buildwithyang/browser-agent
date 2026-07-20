@@ -87,6 +87,7 @@ def _context(*, lang: str = "en", message: str = "What should I emphasize?") -> 
         trigger=WorkspaceTrigger.USER_MESSAGE,
         url="https://www.linkedin.com/jobs/view/123",
         resourceUrl="https://www.linkedin.com/jobs/view/123",
+        operationId="00000000-0000-0000-0000-000000000001",
         title="Senior Go Engineer",
         selectedText=LONG_JD,
         pageText="FULL PAGE BODY",

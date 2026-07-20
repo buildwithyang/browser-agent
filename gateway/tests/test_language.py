@@ -58,6 +58,7 @@ def test_workspace_uses_language_directive() -> None:
         trigger="user_message",
         url="https://x.com",
         resourceUrl="https://x.com",
+        operationId="00000000-0000-0000-0000-000000000001",
         title="t",
         pageText="body",
         lang="zh",

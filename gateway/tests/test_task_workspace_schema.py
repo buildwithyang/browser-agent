@@ -60,6 +60,7 @@ def _request_payload(**overrides: object) -> dict[str, object]:
         "histories": [],
         "artifacts": _artifacts(),
         "message": "What should I highlight?",
+        "operationId": "00000000-0000-0000-0000-000000000001",
     }
     payload.update(overrides)
     return payload
@@ -251,7 +252,7 @@ def test_workspace_response_is_markdown_only_full_state() -> None:
     )
 
     dumped = response.model_dump()
-    assert response.protocol_version == 2
+    assert response.protocol_version == 3
     assert response.result_type == "reply"
     assert dumped["artifacts"] == {"cv": None, "cover_letter": None}
     assert not {"document", "html", "sections"}.intersection(dumped)

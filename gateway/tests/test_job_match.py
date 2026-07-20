@@ -72,6 +72,7 @@ def test_job_chat_context_is_immutable_and_request_scoped() -> None:
         trigger=WorkspaceTrigger.QUICK_INSIGHT_ACTION,
         url="https://www.linkedin.com/jobs/view/1",
         resourceUrl="https://www.linkedin.com/jobs/view/1",
+        operationId="00000000-0000-0000-0000-000000000001",
         title="Senior Go Engineer",
         selectedText=LONG_JD,
         actionId=ActionId.ANALYZE,

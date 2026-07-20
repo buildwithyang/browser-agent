@@ -71,7 +71,7 @@ def test_require_auth_blocks_anonymous(monkeypatch, tmp_path):
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "2"},
+        headers={"X-Agent-Bridge-Protocol-Version": "3"},
         json={"url": "https://x", "pageText": "y"},
     )
     assert r.status_code == 401
@@ -86,7 +86,7 @@ def test_require_auth_allows_valid_bearer(monkeypatch, tmp_path):
         "/tasks/quick-insight",
         headers={
             "Authorization": f"Bearer {token}",
-            "X-Agent-Bridge-Protocol-Version": "2",
+                "X-Agent-Bridge-Protocol-Version": "3",
         },
         json={"url": "https://x", "pageText": "y"},
     )
@@ -99,7 +99,7 @@ def test_self_hosted_allows_anonymous(monkeypatch, tmp_path):
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "2"},
+        headers={"X-Agent-Bridge-Protocol-Version": "3"},
         json={"url": "https://x", "pageText": "y"},
     )
     assert r.status_code == 200

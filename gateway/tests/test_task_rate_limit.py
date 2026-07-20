@@ -113,7 +113,7 @@ def test_api_maps_rate_limit_to_429(monkeypatch):
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "2"},
+        headers={"X-Agent-Bridge-Protocol-Version": "3"},
         json={"url": "https://x"},
     )
     assert r.status_code == 429
@@ -159,6 +159,7 @@ def test_workspace_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
         trigger="user_message",
         url="https://example.com",
         resourceUrl="https://example.com/",
+        operationId="00000000-0000-0000-0000-000000000001",
         actionId=ActionId.ASK_MORE,
         histories=[],
         artifacts={"cv": None, "cover_letter": None},

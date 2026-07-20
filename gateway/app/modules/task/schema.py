@@ -274,6 +274,7 @@ class WorkspaceRequestBase(PageContext):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     resource_url: str = Field(alias="resourceUrl")
+    operation_id: UUID = Field(alias="operationId")
     action_id: ActionId = Field(alias="actionId")
     histories: list[HistoryMessage] = Field(default_factory=list, max_length=10)
     artifacts: Artifacts

@@ -23,7 +23,7 @@ from app.modules.task.schema import (
 def test_extension_protocol_constants_are_stable() -> None:
     """Keep the Extension wire-version and Chrome Web Store fallback stable."""
 
-    assert CURRENT_EXTENSION_PROTOCOL_VERSION == 2
+    assert CURRENT_EXTENSION_PROTOCOL_VERSION == 3
     assert EXTENSION_PROTOCOL_HEADER == "X-Agent-Bridge-Protocol-Version"
     assert DEFAULT_EXTENSION_UPDATE_URL == (
         "https://chromewebstore.google.com/detail/agent-bridge/"
@@ -62,6 +62,7 @@ def test_final_workspace_names_replace_every_transitional_document_type() -> Non
         trigger="user_message",
         url="https://example.com/jobs/1",
         resourceUrl="https://example.com/jobs/1",
+        operationId="00000000-0000-0000-0000-000000000001",
         actionId="ask_more",
         artifacts={"cv": None, "cover_letter": None},
         message="Follow up",

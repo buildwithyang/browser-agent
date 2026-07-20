@@ -11,7 +11,7 @@ from app.modules.task.schema import (
     WorkspaceResultType,
 )
 
-PROTOCOL_HEADERS = {"X-Agent-Bridge-Protocol-Version": "2"}
+PROTOCOL_HEADERS = {"X-Agent-Bridge-Protocol-Version": "3"}
 
 
 class ApiWorkspaceAgent(WorkspaceAgent):
@@ -80,6 +80,7 @@ def _payload(**overrides: object) -> dict[str, object]:
         "trigger": "user_message",
         "url": "https://example.com/article",
         "resourceUrl": "https://example.com/article",
+        "operationId": "00000000-0000-0000-0000-000000000001",
         "actionId": "ask_more",
         "histories": [],
         "artifacts": {"cv": None, "cover_letter": None},
@@ -115,7 +116,7 @@ def test_workspace_endpoint_returns_complete_final_state(monkeypatch) -> None:
     ]
     assert body["artifacts"] == {"cv": None, "cover_letter": None}
     assert not {"document", "html", "sections"}.intersection(body)
-    assert body["protocol_version"] == 2
+    assert body["protocol_version"] == 3
 
 
 def test_workspace_endpoint_rejects_mismatched_resource_url(monkeypatch) -> None:

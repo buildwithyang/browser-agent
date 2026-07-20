@@ -170,6 +170,7 @@ def _workspace_payload() -> dict[str, object]:
         "histories": [],
         "artifacts": {"cv": None, "cover_letter": None},
         "message": "What matters?",
+        "operationId": "00000000-0000-0000-0000-000000000001",
     }
 
 
@@ -179,7 +180,7 @@ def _assert_upgrade_required(response: Any) -> None:
     assert response.status_code == 426
     assert response.json() == UPGRADE_JSON
     assert response.headers[EXTENSION_PROTOCOL_HEADER] == PROTOCOL_VALUE
-    assert response.headers["upgrade"] == "Agent-Bridge/2"
+    assert response.headers["upgrade"] == f"Agent-Bridge/{CURRENT_EXTENSION_PROTOCOL_VERSION}"
 
 
 def test_upgrade_response_factory_uses_configured_update_url() -> None:
@@ -218,8 +219,8 @@ def test_settings_value_is_wired_through_main_middleware_to_actual_426() -> None
 @pytest.mark.parametrize(
     "values",
     [
-        pytest.param((b"2", b"2"), id="same"),
-        pytest.param((b"2", b"3"), id="conflicting"),
+        pytest.param((b"3", b"3"), id="same"),
+        pytest.param((b"3", b"2"), id="conflicting"),
     ],
 )
 def test_duplicate_protocol_headers_are_rejected(
@@ -264,7 +265,7 @@ def test_single_matching_protocol_header_reaches_inner_app_once() -> None:
     messages = _run_protocol_middleware(
         inner,
         path="/tasks/quick-insight",
-        headers=[(PROTOCOL_HEADER_BYTES, b"2")],
+        headers=[(PROTOCOL_HEADER_BYTES, b"3")],
     )
 
     assert messages[0]["status"] == 204
@@ -326,7 +327,7 @@ def test_accepted_inner_protocol_headers_are_replaced_with_one_current_value() -
     messages = _run_protocol_middleware(
         inner,
         path="/tasks/workspace",
-        headers=[(PROTOCOL_HEADER_BYTES, b"2")],
+        headers=[(PROTOCOL_HEADER_BYTES, b"3")],
     )
     response_headers = [
         value
@@ -334,7 +335,7 @@ def test_accepted_inner_protocol_headers_are_replaced_with_one_current_value() -
         if name.lower() == PROTOCOL_HEADER_BYTES
     ]
 
-    assert response_headers == [b"2"]
+    assert response_headers == [b"3"]
 
 
 @pytest.mark.parametrize("path", ["/tasks/quick-insight", "/tasks/workspace"])
@@ -348,7 +349,8 @@ def test_accepted_inner_protocol_headers_are_replaced_with_one_current_value() -
         pytest.param("0", id="zero"),
         pytest.param("-1", id="negative"),
         pytest.param("1", id="older"),
-        pytest.param("3", id="newer"),
+        pytest.param("2", id="older"),
+        pytest.param("4", id="newer"),
         pytest.param("9" * 10_000, id="huge"),
     ],
 )
@@ -382,7 +384,7 @@ def test_matching_protocol_reaches_service_and_marks_success_response(
     payload: dict[str, object],
     operation: str,
 ) -> None:
-    """Pass version two to the router exactly once and tag successful JSON."""
+    """Pass version three to the router exactly once and tag successful JSON."""
 
     service = RecordingService()
     _wire(monkeypatch, service)
