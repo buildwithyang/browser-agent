@@ -3,8 +3,11 @@
 日期：2026-07-19
 
 > [!WARNING]
-> 本文是历史视觉方案。Chrome 无法设置 Side Panel 默认宽度、浅色布局与 Action 自动换行
-> 约束仍有效；Quick Insight cards、经典聊天时间线、Markdown、Artifact Attachment 与
+> 本文是历史视觉方案。[2026-07-20 Quiet Precision Side Panel Design](2026-07-20-quiet-precision-side-panel-design.md)
+> 已替代本文所有 Side Panel 视觉与布局；本文 §4.2 Quick Insight context card 与
+> §4.4 standalone latest result 不再有效。Chrome 无法设置默认宽度、280–600px 响应式、
+> 无横向溢出和网页 Quick Insight 浮层 Action 自动换行约束仍有效；经典聊天时间线、
+> Markdown、Artifact Attachment 与
 > CV URL 契约以 [2026-07-19 Job Match Workspace Orchestration Design](2026-07-19-job-match-workspace-orchestration-design.md)
 > 为准。
 
