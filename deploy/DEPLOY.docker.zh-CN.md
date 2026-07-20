@@ -8,8 +8,15 @@ Docker Compose 启动三个服务：
 | `gateway` | python + uv | FastAPI、Casdoor、OSS、PostgreSQL 与 Agent 编排 |
 | `db` | postgres:16 | 首次启动时执行 `initdb/001-schema.sql` |
 
-浏览器与扩展只访问 `web` 的 `http://<host>:17321`。Gateway 和 PostgreSQL 只在 Compose
-内网可见；前端使用同源 `/api`，避免额外的 CORS 与跨站 cookie 配置。
+本指南的 Extension 接入部分只描述 Agent Bridge 官方云端部署。Compose 本身可以把
+web/frontend/API 部署到自定义 `http://<host>:17321`，Gateway 和 PostgreSQL 仍只在
+Compose 内网可见，前端通过同源 `/api` 访问 Gateway。
+
+当前 Extension 的 Gateway 目标不可由用户配置：商店包和 production ZIP 只访问
+`https://browser.buildwithyang.com/api`，源码 development build 只访问
+`http://127.0.0.1:17321`；`manifest.json` 的 host permissions 也只允许这两个 host。
+因此，通用自定义 host Docker 部署目前只能作为 web/frontend/API 部署使用，不是受支持
+的 Extension 目标。
 
 ## 前置条件
 
@@ -61,12 +68,17 @@ docker compose ps
 
 ## 4. 访问与扩展
 
-浏览器打开 `http://<host>:17321`，完成 Casdoor 登录并回到简历管理页。
+自定义 host 部署可由普通浏览器打开 `http://<host>:17321`，完成 Casdoor 登录并验证
+web/frontend/API；这不会让当前 Extension 连接到该 host。
 
-扩展统一从 [Chrome 应用商店](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai)
-安装。商店包访问 `https://browser.buildwithyang.com/api`；从源码加载的开发包访问
-`http://127.0.0.1:17321`。开发调试时可在 `chrome://extensions` 选择仓库的
-`extension/` 目录。
+官方云端用户从 [Chrome 应用商店](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai)
+安装扩展；商店包和仓库生成的 production ZIP 固定访问
+`https://browser.buildwithyang.com/api`。从源码加载的 development build 固定访问
+`http://127.0.0.1:17321`，仅用于本机开发。
+
+当前仓库没有手动 Gateway 配置或面向任意 host 的打包能力。不要把官方商店包或
+production ZIP 描述为可连接通用自定义 host；若部署目标不是官方云端，本指南只覆盖
+其 web/frontend/API，不覆盖 Extension 接入。
 
 Extension 与 Gateway 必须都支持 protocol v3。旧扩展访问 Task 接口会收到
 `426 Upgrade Required`；此时更新扩展，不要尝试绕过 protocol Header。
@@ -146,7 +158,7 @@ docker compose exec web nginx -T
 应确认：数据库 ready 且存在初始化表；SPA 返回 200；登录入口返回 Casdoor redirect；
 `nginx -T` 中 exact Workspace location 包含两个 off 指令和全部 forwarding headers。
 
-真实 streaming 验收需要加载最新扩展，在 LinkedIn 或 Indeed 岗位页验证：普通 reply
+官方云端的真实 streaming 验收需要加载最新扩展，在 LinkedIn 或 Indeed 岗位页验证：普通 reply
 在 `completed` 前更新、Artifact 只显示状态、成功终态刷新后仍存在、失败恢复输入且不增加
 history。不要用伪造日志代替浏览器验收。
 

@@ -379,7 +379,7 @@ class QuickInsightResponse(BaseModel):
 
 
 class WorkspaceResponse(BaseModel):
-    """Protocol-v2 Markdown-only complete Workspace state returned to the Extension."""
+    """Protocol-v3 terminal Workspace response returned to the Extension."""
 
     model_config = ConfigDict(extra="forbid")
 

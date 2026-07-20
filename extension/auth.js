@@ -92,7 +92,7 @@ export function buildQuickInsightBody(payload, lang) {
   return { ...pageContextBody(payload), lang };
 }
 
-/** Copy only the two fixed protocol-v2 Artifact slots. */
+/** Copy only the two fixed storage-schema-v2 Artifact slots. */
 function artifactBody(artifacts) {
   const source = artifacts && typeof artifacts === "object" ? artifacts : {};
   return {

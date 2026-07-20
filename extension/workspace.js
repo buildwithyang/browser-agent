@@ -251,7 +251,7 @@ function validateExecutionMeta(meta) {
   );
 }
 
-/** Validate the complete protocol-v2 histories/Artifacts graph without mutating it. */
+/** Validate the complete storage-schema-v2 Workspace graph without mutating it. */
 export function validateWorkspaceState(histories, artifacts) {
   requireSchema(Array.isArray(histories), "Workspace histories must be an array");
   requireSchema(
