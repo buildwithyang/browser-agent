@@ -92,8 +92,9 @@ Specialist 只返回候选结果 `reply | artifact_draft`。最终 create/update
 | `CoverLetterAgent` | 是 | 是，仅 `cover_letter` |
 | `GeneralQAAgent` | 是 | 否 |
 
-非法 JSON、未知字段、错误 Artifact 类型或违反矩阵的结果都会失败，不允许降级成看似
-成功的回复。`IntentRouter` 第一次解析失败会纠错重试一次；第二次失败即终止本轮。
+解析器兼容模型在 JSON 字符串中未转义的 Markdown 换行；除此之外，非法 JSON、
+未知字段、错误 Artifact 类型或违反矩阵的结果都会失败，不允许降级成看似成功的
+回复。`IntentRouter` 第一次解析失败会纠错重试一次；第二次失败即终止本轮。
 
 ## 状态边界
 

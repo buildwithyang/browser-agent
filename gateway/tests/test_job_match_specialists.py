@@ -176,6 +176,20 @@ def test_analysis_parses_reply_and_includes_complete_context_and_language() -> N
         assert expected in captured["prompt"]
 
 
+def test_specialist_accepts_literal_line_breaks_inside_json_string_content() -> None:
+    """Accept Moonshot JSON-shaped Markdown containing unescaped line breaks."""
+
+    raw_result = '{"type":"reply","markdown":"## Analysis\n\n- Strong backend evidence"}'
+    execution = JobAnalysisAgent(complete_prompt=_completion(raw_result)).handle(
+        _context(message="Analyze this role.")
+    )
+
+    assert execution.content == SpecialistReply(
+        type="reply",
+        markdown="## Analysis\n\n- Strong backend evidence",
+    )
+
+
 @pytest.mark.parametrize(
     (
         "agent_type",
@@ -267,6 +281,7 @@ def test_specialist_rejects_results_outside_legal_matrix(
         '{"type":"reply","markdown":"   "}',
         '{"type":"artifact_draft","markdown":"ready","artifact_type":"cv",'
         '"title":"CV","draft":"   "}',
+        '{"type":"reply","markdown":"answer\x00hidden"}',
         '{"type":"reply","markdown":"answer"}\n{"type":"reply","markdown":"second"}',
         '```json\n{"type":"reply","markdown":"answer"}\n```',
     ],

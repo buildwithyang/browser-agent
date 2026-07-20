@@ -141,10 +141,15 @@ def format_specialist_context(context: JobChatContext) -> str:
 
 
 def parse_specialist_result(raw_result: str) -> SpecialistResult:
-    """Parse exactly one JSON object into the discriminated Specialist union."""
+    """Parse one JSON object while tolerating model-emitted Markdown line breaks."""
 
     try:
-        payload = json.loads(raw_result)
+        if any(ord(char) < 0x20 and char not in "\t\n\r" for char in raw_result):
+            raise TypeError("Specialist payload contains a forbidden control character")
+        # OpenAI-compatible models may place literal newlines inside JSON string values.
+        # The guard above limits lenient parsing to JSON whitespace; the object shape
+        # and every field remain enforced by the discriminated Pydantic union below.
+        payload = json.loads(raw_result, strict=False)
         if not isinstance(payload, dict):
             raise TypeError("Specialist payload must be an object")
         return _SPECIALIST_RESULT_ADAPTER.validate_python(payload)
