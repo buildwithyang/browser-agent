@@ -622,7 +622,7 @@ Extension 使用随包发布的第三方 Markdown renderer 渲染 Assistant Mess
 - Marked：Markdown 转 HTML。
 - DOMPurify：清理 renderer 产生的 HTML。
 
-不通过正则实现 Markdown parser，也不维护业务层 Markdown 格式白名单。依赖随 Extension 打包，不从 CDN 动态加载。
+Gateway 与 Extension 都不通过正则或手写 HTML 栈实现 Markdown parser，也不维护业务层 Markdown 格式白名单。Gateway 只约束结构化字段和非空/长度；Marked 支持的格式（包括 raw HTML）统一在 Extension 端渲染并由 DOMPurify 清理。依赖随 Extension 打包，不从 CDN 动态加载。
 
 至少支持：
 

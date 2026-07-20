@@ -24,6 +24,7 @@
 - During Tasks 1–7, new chat wire types use the temporary names `WorkspaceChatRequest` / `WorkspaceChatResponse`, while the existing `WorkspaceRequest` / `WorkspaceResponse` remain runnable. Task 8 atomically switches the API and renames chat types to the final names before deleting the old types.
 - Delete the old `TaskRequest`, `TaskResponse`, `DocumentContent`, `DocumentDraft`, `Section`, legacy adapter, and legacy generation paths. Keep `Insight`, typed Insight cards, `render_markdown`, Python `markdown`, and `nh3` because Quick Insight still uses them.
 - Workspace output is Markdown only. Do not add `content_html`, `html`, `sections`, or `document` to the new response.
+- Do not classify or blacklist Markdown content in the Gateway. The structured field and Agent prompt request Markdown; Marked + DOMPurify in the Extension own format support and sanitization, including raw HTML accepted by the Markdown library.
 - Action is a strong hint for ordinary user messages; Quick Insight Analyze/Tailor/Cover actions are deterministic commands and skip `IntentRouter`. Quick Insight Ask More only opens/focuses the panel.
 - All Agent objects remain stateless. Resume text, page context, histories, artifacts, and trigger are request-scoped inputs.
 - There is no DB schema or Repository change. Do not modify `gateway/app/modules/task/model.py`, `repo.py`, or `deploy/initdb/001-schema.sql`.
@@ -299,7 +300,7 @@ Expected: FAIL because the Strategy interface and specialists do not exist.
 
 ### Step 2: Implement the Strategy interface and specialists
 
-Define documented `SpecialistReply`, `ArtifactDraftResult`, and their discriminated union. Parse one structured JSON object from each Specialist. Reject missing fields, wrong artifact types, HTML-only output, or results outside the legal matrix.
+Define documented `SpecialistReply`, `ArtifactDraftResult`, and their discriminated union. Parse one structured JSON object from each Specialist. Reject missing fields, wrong artifact types, or results outside the legal matrix. Require non-empty Markdown strings, but do not inspect tag syntax, maintain a Markdown whitelist, or reject content accepted by the selected Markdown library; rendering and sanitization belong to the Extension.
 
 Specialists may share prompt-formatting helpers but must own their scenario instructions. They must call only the injected OpenAI-compatible client and remain stateless.
 
