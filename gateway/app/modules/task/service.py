@@ -450,14 +450,14 @@ class TaskService:
                 duration_ms,
             )
 
-        yield WorkspaceStartedEvent(
-            operation_id=operation_id,
-            sequence=sequence,
-            created_at=prepared.started_at,
-        )
-        sequence += 1
-
         try:
+            yield WorkspaceStartedEvent(
+                operation_id=operation_id,
+                sequence=sequence,
+                created_at=prepared.started_at,
+            )
+            sequence += 1
+
             agent_events = prepared.agent.stream_chat(prepared.context)
             async with closing_if_supported(agent_events) as owned_events:
                 # Deltas remain transient; only AgentCompleted may enter the reducer.

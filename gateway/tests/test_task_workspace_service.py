@@ -507,6 +507,29 @@ def test_workspace_stream_disconnect_closes_agent_without_partial_persistence() 
     assert repository.records[0].result == ""
 
 
+def test_workspace_stream_close_after_started_records_one_interruption() -> None:
+    """Own the lifecycle at started without opening the lazy Agent iterator."""
+
+    repository = RecordingRepository()
+    agent = CloseTrackingWorkspaceAgent(_reply("unused reply"))
+    service = _service(agent, uuid_values=(), repository=repository)
+
+    async def disconnect_after_started() -> None:
+        """Close immediately after the first wire event is observed."""
+
+        prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+        events = service.stream_workspace(prepared)
+        assert (await anext(events)).type == "started"
+        await events.aclose()
+
+    asyncio.run(disconnect_after_started())
+
+    assert agent.calls == []
+    assert agent.stream_closed is False
+    assert [record.status for record in repository.records] == ["failed"]
+    assert [record.error for record in repository.records] == ["stream_interrupted"]
+
+
 def test_workspace_stream_failure_does_not_log_private_repository_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -1,10 +1,13 @@
 """Protocol-v3 Workspace NDJSON API tests."""
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
 from httpx import Response
+from starlette.requests import Request
+from starlette.types import Message, Scope
 
 from app import main
 from app.agents.base import (
@@ -14,10 +17,13 @@ from app.agents.base import (
     WorkspaceAgentContext,
 )
 from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
+from app.modules.task.api import create_workspace_task
 from app.modules.task.schema import (
     AgentName,
     ChatResult,
     ReplyResult,
+    TaskRecordData,
+    UserMessageWorkspaceRequest,
     WorkspaceResultType,
 )
 
@@ -86,12 +92,51 @@ class LongAssistantAgent(ApiWorkspaceAgent):
         )
 
 
-def _wire(monkeypatch, agent: WorkspaceAgent) -> None:
+class ApiCloseTrackingAgent(ApiWorkspaceAgent):
+    """Record deterministic Agent iterator cleanup at the HTTP boundary."""
+
+    def __init__(self) -> None:
+        """Start with no stream cleanup calls."""
+
+        self.close_calls = 0
+
+    async def stream_chat(
+        self,
+        ctx: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """Count finalization of the Agent iterator consumed by TaskService."""
+
+        try:
+            async for event in super().stream_chat(ctx):
+                yield event
+        finally:
+            self.close_calls += 1
+
+
+class ApiRecordingRepository:
+    """Capture TaskService terminal metrics for direct ASGI assertions."""
+
+    def __init__(self) -> None:
+        """Start with no terminal records."""
+
+        self.records: list[TaskRecordData] = []
+
+    def append(self, record: TaskRecordData) -> None:
+        """Capture one terminal task record."""
+
+        self.records.append(record)
+
+
+def _wire(
+    monkeypatch,
+    agent: WorkspaceAgent,
+    repository: ApiRecordingRepository | None = None,
+) -> None:
     """Install a deterministic TaskService in the FastAPI app state."""
 
     service = main.TaskService(
         agents={AgentName.SUMMARY_PAGE: agent},  # type: ignore[dict-item]
-        repository=None,
+        repository=repository,  # type: ignore[arg-type]
         resume_service=None,
         default_model="fake",
     )
@@ -130,7 +175,9 @@ def _stream_lines(response: Response) -> list[dict[str, object]]:
 def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None:
     """Stream progress and the complete final state with anti-buffering headers."""
 
-    _wire(monkeypatch, ApiWorkspaceAgent())
+    repository = ApiRecordingRepository()
+    agent = ApiCloseTrackingAgent()
+    _wire(monkeypatch, agent, repository)
     with TestClient(main.app).stream(
         "POST",
         "/tasks/workspace",
@@ -170,6 +217,90 @@ def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None
     assert body["artifacts"] == {"cv": None, "cover_letter": None}
     assert not {"document", "html", "sections"}.intersection(body)
     assert body["protocol_version"] == 3
+    assert agent.close_calls == 1
+    assert [record.status for record in repository.records] == ["completed"]
+
+
+def test_workspace_response_send_cancellation_closes_service_stream(monkeypatch) -> None:
+    """Close Service and Agent iterators when ASGI send cancels after status."""
+
+    repository = ApiRecordingRepository()
+    agent = ApiCloseTrackingAgent()
+    service = main.TaskService(
+        agents={AgentName.SUMMARY_PAGE: agent},  # type: ignore[dict-item]
+        repository=repository,  # type: ignore[arg-type]
+        resume_service=None,
+        default_model="fake",
+    )
+    monkeypatch.setattr(main.app.state, "task_service", service, raising=False)
+    monkeypatch.setattr(
+        main.app.state,
+        "settings",
+        type("Settings", (), {"require_auth": False})(),
+        raising=False,
+    )
+    monkeypatch.setattr(main.app.state, "auth_service", None, raising=False)
+    monkeypatch.setattr(main.app.state, "extension_token_service", None, raising=False)
+
+    async def execute_response() -> tuple[bool, int, tuple[str, ...], tuple[str, ...]]:
+        """Drive the actual response call and snapshot cleanup before loop shutdown."""
+
+        scope: Scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "https",
+            "path": "/tasks/workspace",
+            "raw_path": b"/tasks/workspace",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 443),
+            "app": main.app,
+        }
+
+        async def receive() -> Message:
+            """Block unless Request.is_disconnected performs its non-blocking probe."""
+
+            await asyncio.Future()
+            raise AssertionError("receive should remain blocked")
+
+        request = Request(scope, receive)
+        task = UserMessageWorkspaceRequest.model_validate(_payload())
+        response = await create_workspace_task(task, request)
+        sent_types: list[str] = []
+
+        async def cancel_on_status(message: Message) -> None:
+            """Cancel response delivery while Starlette is sending a status chunk."""
+
+            body = message.get("body", b"")
+            if message["type"] != "http.response.body" or not body:
+                return
+            event_type = json.loads(bytes(body))["type"]
+            sent_types.append(event_type)
+            if event_type == "status":
+                raise asyncio.CancelledError
+
+        cancelled = False
+        try:
+            await response(scope, receive, cancel_on_status)
+        except asyncio.CancelledError:
+            cancelled = True
+        return (
+            cancelled,
+            agent.close_calls,
+            tuple(sent_types),
+            tuple(record.error for record in repository.records),
+        )
+
+    cancelled, close_calls, sent_types, errors = asyncio.run(execute_response())
+
+    assert cancelled is True
+    assert sent_types == ("started", "status")
+    assert close_calls == 1
+    assert errors == ("stream_interrupted",)
 
 
 def test_workspace_endpoint_rejects_mismatched_resource_url(monkeypatch) -> None:
