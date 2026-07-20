@@ -3,6 +3,7 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator, Mapping
+from contextlib import aclosing
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -290,17 +291,18 @@ class JobMatchAgent(
         # cross the Agent event boundary; reply chunks remain visible as Markdown deltas.
         chunks: list[str] = []
         total_chars = 0
-        async for chunk in opened.chunks:
-            if not chunk:
-                continue
-            total_chars += len(chunk)
-            if total_chars > DOCUMENT_TEXT_MAX_CHARS:
-                raise JobMatchOrchestrationError(
-                    f"Specialist Markdown exceeds {DOCUMENT_TEXT_MAX_CHARS} characters"
-                )
-            chunks.append(chunk)
-            if plan.output_mode is OutputMode.REPLY:
-                yield AgentDelta(text=chunk)
+        async with aclosing(opened.chunks) as text_chunks:
+            async for chunk in text_chunks:
+                if not chunk:
+                    continue
+                total_chars += len(chunk)
+                if total_chars > DOCUMENT_TEXT_MAX_CHARS:
+                    raise JobMatchOrchestrationError(
+                        f"Specialist Markdown exceeds {DOCUMENT_TEXT_MAX_CHARS} characters"
+                    )
+                chunks.append(chunk)
+                if plan.output_mode is OutputMode.REPLY:
+                    yield AgentDelta(text=chunk)
 
         raw_result = self._validate_complete_markdown("".join(chunks))
         result = (
@@ -327,19 +329,24 @@ class JobMatchAgent(
         async def collect_terminal() -> AgentExecution[ChatResult]:
             """Consume exactly one stream and return its sole terminal execution."""
 
-            terminal: AgentExecution[ChatResult] | None = None
-            async for event in self.stream_chat(context):
-                if isinstance(event, AgentCompleted):
-                    if terminal is not None:
-                        raise JobMatchOrchestrationError(
-                            "Agent stream emitted multiple terminal results"
-                        )
-                    terminal = event.execution
-            if terminal is None:
-                raise JobMatchOrchestrationError(
-                    "Agent stream did not emit a terminal result"
-                )
-            return terminal
+            try:
+                terminal: AgentExecution[ChatResult] | None = None
+                async for event in self.stream_chat(context):
+                    if isinstance(event, AgentCompleted):
+                        if terminal is not None:
+                            raise JobMatchOrchestrationError(
+                                "Agent stream emitted multiple terminal results"
+                            )
+                        terminal = event.execution
+                if terminal is None:
+                    raise JobMatchOrchestrationError(
+                        "Agent stream did not emit a terminal result"
+                    )
+                return terminal
+            finally:
+                # The compatibility API creates a fresh loop per request. Internally-owned
+                # clients must be closed on that same loop; injected clients remain caller-owned.
+                await self._close_owned_async_clients()
 
         return asyncio.run(collect_terminal())
 

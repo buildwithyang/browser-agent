@@ -27,6 +27,7 @@ class FakeAsyncChatCompletionStream:
         """Store the ordered text deltas returned by the fake provider."""
 
         self._texts = texts
+        self.closed = False
 
     async def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
         """Yield complete chunk shapes consumed by the production adapter."""
@@ -35,6 +36,11 @@ class FakeAsyncChatCompletionStream:
             yield SimpleNamespace(
                 choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]
             )
+
+    async def aclose(self) -> None:
+        """Record deterministic provider-stream cleanup."""
+
+        self.closed = True
 
 
 class FakeAsyncClient:
@@ -45,6 +51,7 @@ class FakeAsyncClient:
 
         self._texts = texts
         self.calls: list[dict[str, object]] = []
+        self.streams: list[FakeAsyncChatCompletionStream] = []
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(create=self._create)
         )
@@ -54,7 +61,9 @@ class FakeAsyncClient:
 
         self.calls.append(kwargs)
         if kwargs.get("stream") is True:
-            return FakeAsyncChatCompletionStream(self._texts)
+            stream = FakeAsyncChatCompletionStream(self._texts)
+            self.streams.append(stream)
+            return stream
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -111,6 +120,22 @@ def test_async_completion_uses_non_streaming_chat_completions() -> None:
 
     assert (text, model) == ("planner result", "router-model")
     assert calls[0]["stream"] is False
+
+
+def test_closing_text_chunks_closes_the_provider_stream() -> None:
+    """Forward consumer cancellation to the underlying provider iterator."""
+
+    async def execute() -> bool:
+        """Consume one text chunk, close the adapter, and return provider state."""
+
+        client = FakeAsyncClient(["first", "second"])
+        agent = OpenAIChatAgent(async_client=client, model="stream-model")
+        opened = await agent.open_prompt_stream(system="system", prompt="prompt")
+        assert await anext(opened.chunks) == "first"
+        await opened.chunks.aclose()
+        return client.streams[0].closed
+
+    assert asyncio.run(execute()) is True
 
 
 def test_async_clients_are_cached_by_provider_identity(monkeypatch: MonkeyPatch) -> None:

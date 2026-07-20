@@ -53,6 +53,34 @@ class SpyPlanner:
         return self.result
 
 
+class TrackingChunkStream:
+    """Track deterministic cleanup of a Specialist text iterator."""
+
+    def __init__(self, chunks: list[str]) -> None:
+        """Store ordered chunks and initialize stream lifecycle state."""
+
+        self._chunks = iter(chunks)
+        self.closed = False
+
+    def __aiter__(self) -> "TrackingChunkStream":
+        """Return this iterator for asynchronous consumption."""
+
+        return self
+
+    async def __anext__(self) -> str:
+        """Return the next configured chunk or terminate the stream."""
+
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def aclose(self) -> None:
+        """Record immediate cleanup requested by the Agent."""
+
+        self.closed = True
+
+
 class SpySpecialist:
     """Record Strategy calls while returning a prepared Markdown stream."""
 
@@ -69,6 +97,7 @@ class SpySpecialist:
         self.name = name
         self.model = model or f"{name}-model"
         self.calls: list[tuple[JobChatContext, OutputMode]] = []
+        self.streams: list[TrackingChunkStream] = []
 
     async def open_stream(
         self,
@@ -79,17 +108,84 @@ class SpySpecialist:
 
         self.calls.append((context, output_mode))
 
-        async def generate() -> AsyncIterator[str]:
-            """Yield configured chunks exactly once in order."""
-
-            for chunk in self.chunks:
-                yield chunk
+        stream = TrackingChunkStream(self.chunks)
+        self.streams.append(stream)
 
         return SimpleNamespace(
             prompt=f"{self.name}-prompt",
             model=self.model,
-            chunks=generate(),
+            chunks=stream,
         )
+
+
+class LoopBoundProviderStream:
+    """Yield provider chunks while tracking explicit stream closure."""
+
+    def __init__(self, text: str) -> None:
+        """Configure one provider text chunk."""
+
+        self._text = text
+        self._done = False
+        self.closed = False
+
+    def __aiter__(self) -> "LoopBoundProviderStream":
+        """Return this provider iterator."""
+
+        return self
+
+    async def __anext__(self) -> SimpleNamespace:
+        """Yield one OpenAI-compatible chunk then terminate."""
+
+        if self._done:
+            raise StopAsyncIteration
+        self._done = True
+        return SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=self._text))]
+        )
+
+    async def aclose(self) -> None:
+        """Record explicit provider-stream cleanup."""
+
+        self.closed = True
+
+
+class LoopBoundAsyncClient:
+    """Reject use outside the event loop that first opened this client."""
+
+    def __init__(self) -> None:
+        """Initialize an unbound realistic AsyncOpenAI lifecycle double."""
+
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self.closed = False
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+    async def create(self, **kwargs: object) -> object:
+        """Bind on first use and fail if a later request reuses another loop."""
+
+        loop = asyncio.get_running_loop()
+        if self._loop is None:
+            self._loop = loop
+        elif self._loop is not loop:
+            raise RuntimeError("Event loop is closed")
+        if self.closed:
+            raise RuntimeError("client is closed")
+        if kwargs.get("stream") is True:
+            return LoopBoundProviderStream("## Answer")
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"specialist":"general_qa","output_mode":"reply"}'
+                    )
+                )
+            ]
+        )
+
+    async def close(self) -> None:
+        """Require internally-owned client cleanup on its bound loop."""
+
+        assert asyncio.get_running_loop() is self._loop
+        self.closed = True
 
 
 def _artifact_state(
@@ -233,6 +329,28 @@ def test_resume_reply_streams_markdown_deltas() -> None:
     )
     assert len(planner.calls) == 1
     assert sum(len(specialist.calls) for specialist in specialists.values()) == 1
+
+
+def test_closing_job_agent_stream_closes_specialist_chunks() -> None:
+    """Propagate consumer cancellation to the opened Specialist iterator."""
+
+    agent, _planner, specialists = _job_agent(
+        plan=ChatPlan(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
+        chunks=["first", "second"],
+    )
+
+    async def cancel_after_first_delta() -> None:
+        """Advance through the first delta and close the Agent generator."""
+
+        stream = agent.stream_chat(_context())
+        assert isinstance(await anext(stream), AgentStatus)
+        assert isinstance(await anext(stream), AgentStatus)
+        assert isinstance(await anext(stream), AgentDelta)
+        await stream.aclose()
+
+    asyncio.run(cancel_after_first_delta())
+
+    assert specialists[SpecialistId.RESUME].streams[0].closed is True
 
 
 def test_cover_letter_artifact_exposes_status_but_no_delta() -> None:
@@ -397,13 +515,41 @@ def test_stream_rejects_content_over_document_limit(mode: OutputMode) -> None:
     """Stop accumulation once raw Markdown exceeds the shared 100k cap."""
 
     specialist = SpecialistId.RESUME if mode is OutputMode.ARTIFACT else SpecialistId.GENERAL_QA
-    agent, _planner, _specialists_map = _job_agent(
+    agent, _planner, specialists = _job_agent(
         plan=ChatPlan(specialist=specialist, output_mode=mode),
         chunks=["x" * DOCUMENT_TEXT_MAX_CHARS, "y"],
     )
 
     with pytest.raises(job_match_agent_module.JobMatchOrchestrationError, match="100000"):
         asyncio.run(_collect_events(agent.stream_chat(_context())))
+
+    assert specialists[specialist].streams[0].closed is True
+
+
+def test_sequential_sync_requests_do_not_reuse_an_owned_client_across_loops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close internally-owned async clients before each asyncio.run loop exits."""
+
+    clients: list[LoopBoundAsyncClient] = []
+
+    def build_client(**_kwargs: object) -> LoopBoundAsyncClient:
+        """Create and record one internally-owned loop-bound async client."""
+
+        client = LoopBoundAsyncClient()
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("app.agents.base.AsyncOpenAI", build_client)
+    agent = JobMatchAgent(model="loop-model")
+
+    first = agent.handle_chat(_context(message="First request"))
+    second = agent.handle_chat(_context(message="Second request"))
+
+    assert first.content == ReplyResult(type="reply", markdown="## Answer")
+    assert second.content == ReplyResult(type="reply", markdown="## Answer")
+    assert len(clients) == 2
+    assert all(client.closed for client in clients)
 
 
 @pytest.mark.parametrize(

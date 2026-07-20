@@ -31,6 +31,7 @@ class FakeAsyncStream:
         """Store the raw text chunks emitted by the fake provider."""
 
         self.chunks = chunks
+        self.closed = False
 
     async def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
         """Yield provider chunk shapes consumed by the shared adapter."""
@@ -39,6 +40,11 @@ class FakeAsyncStream:
             yield SimpleNamespace(
                 choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]
             )
+
+    async def aclose(self) -> None:
+        """Record immediate provider-stream cleanup."""
+
+        self.closed = True
 
 
 class FakeAsyncClient:
@@ -49,13 +55,16 @@ class FakeAsyncClient:
 
         self.chunks = chunks
         self.calls: list[dict[str, object]] = []
+        self.streams: list[FakeAsyncStream] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
     async def create(self, **kwargs: object) -> object:
         """Record the request and return the configured stream."""
 
         self.calls.append(kwargs)
-        return FakeAsyncStream(self.chunks)
+        stream = FakeAsyncStream(self.chunks)
+        self.streams.append(stream)
+        return stream
 
 
 def full_page_task() -> QuickInsightRequest:
@@ -193,6 +202,26 @@ def test_summary_workspace_streams_reply_only_markdown() -> None:
     )[0]["content"]
 
 
+def test_closing_summary_agent_stream_closes_provider_chunks() -> None:
+    """Propagate consumer cancellation through text adaptation to the provider."""
+
+    client = FakeAsyncClient(["first", "second"])
+    agent = SummaryPageAgent(async_client=client, model="summary-model")
+
+    async def cancel_after_first_delta() -> None:
+        """Open lazily after status, consume one delta, then close the Agent."""
+
+        stream = agent.stream_chat(WorkspaceAgentContext(request=workspace_request()))
+        assert isinstance(await anext(stream), AgentStatus)
+        assert client.streams == []
+        assert isinstance(await anext(stream), AgentDelta)
+        await stream.aclose()
+
+    asyncio.run(cancel_after_first_delta())
+
+    assert client.streams[0].closed is True
+
+
 def test_summary_workspace_rejects_non_ask_more_before_model_call() -> None:
     """Reject non-generic v2 Actions without opening a model stream."""
 
@@ -245,3 +274,5 @@ def test_summary_workspace_rejects_stream_over_document_limit() -> None:
                 agent.stream_chat(WorkspaceAgentContext(request=workspace_request()))
             )
         )
+
+    assert client.streams[0].closed is True

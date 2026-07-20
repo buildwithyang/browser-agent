@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 
 from app.agents.base import (
     AgentContext,
@@ -195,21 +196,22 @@ class SummaryPageAgent(
         request = context.request
         prompt = self._build_workspace_prompt(request)
         system = WORKSPACE_SYSTEM_PROMPT + "\n\n" + language_directive(request.lang)
-        opened = await self.open_prompt_stream(system=system, prompt=prompt)
         yield AgentStatus(stage="generating_reply")
+        opened = await self.open_prompt_stream(system=system, prompt=prompt)
 
         chunks: list[str] = []
         total_chars = 0
-        async for chunk in opened.chunks:
-            if not chunk:
-                continue
-            total_chars += len(chunk)
-            if total_chars > DOCUMENT_TEXT_MAX_CHARS:
-                raise ValueError(
-                    f"Summary Markdown exceeds {DOCUMENT_TEXT_MAX_CHARS} characters"
-                )
-            chunks.append(chunk)
-            yield AgentDelta(text=chunk)
+        async with aclosing(opened.chunks) as text_chunks:
+            async for chunk in text_chunks:
+                if not chunk:
+                    continue
+                total_chars += len(chunk)
+                if total_chars > DOCUMENT_TEXT_MAX_CHARS:
+                    raise ValueError(
+                        f"Summary Markdown exceeds {DOCUMENT_TEXT_MAX_CHARS} characters"
+                    )
+                chunks.append(chunk)
+                yield AgentDelta(text=chunk)
 
         raw_result = "".join(chunks)
         if not raw_result.strip():

@@ -56,7 +56,12 @@ async def _text_chunks(
 ) -> AsyncIterator[str]:
     """Yield only non-empty text deltas from Chat Completions chunks."""
 
-    async for chunk in stream:
-        text = chunk.choices[0].delta.content if chunk.choices else None
-        if text:
-            yield text
+    try:
+        async for chunk in stream:
+            text = chunk.choices[0].delta.content if chunk.choices else None
+            if text:
+                yield text
+    finally:
+        close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+        if close is not None:
+            await close()

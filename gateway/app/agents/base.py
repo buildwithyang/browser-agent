@@ -237,6 +237,14 @@ class OpenAIChatAgent:
         self._async_clients[cache_key] = client
         return client
 
+    async def _close_owned_async_clients(self) -> None:
+        """Close and forget async clients created by this Agent on the current loop."""
+
+        clients = tuple(self._async_clients.values())
+        self._async_clients.clear()
+        for client in clients:
+            await client.close()
+
     def pick_model(self, prompt: str) -> str:
         """按输入长度路由到某一层,返回其 model id(供指标/日志使用)。"""
         return self._router.pick(len(prompt)).model
