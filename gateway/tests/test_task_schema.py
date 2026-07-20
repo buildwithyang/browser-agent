@@ -15,7 +15,10 @@ from app.modules.task.schema import (
     QuickInsightResponse,
     ScoreInsightCard,
     TaskRequest,
+    WorkspaceRequest,
+    WorkspaceResponse,
     WorkspaceDescriptor,
+    DocumentContent,
 )
 
 
@@ -63,6 +66,26 @@ def test_task_request_accepts_camel_case_fields() -> None:
 
     assert request.action_id == "write_cover_letter"
     assert request.prior_result == "Previous analysis"
+
+
+def test_v1_workspace_types_remain_constructible_until_task_eight() -> None:
+    """Keep untouched v1 Workspace consumers operational during the staged migration."""
+
+    request = WorkspaceRequest(
+        url="https://example.com/jobs/1",
+        resourceUrl="https://example.com/jobs/1",
+        actionId="ask_more",
+        message="Follow up",
+    )
+    response = WorkspaceResponse(
+        resource_url="https://example.com/jobs/1",
+        selected_action_id="ask_more",
+        histories=[],
+        document=DocumentContent(text="Answer"),
+    )
+
+    assert request.message == "Follow up"
+    assert response.document is not None
 
 
 def test_quick_insight_request_rejects_internal_agent_name() -> None:

@@ -342,7 +342,7 @@ class QuickInsightActionWorkspaceRequest(WorkspaceRequestBase):
         return self
 
 
-WorkspaceRequest = Annotated[
+WorkspaceChatRequest = Annotated[
     UserMessageWorkspaceRequest | QuickInsightActionWorkspaceRequest,
     Field(discriminator="trigger"),
 ]
@@ -356,6 +356,27 @@ class DocumentContent(BaseModel):
     text: str = Field("", max_length=DOCUMENT_TEXT_MAX_CHARS)
     html: str = ""
     sections: list[Section] = Field(default_factory=list)
+
+
+class WorkspaceRequest(PageContext):
+    """Transitional v1 Workspace input kept for unmigrated runtime consumers."""
+
+    resource_url: str = Field(alias="resourceUrl")
+    action_id: ActionId = Field(alias="actionId")
+    histories: list[HistoryMessage] = Field(default_factory=list, max_length=10)
+    current_document: DocumentDraft | None = Field(
+        default=None,
+        alias="currentDocument",
+    )
+    message: str = Field(min_length=1, max_length=USER_MESSAGE_MAX_CHARS)
+
+    @model_validator(mode="after")
+    def validate_message_limit(self) -> "WorkspaceRequest":
+        """Count the current user message against the legacy ten-message input cap."""
+
+        if len(self.histories) + 1 > 10:
+            raise ValueError("histories plus current message must not exceed 10")
+        return self
 
 
 class ExecutionMeta(BaseModel):
@@ -409,6 +430,8 @@ ChatResult = Annotated[
 
 
 class QuickInsightResponse(BaseModel):
+    """Quick Insight response with its stable extension protocol marker."""
+
     request: QuickInsightRequest
     insight: Insight
     actions: list[Action] = Field(default_factory=list)
@@ -419,7 +442,7 @@ class QuickInsightResponse(BaseModel):
     )
 
 
-class WorkspaceResponse(BaseModel):
+class WorkspaceChatResponse(BaseModel):
     """Protocol-v2 Markdown-only complete Workspace state returned to the Extension."""
 
     model_config = ConfigDict(extra="forbid")
@@ -435,11 +458,21 @@ class WorkspaceResponse(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_response_state(self) -> "WorkspaceResponse":
+    def validate_response_state(self) -> "WorkspaceChatResponse":
         """Apply the same state invariants used for both incoming trigger variants."""
 
         validate_workspace_state(self.histories, self.artifacts)
         return self
+
+
+class WorkspaceResponse(BaseModel):
+    """Transitional v1 Workspace document response kept for runtime compatibility."""
+
+    resource_url: str
+    selected_action_id: ActionId
+    histories: list[HistoryMessage]
+    document: DocumentContent | None
+    meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
 
 
 class TaskResponse(BaseModel):

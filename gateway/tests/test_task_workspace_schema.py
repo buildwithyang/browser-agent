@@ -11,12 +11,12 @@ from app.modules.task.schema import (
     Artifact,
     Attachment,
     HistoryMessage,
-    WorkspaceRequest,
-    WorkspaceResponse,
+    WorkspaceChatRequest,
+    WorkspaceChatResponse,
 )
 
 
-REQUEST_ADAPTER = TypeAdapter(WorkspaceRequest)
+REQUEST_ADAPTER = TypeAdapter(WorkspaceChatRequest)
 
 
 def _artifact_id() -> UUID:
@@ -65,7 +65,7 @@ def _request_payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
-def test_workspace_request_is_discriminated_by_trigger() -> None:
+def test_workspace_chat_request_is_discriminated_by_trigger() -> None:
     """Accept both trigger variants while preserving their typed contracts."""
 
     user_request = REQUEST_ADAPTER.validate_python(_request_payload())
@@ -210,10 +210,10 @@ def test_workspace_limits_and_extra_fields_are_rejected() -> None:
         REQUEST_ADAPTER.validate_python(_request_payload(currentDocument={}))
 
 
-def test_workspace_response_is_markdown_only_full_state() -> None:
+def test_workspace_chat_response_is_markdown_only_full_state() -> None:
     """Return protocol-tagged full state without v1 document rendering fields."""
 
-    response = WorkspaceResponse(
+    response = WorkspaceChatResponse(
         resource_url="https://example.com/jobs/1",
         selected_action_id="ask_more",
         result_type="reply",
@@ -227,7 +227,7 @@ def test_workspace_response_is_markdown_only_full_state() -> None:
     assert dumped["artifacts"] == {"cv": None, "cover_letter": None}
     assert not {"document", "html", "sections"}.intersection(dumped)
     with pytest.raises(ValidationError, match="result_type"):
-        WorkspaceResponse(
+        WorkspaceChatResponse(
             resource_url="https://example.com/jobs/1",
             selected_action_id="ask_more",
             histories=[],
