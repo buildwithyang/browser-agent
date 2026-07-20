@@ -35,6 +35,15 @@ async function initialRequestErrorView(response, lang) {
   assert.fail("Expected the Gateway response to require an Extension update");
 }
 
+/** Create one externally controlled promise for request-ordering tests. */
+function deferred() {
+  let resolve;
+  const promise = new Promise((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
 test("job insight normalizes generic cards for the existing renderer", () => {
   const view = quickInsightView({
     title: "Job Match",
@@ -171,8 +180,51 @@ test("initial Quick Insight ordinary network errors keep the existing recovery h
   );
 });
 
+test("initial Quick Insight discards a response after the signed-in owner changes", async () => {
+  assert.equal(
+    typeof quickInsight.presentQuickInsightForCurrentOwner,
+    "function",
+    "initial Quick Insight needs an owner-guarded success presenter"
+  );
+  const response = deferred();
+  const presented = [];
+  let currentOwner = "owner-a";
+  const request = response.promise.then((task) => (
+    quickInsight.presentQuickInsightForCurrentOwner(task, {
+      snapshot: { ownerId: "owner-a" },
+      readCurrentSnapshot: async () => ({ ownerId: currentOwner }),
+      present: (value) => presented.push(value),
+    })
+  ));
+
+  currentOwner = "owner-b";
+  response.resolve({ insight: { title: "Owner A private match" } });
+
+  await assert.rejects(request, { name: "AuthSnapshotChangedError" });
+  assert.deepEqual(presented, []);
+});
+
+test("initial Quick Insight presents a response exactly once for the same owner", async () => {
+  const task = { insight: { title: "Current owner match" } };
+  const presented = [];
+
+  const result = await quickInsight.presentQuickInsightForCurrentOwner(task, {
+    snapshot: { ownerId: "owner-a" },
+    readCurrentSnapshot: async () => ({ ownerId: "owner-a" }),
+    present: (value) => {
+      presented.push(value);
+      return true;
+    },
+  });
+
+  assert.equal(result, true);
+  assert.deepEqual(presented, [task]);
+});
+
 test("initial Quick Insight renders the structured update presentation", async () => {
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
+  assert.match(source, /presentQuickInsightForCurrentOwner\(task,/);
+  assert.match(source, /error instanceof AuthSnapshotChangedError/);
   assert.match(source, /quickInsightRequestErrorView\(error,\s*errLang\(lang\)\)/);
   assert.match(source, /if \(payload\.updateUrl\)/);
   assert.match(source, /updateLink\.target\s*=\s*payload\.updateTarget/);

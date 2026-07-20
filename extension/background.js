@@ -15,6 +15,7 @@ import {
 } from "./auth.js";
 import {
   quickInsightActionErrorView,
+  presentQuickInsightForCurrentOwner,
   quickInsightRequestErrorView,
   quickInsightView,
   runQuickInsightAction,
@@ -241,30 +242,38 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
     })
     .then(({ task }) => {
       done();
-      showResult(tabId, {
-        state: "result",
-        actions: task.actions || [],
-        insight: task.insight || null,
-        workspace: task.workspace || null,
-        insightView: task.insight
-          ? quickInsightView(task.insight, task.actions || [])
-          : null,
-        quickInsightActionErrors: {
-          retry: quickInsightActionErrorView(null, lang),
-          update: quickInsightActionErrorView({
-            type: "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED",
-          }, lang),
+      return presentQuickInsightForCurrentOwner(task, {
+        snapshot: requestAuthSnapshot,
+        readCurrentSnapshot: readAuthSnapshot,
+        onOwnerMismatch: () => notifyWorkspaceReset(tabId),
+        present: () => {
+          showResult(tabId, {
+            state: "result",
+            actions: task.actions || [],
+            insight: task.insight || null,
+            workspace: task.workspace || null,
+            insightView: task.insight
+              ? quickInsightView(task.insight, task.actions || [])
+              : null,
+            quickInsightActionErrors: {
+              retry: quickInsightActionErrorView(null, lang),
+              update: quickInsightActionErrorView({
+                type: "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED",
+              }, lang),
+            },
+            lang,
+            pageTitle: task.request?.title || payload.title || "",
+            text: task.insight?.title || "(no result)",
+            source: (task.request && task.request.url) || source,
+            durationMs: task.meta?.duration_ms,
+          });
+          return true;
         },
-        lang,
-        pageTitle: task.request?.title || payload.title || "",
-        text: task.insight?.title || "(no result)",
-        source: (task.request && task.request.url) || source,
-        durationMs: task.meta?.duration_ms,
       });
-      return true;
     })
     .catch(async (error) => {
       done();
+      if (error instanceof AuthSnapshotChangedError) return false;
       console.error("[Agent Bridge] gateway request failed:", error);
       if (shouldClearToken(error.status)) {
         const cleared = await clearAuthNamespace(requestAuthSnapshot);

@@ -2,6 +2,7 @@ import {
   createQuickInsightOperation,
   workspaceOperationErrorEvent,
 } from "./workspace-operation.js";
+import { applyForCurrentOwner } from "./workspace-controller.js";
 
 /** Normalize a typed Quick Insight response for the existing overlay renderer. */
 export function quickInsightView(insight = {}, actions = []) {
@@ -85,4 +86,23 @@ export function quickInsightRequestErrorView(error, lang) {
     errorHint: hint,
     errorCmd: "./dev-start backend",
   };
+}
+
+/** Present one successful Quick Insight only while its request owner remains current. */
+export async function presentQuickInsightForCurrentOwner(task, dependencies = {}) {
+  const {
+    snapshot,
+    readCurrentSnapshot,
+    present,
+    onOwnerMismatch,
+  } = dependencies;
+  if (typeof present !== "function") {
+    throw new TypeError("Quick Insight presenter is required");
+  }
+  return applyForCurrentOwner({
+    snapshot,
+    readCurrentSnapshot,
+    onOwnerMismatch,
+    apply: () => present(task),
+  });
 }
