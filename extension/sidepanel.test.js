@@ -7,6 +7,7 @@ import { JSDOM } from "jsdom";
 import * as sidepanel from "./sidepanel.js";
 
 const RESOURCE_URL = "https://www.linkedin.com/jobs/view/123";
+const OTHER_RESOURCE_URL = "https://www.linkedin.com/jobs/view/456";
 const COVER_LETTER_MARKDOWN = [
   "# Application",
   "",
@@ -608,6 +609,109 @@ test("reset-cleared draft stays empty after an invalidated SEND resolves", async
 
   assert.equal(model.state?.pageTitle, "Owner B");
   assert.equal(elements.messageInput.value, "");
+});
+
+test("same-tab canonical resource switch clears the old resource draft", async () => {
+  const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
+    tabId: 7,
+  });
+  const request = deferred();
+  const dependencies = { sendRuntime: () => request.promise };
+  elements.messageInput.value = "private draft for resource A";
+
+  const load = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  assert.equal(
+    elements.messageInput.value,
+    "private draft for resource A",
+    "the draft remains until the canonical response identifies a new resource"
+  );
+  request.resolve({
+    ok: true,
+    state: workspace({
+      resourceUrl: OTHER_RESOURCE_URL,
+      pageTitle: "Resource B",
+      selectedActionId: "ask_more",
+    }),
+    lang: "en",
+  });
+  await load;
+
+  assert.equal(model.state?.resourceUrl, OTHER_RESOURCE_URL);
+  assert.equal(model.state?.pageTitle, "Resource B");
+  assert.equal(model.selectedActionId, "ask_more");
+  assert.equal(model.error, null);
+  assert.equal(elements.messageInput.value, "");
+});
+
+test("same-tab resource B GET supersedes pending resource A SEND", async () => {
+  const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const sendRequest = deferred();
+  const getRequest = deferred();
+  const dependencies = {
+    sendRuntime: (request) => (
+      request.type === sidepanel.WORKSPACE_SEND ? sendRequest.promise : getRequest.promise
+    ),
+  };
+  elements.messageInput.value = "resource A private instruction";
+
+  const send = sidepanel.submitMessage(elements, model, dependencies);
+  const load = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  getRequest.resolve({
+    ok: true,
+    state: workspace({ resourceUrl: OTHER_RESOURCE_URL, pageTitle: "Resource B" }),
+    lang: "en",
+  });
+  await load;
+  assert.equal(model.state?.resourceUrl, OTHER_RESOURCE_URL);
+  assert.equal(elements.messageInput.value, "");
+  assert.equal(model.loading, false);
+
+  sendRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Late resource A SEND" }),
+    lang: "en",
+  });
+  await send;
+  assert.equal(model.state?.resourceUrl, OTHER_RESOURCE_URL);
+  assert.equal(model.state?.pageTitle, "Resource B");
+  assert.equal(elements.messageInput.value, "");
+});
+
+test("same-resource and initial same-tab loads do not clear a draft", async () => {
+  const sameResourceRequest = deferred();
+  const rendered = await renderState(workspace({ pageTitle: "Resource A" }), { tabId: 7 });
+  rendered.elements.messageInput.value = "work in progress";
+  const sameResourceLoad = sidepanel.loadWorkspaceForTab(
+    rendered.elements,
+    rendered.model,
+    7,
+    { sendRuntime: () => sameResourceRequest.promise }
+  );
+  sameResourceRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Resource A refreshed" }),
+    lang: "en",
+  });
+  await sameResourceLoad;
+  assert.equal(rendered.elements.messageInput.value, "work in progress");
+  assert.equal(rendered.model.state?.pageTitle, "Resource A refreshed");
+
+  const initialRequest = deferred();
+  const initial = await renderState(null, { tabId: 7 });
+  initial.elements.messageInput.value = "draft before initial state arrives";
+  const initialLoad = sidepanel.loadWorkspaceForTab(
+    initial.elements,
+    initial.model,
+    7,
+    { sendRuntime: () => initialRequest.promise }
+  );
+  initialRequest.resolve({ ok: true, state: workspace(), lang: "en" });
+  await initialLoad;
+  assert.equal(initial.model.state?.resourceUrl, RESOURCE_URL);
+  assert.equal(initial.elements.messageInput.value, "draft before initial state arrives");
 });
 
 test("light responsive CSS contains horizontal overflow and keeps rich content local", async () => {

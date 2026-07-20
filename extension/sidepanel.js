@@ -206,10 +206,15 @@ function beginLoadOperation(model, tabId, cancelPendingSend = false) {
   return Object.freeze({ generation, tabId, tabChanged });
 }
 
+/** Return whether one load generation is still latest for its captured tab. */
+function isLatestLoadOperation(model, operation) {
+  return model.tabId === operation.tabId
+    && model.operationGeneration === operation.generation;
+}
+
 /** Return whether one load still owns state application and its finally block. */
 function isCurrentLoadOperation(model, operation) {
-  return model.tabId === operation.tabId
-    && model.operationGeneration === operation.generation
+  return isLatestLoadOperation(model, operation)
     && !model.pendingSendGeneration;
 }
 
@@ -217,7 +222,13 @@ function isCurrentLoadOperation(model, operation) {
 function beginSendOperation(model, tabId) {
   const generation = advanceOperationGeneration(model);
   model.pendingSendGeneration = generation;
-  return Object.freeze({ generation, tabId });
+  return Object.freeze({
+    generation,
+    tabId,
+    resourceUrl: typeof model.state?.resourceUrl === "string"
+      ? model.state.resourceUrl
+      : "",
+  });
 }
 
 /** Settle the current SEND into a new generation that invalidates every overlapping load. */
@@ -225,11 +236,30 @@ function settleSendOperation(model, operation) {
   if (
     model.tabId !== operation.tabId
     || model.pendingSendGeneration !== operation.generation
+    || model.state?.resourceUrl !== operation.resourceUrl
   ) {
     return null;
   }
   const generation = advanceOperationGeneration(model);
   model.pendingSendGeneration = null;
+  return Object.freeze({ generation, tabId: operation.tabId });
+}
+
+/** Return whether two non-empty canonical state URLs cross a Workspace resource boundary. */
+function isResourceSwitch(currentState, incomingState) {
+  const currentUrl = typeof currentState?.resourceUrl === "string"
+    ? currentState.resourceUrl
+    : "";
+  const incomingUrl = typeof incomingState?.resourceUrl === "string"
+    ? incomingState.resourceUrl
+    : "";
+  return !!currentUrl && !!incomingUrl && currentUrl !== incomingUrl;
+}
+
+/** Promote a latest resource-switching load above pending SEND work. */
+function promoteResourceSwitchLoad(model, operation) {
+  if (!isLatestLoadOperation(model, operation)) return null;
+  const generation = advanceOperationGeneration(model, true);
   return Object.freeze({ generation, tabId: operation.tabId });
 }
 
@@ -591,6 +621,15 @@ function sidePanelElements(documentRef) {
   };
 }
 
+/** Clear unscoped UI/model state at one owner, tab, or canonical resource boundary. */
+function clearWorkspaceTransient(elements, model) {
+  elements.messageInput.value = "";
+  model.state = null;
+  model.selectedActionId = null;
+  model.renderedHistoryCount = -1;
+  model.error = null;
+}
+
 /** Render a supplied model into a Side Panel document for production and DOM tests. */
 export function renderSidePanel(documentRef, model, dependencies = {}) {
   return render(sidePanelElements(documentRef), model, dependencies);
@@ -657,38 +696,45 @@ export async function loadWorkspaceForTab(
   const operation = beginLoadOperation(model, tabId, !!options.cancelPendingSend);
   const clearState = operation.tabChanged || !!options.clearState;
   model.tabId = tabId;
-  if (clearState) {
-    elements.messageInput.value = "";
-    model.state = null;
-    model.selectedActionId = null;
-    model.renderedHistoryCount = -1;
-  }
+  if (clearState) clearWorkspaceTransient(elements, model);
   model.loading = !!tabId;
   model.error = null;
   model.retry = () => loadWorkspaceForTab(elements, model, tabId, dependencies).catch(() => {});
   render(elements, model, dependencies);
   if (!tabId) return;
 
+  let completionOperation = null;
   try {
     const response = await sendRuntimeWith(dependencies, { type: WORKSPACE_GET, tabId });
-    if (!isCurrentLoadOperation(model, operation)) return;
+    if (!isLatestLoadOperation(model, operation)) return;
     if (response?.ok) {
+      if (isResourceSwitch(model.state, response.state)) {
+        completionOperation = promoteResourceSwitchLoad(model, operation);
+        if (!completionOperation) return;
+        clearWorkspaceTransient(elements, model);
+      } else {
+        if (!isCurrentLoadOperation(model, operation)) return;
+        completionOperation = operation;
+      }
       model.state = response.state;
       model.lang = response.lang || "browser";
       model.selectedActionId = response.state?.selectedActionId || null;
     } else {
+      if (!isCurrentLoadOperation(model, operation)) return;
+      completionOperation = operation;
       const locale = resolveUiLang(model.lang, model.uiLanguage);
       model.error = workspaceResponseError(response, COPY[locale].retryFallback);
     }
   } catch (error) {
     if (!isCurrentLoadOperation(model, operation)) return;
+    completionOperation = operation;
     const locale = resolveUiLang(model.lang, model.uiLanguage);
     model.error = workspaceResponseError(
       { error: error?.message || COPY[locale].retryFallback },
       COPY[locale].retryFallback
     );
   } finally {
-    if (isCurrentLoadOperation(model, operation)) {
+    if (isCurrentSettledOperation(model, completionOperation)) {
       model.loading = false;
       render(elements, model, dependencies);
       if (model.state && !isUpdateRequired(model.error)) elements.messageInput.focus();
