@@ -5,6 +5,7 @@ export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
 export const WORKSPACE_UPDATED = "AGENT_BRIDGE_WORKSPACE_UPDATED";
 export const WORKSPACE_RESET = "AGENT_BRIDGE_WORKSPACE_RESET";
+export const WORKSPACE_STREAM = "AGENT_BRIDGE_WORKSPACE_STREAM";
 
 const COPY = {
   en: {
@@ -17,6 +18,7 @@ const COPY = {
     loadingWorkspace: "Loading Workspace",
     loadingWorkspaceBody: "Restoring the conversation for this page…",
     loading: "Working",
+    streamFailed: "Generation failed. Your input was restored.",
     next: "Next instruction",
     placeholder: "Ask a question or direct the next revision…",
     hint: "Enter to send · Shift + Enter for a new line",
@@ -45,6 +47,7 @@ const COPY = {
     loadingWorkspace: "正在加载 Workspace",
     loadingWorkspaceBody: "正在恢复当前页面的对话…",
     loading: "处理中",
+    streamFailed: "生成失败，已恢复你的输入。",
     next: "下一步指令",
     placeholder: "继续提问，或说明下一轮修改要求…",
     hint: "Enter 发送 · Shift + Enter 换行",
@@ -237,12 +240,13 @@ function isCurrentLoadOperation(model, operation) {
 }
 
 /** Start one SEND generation that invalidates every previously started load. */
-function beginSendOperation(model, tabId) {
+function beginSendOperation(model, tabId, operationId) {
   const generation = advanceOperationGeneration(model);
   model.latestLoadGeneration = null;
   model.pendingSendGeneration = generation;
   return Object.freeze({
     generation,
+    operationId,
     tabId,
     resourceUrl: typeof model.state?.resourceUrl === "string"
       ? model.state.resourceUrl
@@ -462,6 +466,41 @@ function renderHistoryMessage(documentRef, history, view, dependencies) {
   return message;
 }
 
+/** Render the optimistic User row and transient Assistant state after canonical history. */
+function renderPendingTurn(elements, pendingTurn, view, dependencies) {
+  if (typeof pendingTurn?.userText === "string") {
+    const userMessage = renderHistoryMessage(elements.documentRef, {
+      role: "user",
+      content: pendingTurn.userText,
+      created_at: pendingTurn.createdAt,
+      attachments: [],
+    }, view, dependencies);
+    userMessage.classList.add("transient");
+    elements.timeline.append(userMessage);
+  }
+
+  const assistantMessage = renderHistoryMessage(elements.documentRef, {
+    role: "assistant",
+    content: pendingTurn.markdown || "",
+    created_at: pendingTurn.createdAt,
+    attachments: [],
+  }, view, dependencies);
+  assistantMessage.classList.add(
+    "transient",
+    pendingTurn.status === "failed" ? "failed" : "pending"
+  );
+  const status = textElement(
+    elements.documentRef,
+    "div",
+    "stream-status",
+    pendingTurn.status === "failed" ? view.strings.streamFailed : `${view.strings.loading}…`
+  );
+  if (pendingTurn.status === "failed") status.setAttribute("role", "status");
+  else status.setAttribute("aria-hidden", "true");
+  assistantMessage.querySelector(".message-surface")?.append(status);
+  elements.timeline.append(assistantMessage);
+}
+
 /** Build one non-message Timeline notice for a specific Workspace connection state. */
 function timelineNotice(documentRef, state, icon, title, body) {
   const notice = documentRef.createElement("div");
@@ -501,7 +540,7 @@ function renderTimeline(elements, model, view, dependencies) {
     );
     return;
   }
-  if (!view.histories.length) {
+  if (!view.histories.length && !model.pendingTurn) {
     elements.timeline.append(
       timelineNotice(
         elements.documentRef,
@@ -517,6 +556,9 @@ function renderTimeline(elements, model, view, dependencies) {
     elements.timeline.append(
       renderHistoryMessage(elements.documentRef, history, view, dependencies)
     );
+  }
+  if (model.pendingTurn) {
+    renderPendingTurn(elements, model.pendingTurn, view, dependencies);
   }
 }
 
@@ -652,10 +694,11 @@ function render(elements, model, dependencies = {}) {
   const priorCount = Number.isInteger(model.renderedHistoryCount)
     ? model.renderedHistoryCount
     : -1;
-  if (view.histories.length > priorCount) {
+  const renderedTurnCount = view.histories.length + (model.pendingTurn ? 2 : 0);
+  if (renderedTurnCount > priorCount) {
     elements.timeline.scrollTop = elements.timeline.scrollHeight;
   }
-  model.renderedHistoryCount = view.histories.length;
+  model.renderedHistoryCount = renderedTurnCount;
   return elements;
 }
 
@@ -681,12 +724,143 @@ function sidePanelElements(documentRef) {
 }
 
 /** Clear unscoped UI/model state at one owner, tab, or canonical resource boundary. */
-function clearWorkspaceTransient(elements, model) {
+function clearWorkspaceTransient(elements, model, dependencies = {}) {
+  cancelStreamRender(model, dependencies);
   elements.messageInput.value = "";
+  model.pendingTurn = null;
   model.state = null;
   model.selectedActionId = null;
   model.renderedHistoryCount = -1;
   model.error = null;
+}
+
+/** Cancel one queued transient Markdown paint at a Workspace identity boundary. */
+function cancelStreamRender(model, dependencies = {}) {
+  if (model.streamRenderTimer == null) return;
+  const cancel = typeof dependencies.clearTimeout === "function"
+    ? dependencies.clearTimeout
+    : globalThis.clearTimeout;
+  cancel(model.streamRenderTimer);
+  model.streamRenderTimer = null;
+}
+
+/** Coalesce cumulative Markdown snapshots into at most one paint every 50 milliseconds. */
+function scheduleStreamRender(model, renderNow, dependencies = {}) {
+  if (model.streamRenderTimer != null) return;
+  const schedule = typeof dependencies.setTimeout === "function"
+    ? dependencies.setTimeout
+    : globalThis.setTimeout;
+  model.streamRenderTimer = schedule(() => {
+    model.streamRenderTimer = null;
+    renderNow();
+  }, 50);
+}
+
+/** Return whether one snapshot belongs to the visible Workspace and current transient operation. */
+function isCurrentStreamSnapshot(model, snapshot) {
+  if (
+    !snapshot
+    || snapshot.tabId !== model.tabId
+    || typeof snapshot.operationId !== "string"
+    || typeof snapshot.resourceUrl !== "string"
+    || snapshot.resourceUrl !== model.state?.resourceUrl
+    || !Number.isInteger(snapshot.sequence)
+  ) {
+    return false;
+  }
+  if (!model.pendingTurn) return true;
+  return snapshot.operationId === model.pendingTurn.operationId
+    && snapshot.tabId === model.pendingTurn.tabId
+    && snapshot.resourceUrl === model.pendingTurn.resourceUrl
+    && snapshot.sequence > model.pendingTurn.sequence;
+}
+
+/** Convert one owner-scoped Background snapshot into a non-persistent Side Panel turn. */
+function pendingTurnFromSnapshot(snapshot) {
+  return {
+    operationId: snapshot.operationId,
+    tabId: snapshot.tabId,
+    resourceUrl: snapshot.resourceUrl,
+    userText: typeof snapshot.submittedMessage === "string"
+      ? snapshot.submittedMessage
+      : null,
+    createdAt: snapshot.createdAt || new Date().toISOString(),
+    sequence: snapshot.sequence,
+    stage: snapshot.stage || null,
+    markdown: typeof snapshot.markdown === "string" ? snapshot.markdown : "",
+    status: "pending",
+  };
+}
+
+/** Restore an owner-scoped pending GET snapshot without writing it into canonical state. */
+function restorePendingTurn(model, snapshot) {
+  if (!snapshot) {
+    model.pendingTurn = null;
+    return false;
+  }
+  if (!isCurrentStreamSnapshot({ ...model, pendingTurn: null }, snapshot)) return false;
+  const current = model.pendingTurn;
+  if (
+    current
+    && current.operationId === snapshot.operationId
+    && current.tabId === snapshot.tabId
+    && current.resourceUrl === snapshot.resourceUrl
+    && snapshot.sequence <= current.sequence
+  ) {
+    return false;
+  }
+  model.pendingTurn = pendingTurnFromSnapshot(snapshot);
+  return true;
+}
+
+/** Retain a failed Assistant row and restore the exact submitted composer text. */
+function failPendingTurn(elements, model, message, dependencies = {}) {
+  if (!model.pendingTurn) return false;
+  cancelStreamRender(model, dependencies);
+  model.pendingTurn.status = "failed";
+  model.loading = false;
+  elements.messageInput.value = model.pendingTurn.userText || "";
+  if (message) model.error = workspaceResponseError({ error: message });
+  render(elements, model, dependencies);
+  return true;
+}
+
+/** Reduce one cumulative stream runtime message while rejecting stale identity or sequence data. */
+export function handleWorkspaceStreamMessage(elements, model, message, dependencies = {}) {
+  if (message?.type !== WORKSPACE_STREAM || message.stale === true) return false;
+  if (!["started", "status", "delta", "completed", "failed", "interrupted"].includes(
+    message.eventType
+  )) {
+    return false;
+  }
+  const snapshot = message.snapshot;
+  if (!isCurrentStreamSnapshot(model, snapshot)) return false;
+
+  if (!model.pendingTurn) model.pendingTurn = pendingTurnFromSnapshot(snapshot);
+  else {
+    // Snapshots are cumulative; replacement avoids token concatenation and keeps reducer idempotent.
+    model.pendingTurn.sequence = snapshot.sequence;
+    model.pendingTurn.stage = snapshot.stage || model.pendingTurn.stage;
+    model.pendingTurn.markdown = typeof snapshot.markdown === "string"
+      ? snapshot.markdown
+      : model.pendingTurn.markdown;
+    if (model.pendingTurn.userText === null && typeof snapshot.submittedMessage === "string") {
+      model.pendingTurn.userText = snapshot.submittedMessage;
+    }
+    if (snapshot.createdAt) model.pendingTurn.createdAt = snapshot.createdAt;
+  }
+
+  if (message.eventType === "completed") {
+    cancelStreamRender(model, dependencies);
+    model.pendingTurn = null;
+    render(elements, model, dependencies);
+    return true;
+  }
+  if (message.eventType === "failed" || message.eventType === "interrupted") {
+    return failPendingTurn(elements, model, null, dependencies);
+  }
+  scheduleStreamRender(model, () => render(elements, model, dependencies), dependencies);
+  return true;
 }
 
 /** Render a supplied model into a Side Panel document for production and DOM tests. */
@@ -694,19 +868,39 @@ export function renderSidePanel(documentRef, model, dependencies = {}) {
   return render(sidePanelElements(documentRef), model, dependencies);
 }
 
-/** Send one Workspace turn while retaining composer input until canonical success. */
+/** Send one Workspace turn with an optimistic, non-persistent transient presentation. */
 export async function submitMessage(elements, model, dependencies = {}) {
-  const message = elements.messageInput.value.trim();
+  const submittedMessage = elements.messageInput.value;
+  const message = submittedMessage.trim();
   if (!message || !model.tabId || !model.selectedActionId || model.loading) return;
   const requestTabId = model.tabId;
   const requestActionId = model.selectedActionId;
   const view = workspaceView(model.state || {}, model.lang, model.uiLanguage);
   if (!view.canSend) return;
 
+  const randomUUID = typeof dependencies.randomUUID === "function"
+    ? dependencies.randomUUID
+    : globalThis.crypto.randomUUID.bind(globalThis.crypto);
+  const operationId = randomUUID();
+  const createdAt = typeof dependencies.now === "function"
+    ? dependencies.now()
+    : new Date().toISOString();
+  model.pendingTurn = {
+    operationId,
+    tabId: requestTabId,
+    resourceUrl: model.state?.resourceUrl || "",
+    userText: submittedMessage,
+    createdAt,
+    sequence: -1,
+    stage: null,
+    markdown: "",
+    status: "pending",
+  };
+  elements.messageInput.value = "";
   model.loading = true;
   model.error = null;
   model.retry = () => elements.messageForm.requestSubmit();
-  const operation = beginSendOperation(model, requestTabId);
+  const operation = beginSendOperation(model, requestTabId, operationId);
   let settledOperation = null;
   render(elements, model, dependencies);
   try {
@@ -714,19 +908,23 @@ export async function submitMessage(elements, model, dependencies = {}) {
       type: WORKSPACE_SEND,
       tabId: requestTabId,
       actionId: requestActionId,
-      message,
+      message: submittedMessage,
+      operationId,
     });
     settledOperation = settleSendOperation(model, operation);
     if (!settledOperation) return;
+    if (response?.stale === true) return;
     model.retry = () => elements.messageForm.requestSubmit();
     if (!response?.ok) {
       model.error = workspaceResponseError(response, view.strings.retryFallback);
+      failPendingTurn(elements, model, null, dependencies);
       return;
     }
+    cancelStreamRender(model, dependencies);
+    model.pendingTurn = null;
     model.state = response.state;
     model.lang = response.lang || model.lang;
     model.selectedActionId = response.state?.selectedActionId || model.selectedActionId;
-    elements.messageInput.value = "";
   } catch (error) {
     settledOperation = settleSendOperation(model, operation);
     if (!settledOperation) return;
@@ -735,6 +933,7 @@ export async function submitMessage(elements, model, dependencies = {}) {
       { error: error?.message || view.strings.retryFallback },
       view.strings.retryFallback
     );
+    failPendingTurn(elements, model, null, dependencies);
   } finally {
     if (isCurrentSettledOperation(model, settledOperation)) {
       model.loading = model.latestLoadGeneration != null;
@@ -757,7 +956,7 @@ export async function loadWorkspaceForTab(
   const operation = beginLoadOperation(model, tabId, !!options.cancelPendingSend);
   const clearState = operation.tabChanged || !!options.clearState;
   model.tabId = tabId;
-  if (clearState) clearWorkspaceTransient(elements, model);
+  if (clearState) clearWorkspaceTransient(elements, model, dependencies);
   model.loading = !!tabId;
   model.error = null;
   model.retry = () => loadWorkspaceForTab(elements, model, tabId, dependencies).catch(() => {});
@@ -777,7 +976,7 @@ export async function loadWorkspaceForTab(
       if (isResourceSwitch(model.state, response.state)) {
         completionOperation = promoteResourceSwitchLoad(model, operation);
         if (!completionOperation) return;
-        clearWorkspaceTransient(elements, model);
+        clearWorkspaceTransient(elements, model, dependencies);
       } else {
         if (!isCurrentLoadOperation(model, operation)) return;
         completionOperation = operation;
@@ -785,6 +984,7 @@ export async function loadWorkspaceForTab(
       model.state = response.state;
       model.lang = response.lang || "browser";
       model.selectedActionId = response.state?.selectedActionId || null;
+      restorePendingTurn(model, response.pendingStream);
     } else {
       if (!isCurrentLoadOperation(model, operation)) return;
       completionOperation = operation;
@@ -830,6 +1030,8 @@ async function initSidePanel() {
     operationGeneration: 0,
     latestLoadGeneration: null,
     pendingSendGeneration: null,
+    pendingTurn: null,
+    streamRenderTimer: null,
     loading: false,
     error: null,
     retry: null,
@@ -853,6 +1055,10 @@ async function initSidePanel() {
 
   /** Reload lifecycle changes and surface operation errors for the active tab. */
   const onWorkspaceMessage = (message) => {
+    if (message?.type === WORKSPACE_STREAM) {
+      handleWorkspaceStreamMessage(elements, model, message, dependencies);
+      return;
+    }
     const targetTabId = workspaceLifecycleTarget(message, model.tabId);
     if (targetTabId !== null) {
       const reset = message.type === WORKSPACE_RESET;
@@ -865,6 +1071,7 @@ async function initSidePanel() {
     const isActiveError = !message?.tabId || message.tabId === model.tabId;
     if (
       isActiveError
+      && message?.stale !== true
       && (
         message?.type === "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED"
         || message?.type === "AGENT_BRIDGE_WORKSPACE_ERROR"
@@ -874,7 +1081,9 @@ async function initSidePanel() {
       model.error = workspaceResponseError(message);
       model.loading = false;
       model.retry = () => elements.messageForm.requestSubmit();
-      render(elements, model, dependencies);
+      if (!failPendingTurn(elements, model, null, dependencies)) {
+        render(elements, model, dependencies);
+      }
     }
   };
   /** Follow the active browser tab even when it has no established Workspace. */
@@ -883,6 +1092,7 @@ async function initSidePanel() {
   };
   /** Release long-lived extension listeners when Chrome destroys this panel document. */
   const cleanup = () => {
+    cancelStreamRender(model, dependencies);
     chrome.runtime.onMessage.removeListener(onWorkspaceMessage);
     chrome.tabs.onActivated.removeListener(onTabActivated);
   };

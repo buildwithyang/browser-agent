@@ -316,6 +316,43 @@ a {
   justify-content: flex-start;
 }
 
+.message.pending .stream-status {
+  position: relative;
+  width: fit-content;
+  margin-top: 7px;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.message.pending .stream-status::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(96, 75, 216, 0.14), transparent);
+  content: "";
+  transform: translateX(-100%);
+  animation: stream-shimmer 1.6s ease-in-out infinite;
+}
+
+.message.failed .message-surface {
+  padding-left: 10px;
+  border-left: 2px solid #d9aaa4;
+}
+
+.message.failed .stream-status {
+  margin-top: 7px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+@keyframes stream-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
 .markdown-content > :first-child {
   margin-top: 0;
 }
@@ -782,5 +819,10 @@ textarea:disabled {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .message.pending .stream-status::after {
+    display: none;
+    animation: none;
   }
 }

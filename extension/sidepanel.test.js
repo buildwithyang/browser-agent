@@ -113,6 +113,246 @@ function deferred() {
   return { promise, reject, resolve };
 }
 
+/** Build one cumulative Background stream snapshot for the active fixture Workspace. */
+function streamSnapshot(overrides = {}) {
+  return {
+    operationId: "00000000-0000-4000-8000-000000000001",
+    tabId: 7,
+    resourceUrl: RESOURCE_URL,
+    sequence: 0,
+    stage: "started",
+    markdown: "",
+    submittedMessage: "这个岗位最看重什么？",
+    createdAt: "2026-07-20T10:10:00Z",
+    ...overrides,
+  };
+}
+
+/** Wrap one cumulative snapshot in the Side Panel runtime message contract. */
+function streamMessage(eventType, overrides = {}) {
+  return {
+    type: "AGENT_BRIDGE_WORKSPACE_STREAM",
+    eventType,
+    snapshot: streamSnapshot(overrides),
+  };
+}
+
+test("submit immediately renders a transient user turn and clears the composer", async () => {
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  setup.elements.messageInput.value = "这个岗位最看重什么？";
+  const pending = deferred();
+  let request = null;
+
+  const submit = sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    now: () => "2026-07-20T10:10:00Z",
+    sendRuntime: (message) => {
+      request = message;
+      return pending.promise;
+    },
+  });
+
+  assert.equal(setup.elements.messageInput.value, "");
+  assert.equal(setup.model.pendingTurn?.userText, "这个岗位最看重什么？");
+  assert.equal(request?.operationId, "00000000-0000-4000-8000-000000000001");
+  assert.match(setup.elements.timeline.textContent, /这个岗位最看重什么/);
+  assert.equal(setup.elements.timeline.querySelectorAll(".message.transient time").length, 2);
+  assert.doesNotMatch(setup.elements.timeline.textContent, /\bYou\b|\bAgent\b|你：/);
+
+  pending.resolve({ ok: true, state: workspace({ histories: [message(1)] }), lang: "zh" });
+  await submit;
+  assert.equal(setup.model.pendingTurn, null);
+  assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["answer"]);
+  assert.equal(setup.elements.timeline.querySelector(".message.transient"), null);
+});
+
+test("cumulative stream snapshots render at most once per 50 ms and reject stale identities", async () => {
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+    pendingTurn: {
+      operationId: "00000000-0000-4000-8000-000000000001",
+      tabId: 7,
+      resourceUrl: RESOURCE_URL,
+      userText: "Question",
+      createdAt: "2026-07-20T10:10:00Z",
+      sequence: 0,
+      stage: "started",
+      markdown: "",
+      status: "pending",
+    },
+  });
+  const scheduled = [];
+  const dependencies = {
+    setTimeout: (callback, delay) => {
+      scheduled.push({ callback, delay });
+      return scheduled.length;
+    },
+  };
+
+  assert.equal(typeof sidepanel.handleWorkspaceStreamMessage, "function");
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", { sequence: 1, markdown: "**First**" }),
+    dependencies
+  );
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", { tabId: 8, sequence: 3, markdown: "wrong tab" }),
+    dependencies
+  );
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", {
+      resourceUrl: OTHER_RESOURCE_URL,
+      sequence: 3,
+      markdown: "wrong resource",
+    }),
+    dependencies
+  );
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    { ...streamMessage("delta", { sequence: 3, markdown: "stale wrapper" }), stale: true },
+    dependencies
+  );
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", {
+      sequence: 2,
+      markdown: "**First** <script>window.__streamXss = true</script> second",
+    }),
+    dependencies
+  );
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", { sequence: 1, markdown: "stale" }),
+    dependencies
+  );
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", {
+      operationId: "00000000-0000-4000-8000-000000000002",
+      sequence: 3,
+      markdown: "wrong operation",
+    }),
+    dependencies
+  );
+
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 50);
+  assert.doesNotMatch(setup.elements.timeline.textContent, /First/);
+  scheduled[0].callback();
+  assert.equal(setup.elements.timeline.querySelector(".message.pending strong")?.textContent, "First");
+  assert.match(setup.elements.timeline.textContent, /second/);
+  assert.equal(setup.dom.window.document.querySelector(".message.pending script"), null);
+  assert.equal(setup.dom.window.__streamXss, undefined);
+});
+
+test("failed stream restores text without changing canonical histories", async () => {
+  const canonical = workspace({ histories: [message(0, { content: "canonical" })] });
+  const setup = await renderState(canonical, {
+    tabId: 7,
+    selectedActionId: "analyze",
+    pendingTurn: {
+      operationId: "00000000-0000-4000-8000-000000000001",
+      tabId: 7,
+      resourceUrl: RESOURCE_URL,
+      userText: "retry me",
+      createdAt: "2026-07-20T10:10:00Z",
+      sequence: 0,
+      stage: "started",
+      markdown: "Partial answer",
+      status: "pending",
+    },
+  });
+
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("failed", {
+      sequence: 2,
+      submittedMessage: "retry me",
+      markdown: "Partial answer",
+    })
+  );
+
+  assert.equal(setup.elements.messageInput.value, "retry me");
+  assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["canonical"]);
+  assert.match(setup.elements.timeline.querySelector(".message.failed")?.textContent || "", /failed/i);
+});
+
+test("interrupted SEND restores the exact original input and preserves canonical state", async () => {
+  const canonical = workspace({ histories: [message(0, { content: "canonical" })] });
+  const setup = await renderState(canonical, {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  setup.elements.messageInput.value = "  preserve my spacing  ";
+
+  await sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    sendRuntime: async () => ({ ok: false, error: "Workspace request was canceled." }),
+  });
+
+  assert.equal(setup.elements.messageInput.value, "  preserve my spacing  ");
+  assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["canonical"]);
+  assert.match(setup.elements.timeline.querySelector(".message.failed")?.textContent || "", /failed/i);
+});
+
+test("GET restores pending transient turns and a tab boundary clears their timer", async () => {
+  const setup = await renderState(null, { tabId: 7 });
+  const firstRequest = deferred();
+  const staleRequest = deferred();
+  const secondRequest = deferred();
+  const requests = [firstRequest, staleRequest, secondRequest];
+  const cleared = [];
+  const dependencies = {
+    clearTimeout: (timer) => cleared.push(timer),
+    sendRuntime: () => requests.shift().promise,
+  };
+
+  const firstLoad = sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, dependencies);
+  firstRequest.resolve({
+    ok: true,
+    state: workspace(),
+    lang: "en",
+    pendingStream: streamSnapshot({ submittedMessage: "Recovered draft", sequence: 3 }),
+  });
+  await firstLoad;
+  assert.equal(setup.model.pendingTurn?.userText, "Recovered draft");
+  assert.match(setup.elements.timeline.textContent, /Recovered draft/);
+
+  setup.model.pendingTurn.sequence = 4;
+  setup.model.pendingTurn.markdown = "Newest cumulative Markdown";
+  const staleLoad = sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, dependencies);
+  staleRequest.resolve({
+    ok: true,
+    state: workspace(),
+    lang: "en",
+    pendingStream: streamSnapshot({ sequence: 2, markdown: "Older Markdown" }),
+  });
+  await staleLoad;
+  assert.equal(setup.model.pendingTurn?.sequence, 4);
+  assert.equal(setup.model.pendingTurn?.markdown, "Newest cumulative Markdown");
+
+  setup.model.streamRenderTimer = 42;
+  const secondLoad = sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 8, dependencies);
+  assert.equal(setup.model.pendingTurn, null);
+  assert.deepEqual(cleared, [42]);
+  secondRequest.resolve({ ok: true, state: workspace({ resourceUrl: OTHER_RESOURCE_URL }), lang: "en" });
+  await secondLoad;
+});
+
 test("manifest declares the Side Panel entry point and release version", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("./manifest.json", import.meta.url), "utf8")
@@ -934,6 +1174,13 @@ test("Quiet Precision CSS contains horizontal overflow and keeps rich content lo
   assert.match(css, /\.markdown-content\s+code\s*\{[^}]*overflow-x:\s*auto/s);
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
   assert.match(css, /:focus-visible/);
+  assert.match(css, /\.message\.pending\s+\.stream-status/);
+  assert.match(css, /\.message\.failed\s+\.message-surface\s*\{[^}]*border-left:/s);
+  assert.match(css, /@keyframes\s+stream-shimmer/);
+  assert.match(
+    css,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.message\.pending\s+\.stream-status/s
+  );
 });
 
 test("Side Panel keeps lifecycle reloads, loading state, message limit, and auto-scroll", async () => {
