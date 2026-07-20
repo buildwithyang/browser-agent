@@ -34,19 +34,21 @@
             <span id="turn-meter" class="turn-meter">0 / 10</span>
           </div>
           <div id="action-chips" class="action-chips" role="group" aria-label="Workspace action"></div>
-          <textarea
-            id="message-input"
-            rows="2"
-            maxlength="10000"
-            placeholder="Ask a question or direct the next revision…"
-          ></textarea>
-          <div id="composer-error" class="composer-error" role="alert" aria-live="assertive" hidden></div>
-          <div class="composer-footer">
-            <span id="composer-hint" class="composer-hint">Enter to send · Shift + Enter for a new line</span>
+          <div class="input-shell">
+            <textarea
+              id="message-input"
+              rows="2"
+              maxlength="10000"
+              placeholder="Ask a question or direct the next revision…"
+            ></textarea>
             <button id="send-button" type="submit" disabled>
               <span id="send-label">Send</span>
               <span aria-hidden="true">↑</span>
             </button>
+          </div>
+          <div id="composer-error" class="composer-error" role="alert" aria-live="assertive" hidden></div>
+          <div class="composer-footer">
+            <span id="composer-hint" class="composer-hint">Enter to send · Shift + Enter for a new line</span>
           </div>
         </form>
       </footer>

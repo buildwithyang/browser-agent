@@ -10,8 +10,12 @@ const COPY = {
   en: {
     workspace: "Shared Workspace",
     noPage: "No active page",
+    offlineTitle: "No active Workspace",
     offline: "Open a Quick Insight Action on a page to start this conversation.",
-    noHistory: "No messages yet. Choose an Action and send the first instruction.",
+    emptyTitle: "Start with a clear task",
+    noHistory: "Choose an Action below, then say what you want to understand or change.",
+    loadingWorkspace: "Loading Workspace",
+    loadingWorkspaceBody: "Restoring the conversation for this page…",
     loading: "Working",
     next: "Next instruction",
     placeholder: "Ask a question or direct the next revision…",
@@ -34,8 +38,12 @@ const COPY = {
   zh: {
     workspace: "共享对话",
     noPage: "没有活动页面",
+    offlineTitle: "尚未打开 Workspace",
     offline: "请先在网页的 Quick Insight 中选择一个 Action，开始对话。",
-    noHistory: "暂无消息。选择 Action 并发送第一条指令。",
+    emptyTitle: "从一个明确的任务开始",
+    noHistory: "选择下方 Action，然后说明你想知道或修改什么。",
+    loadingWorkspace: "正在加载 Workspace",
+    loadingWorkspaceBody: "正在恢复当前页面的对话…",
     loading: "处理中",
     next: "下一步指令",
     placeholder: "继续提问，或说明下一轮修改要求…",
@@ -454,19 +462,54 @@ function renderHistoryMessage(documentRef, history, view, dependencies) {
   return message;
 }
 
+/** Build one non-message Timeline notice for a specific Workspace connection state. */
+function timelineNotice(documentRef, state, icon, title, body) {
+  const notice = documentRef.createElement("div");
+  notice.className = "timeline-empty-state";
+  notice.dataset.state = state;
+  const mark = textElement(documentRef, "span", "timeline-empty-mark", icon);
+  mark.setAttribute("aria-hidden", "true");
+  notice.append(
+    mark,
+    textElement(documentRef, "strong", "timeline-empty-title", title),
+    textElement(documentRef, "p", "timeline-empty-body", body)
+  );
+  return notice;
+}
+
 /** Render the canonical chronological history as the timeline's only content source. */
 function renderTimeline(elements, model, view, dependencies) {
   elements.timeline.replaceChildren();
   elements.timeline.setAttribute("aria-busy", String(!!model.loading));
   if (!model.state) {
     elements.timeline.append(
-      textElement(elements.documentRef, "p", "timeline-empty-note", view.strings.offline)
+      model.loading
+        ? timelineNotice(
+          elements.documentRef,
+          "loading",
+          "…",
+          view.strings.loadingWorkspace,
+          view.strings.loadingWorkspaceBody
+        )
+        : timelineNotice(
+          elements.documentRef,
+          "disconnected",
+          "↗",
+          view.strings.offlineTitle,
+          view.strings.offline
+        )
     );
     return;
   }
   if (!view.histories.length) {
     elements.timeline.append(
-      textElement(elements.documentRef, "p", "timeline-empty-note", view.strings.noHistory)
+      timelineNotice(
+        elements.documentRef,
+        "connected-empty",
+        "✦",
+        view.strings.emptyTitle,
+        view.strings.noHistory
+      )
     );
     return;
   }

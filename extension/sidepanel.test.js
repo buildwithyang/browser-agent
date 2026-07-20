@@ -143,6 +143,45 @@ test("header contains only page identity, source, and an optional match score", 
   );
 });
 
+test("timeline distinguishes connected empty, disconnected, and initial loading", async () => {
+  const connected = await renderState(workspace());
+  const connectedNotice = connected.dom.window.document.querySelector(
+    ".timeline-empty-state"
+  );
+  assert.equal(connectedNotice?.dataset.state, "connected-empty");
+  assert.match(connectedNotice?.textContent || "", /Action/);
+
+  const disconnected = await renderState(null);
+  assert.equal(
+    disconnected.dom.window.document.querySelector(".timeline-empty-state")?.dataset.state,
+    "disconnected"
+  );
+
+  const loading = await renderState(null, { loading: true });
+  const loadingTimeline = loading.dom.window.document.querySelector(".timeline");
+  assert.equal(
+    loadingTimeline?.querySelector(".timeline-empty-state")?.dataset.state,
+    "loading"
+  );
+  assert.equal(loadingTimeline?.getAttribute("aria-busy"), "true");
+
+  for (const rendered of [connected, disconnected, loading]) {
+    assert.equal(rendered.dom.window.document.querySelector(".message"), null);
+  }
+});
+
+test("composer integrates textarea and send button without changing stable ids", async () => {
+  const { dom } = await renderState(workspace());
+  const { document } = dom.window;
+  const shell = document.querySelector(".input-shell");
+
+  assert.ok(shell);
+  assert.ok(shell.querySelector("#message-input"));
+  assert.ok(shell.querySelector("#send-button"));
+  assert.equal(document.querySelectorAll("#message-input").length, 1);
+  assert.equal(document.querySelectorAll("#send-button").length, 1);
+});
+
 test("messages preserve chronology, render roles safely, and show semantic local times", async () => {
   const histories = [
     message(0, { content: "<img src=x onerror=alert(1)> first" }),
