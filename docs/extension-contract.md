@@ -1,81 +1,62 @@
 # Extension ↔ Gateway Contract
 
-本文是 Extension 与 Gateway 当前 wire contract 的工程事实来源。它用于判断一次改动是纯
-后端实现，还是需要提升协议版本、修改扩展并重新发布 Chrome Web Store 包。
-
-当前协议版本：
+本文是 Extension 与 Gateway 当前 wire contract 的工程事实来源。协议整数独立于
+`manifest.json` 发布版本，当前版本为：
 
 ```text
-X-Agent-Bridge-Protocol-Version: 2
+X-Agent-Bridge-Protocol-Version: 3
 ```
 
-协议整数独立于 `manifest.json` 的发布版本。完整产品与编排语义见
-[Job Match Workspace Orchestration Design](superpowers/specs/2026-07-19-job-match-workspace-orchestration-design.md)。
-
-## 1. 两个公开场景接口
+## 1. 公开接口
 
 ```text
-POST /tasks/quick-insight
-  -> QuickInsightResponse
-
-POST /tasks/workspace
-  -> WorkspaceResponse
+POST /tasks/quick-insight -> ordinary JSON QuickInsightResponse
+POST /tasks/workspace     -> application/x-ndjson Workspace event stream
 ```
 
-- Quick Insight 是 decision-first 的只读页面浮层，使用 typed cards。
-- Workspace 是共享历史的无状态 state transition，使用 Markdown Message 与 Artifact。
-- `POST /tasks` 只保留升级 shim，始终返回 `426`，不再执行旧 Agent。
-- `POST /tasks/current-task` 从未上线，当前代码不存在该接口。
+- Quick Insight 是只读页面洞察，不创建 Message 或 Artifact。
+- Workspace 是共享历史的无状态 transition；reply 支持 Markdown delta，Artifact 原子完成。
+- `POST /tasks` 只返回升级提示，不再执行 Agent。
+- 公开请求不接受 `agent`；Gateway 根据 Page Context 选择无状态能力，并规范化
+  `resourceUrl`。
 
-公开请求不接受 `agent`。Gateway 根据当前 Page Context 做 Context Routing，并用规范化
-`resourceUrl` 标识 Workspace 业务资源。
+## 2. Protocol gate
 
-## 2. 协议版本门
-
-Extension 对两个新版接口的每个请求都发送：
+两个接口的每个 POST 都发送：
 
 ```http
-X-Agent-Bridge-Protocol-Version: 2
+X-Agent-Bridge-Protocol-Version: 3
 ```
 
-Gateway 在 Session、鉴权、request body 解析和路由之前严格校验该 Header。缺失、重复、
-无法解析或不等于 `2` 时返回：
+Gateway 在 Session、鉴权、request body 解析和路由之前校验原始 Header。缺失、重复、非法
+或旧版本都返回：
 
 ```http
 HTTP/1.1 426 Upgrade Required
-Upgrade: Agent-Bridge/2
-X-Agent-Bridge-Protocol-Version: 2
+Upgrade: Agent-Bridge/3
+X-Agent-Bridge-Protocol-Version: 3
 Content-Type: application/json
 
 {
   "code": "extension_update_required",
   "message": "Extension update required",
-  "required_protocol_version": 2,
+  "required_protocol_version": 3,
   "update_url": "https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai"
 }
 ```
 
-通过协议 gate 的所有 Task 响应，包括 2xx、400、401、429、502，都必须携带当前协议
-Header。成功的 Quick Insight / Workspace body 还必须有 `protocol_version: 2`。
+通过 gate 的 Task 响应，包括错误响应，都带当前 protocol Header。Quick Insight JSON body
+与 Workspace `completed.response` 必须带 `protocol_version: 3`。Extension 在认证和业务
+错误之前校验 Header；不兼容时显示扩展更新入口，不清 token 或 local Workspace。
 
-Extension 在认证和业务错误之前先检查响应 Header；成功时再检查 body 版本。任一版本
-缺失或不相等都会变成 `ExtensionUpdateRequiredError`，不会清除 token，也不会把响应
-写入本地 Workspace。
-
-`OPTIONS` 与非 POST 请求不经过版本 gate。CORS 必须允许请求并暴露协议 Header。
+`OPTIONS` 与非 POST 不经过版本 gate。CORS 必须允许并暴露 protocol Header。
 
 ## 3. Page Context
 
 [content.js](../extension/content.js) 只采集纯文本：
 
 ```js
-{
-  url,
-  title,
-  selectedText,
-  pageText,
-  imageText,
-}
+{ url, title, selectedText, pageText, imageText }
 ```
 
 | 字段 | 来源 | Extension 边界 |
@@ -86,12 +67,12 @@ Extension 在认证和业务错误之前先检查响应 Header；成功时再检
 | `pageText` | `document.body.innerText` | 压缩空白后最多 20,000 字符 |
 | `imageText` | `alt` / `title` / `figcaption` / `aria-label` | 去重最多 40 条、合计最多 4,000 字符 |
 
-不采集或发送图片像素、页面 HTML、CSS、脚本。Page Context 每次 Workspace 请求前重新
-采集，不长期写入本地 Workspace。
+不采集图片像素、HTML、CSS 或脚本。每次 Workspace 请求前重新采集，且不写入 local
+Workspace。
 
-## 4. Quick Insight
+## 4. Quick Insight JSON
 
-### 4.1 Request
+Request：
 
 ```json
 {
@@ -104,75 +85,40 @@ Extension 在认证和业务错误之前先检查响应 Header；成功时再检
 }
 ```
 
-`lang` 为 `auto | zh | en`。Request 不包含 owner、Workspace state 或 Agent selector；Bearer
-token 在 HTTP Header 中发送。
-
-### 4.2 Response
+Response：
 
 ```text
 QuickInsightResponse
 ├── request: QuickInsightRequest
 ├── insight: Insight
 ├── actions: Action[]
-├── workspace: WorkspaceDescriptor
+├── workspace: {resource_url, default_action_id}
 ├── meta: ExecutionMeta
-└── protocol_version: 2
+└── protocol_version: 3
 ```
 
-`WorkspaceDescriptor`：
+稳定 Action ids：`analyze`、`tailor_resume`、`write_cover_letter`、`ask_more`。
+Job Match 使用 score/details/text typed cards；普通页面摘要是 Gateway 净化后的
+`body_html` text card。
 
-```json
-{
-  "resource_url": "https://www.linkedin.com/jobs/view/4442412976",
-  "default_action_id": "analyze"
-}
-```
-
-`Action` 只有：
-
-```json
-{"id": "tailor_resume", "title": "Tailor Resume"}
-```
-
-当前 Extension 与 Gateway 共同接受的稳定 Action ids：
-
-- `analyze`
-- `tailor_resume`
-- `write_cover_letter`
-- `ask_more`
-
-### 4.3 Insight cards
-
-```text
-Insight
-├── title
-└── cards[]
-    ├── score   {id, title, score, max_score, recommendation, reason}
-    ├── text    {id, title, body_html}
-    └── details {id, title, items, summary}
-```
-
-Job Match 使用结构化 score / details / text cards。普通页面摘要由 Gateway 用 Markdown
-renderer 生成经过净化的 `body_html`，再放进 text card。Workspace 不消费这个 HTML。
-
-### 4.4 Action 点击语义
-
-- `analyze`、`tailor_resume`、`write_cover_letter`：先打开并 seed Workspace，再发送
-  `trigger=quick_insight_action`。
-- `ask_more`：只打开 Workspace 并聚焦输入框，不请求 `/tasks/workspace`。
-
-前三个 Action 是确定性 Quick commands；Gateway 跳过 IntentRouter，且不伪造 User
-Message。它们仍携带该资源已有的完整 histories 与 artifacts。
+点击前三个 Action 会 seed Workspace 并发送 `trigger=quick_insight_action`；`ask_more`
+只打开并聚焦输入框。确定性 Quick commands 使用固定 `ChatPlan`，不伪造 User Message。
 
 ## 5. Workspace Request
 
-`POST /tasks/workspace` 使用 `trigger` 作为 discriminator。
+Workspace 额外发送：
 
-### 5.1 User Message
+```http
+Accept: application/x-ndjson
+Content-Type: application/json
+```
+
+User Message：
 
 ```json
 {
   "trigger": "user_message",
+  "operationId": "00000000-0000-0000-0000-000000000001",
   "url": "https://www.linkedin.com/jobs/search/?currentJobId=4442412976",
   "title": "Full Stack Engineer",
   "selectedText": "selected JD",
@@ -187,35 +133,54 @@ Message。它们仍携带该资源已有的完整 histories 与 artifacts。
 }
 ```
 
-`message` 必须为 1–10,000 字符，且已有 histories 最多 9 条。
+Quick Insight Action 使用同样字段，但 `trigger=quick_insight_action` 且禁止 `message`。
+每个请求都要求 Extension 生成的 UUID `operationId`。`resourceUrl` 不是授权依据；Gateway
+从当前 `url` 重新规范化并要求两者相等。
 
-### 5.2 Quick Insight Action
+`user_message` 最多带 9 条 histories，message 为 1–10,000 字符；Quick Action 最多带
+10 条 histories。Action 是用户消息的强意图提示，当前用户明确请求优先；`ChatPlanner`
+选择一个 Specialist 和 reply/artifact 输出模式。
 
-```json
-{
-  "trigger": "quick_insight_action",
-  "url": "https://www.linkedin.com/jobs/search/?currentJobId=4442412976",
-  "title": "Full Stack Engineer",
-  "selectedText": "selected JD",
-  "pageText": "visible page text",
-  "imageText": "image text clues",
-  "lang": "zh",
-  "resourceUrl": "https://www.linkedin.com/jobs/view/4442412976",
-  "actionId": "tailor_resume",
-  "histories": [],
-  "artifacts": {"cv": null, "cover_letter": null}
-}
+## 6. Workspace NDJSON
+
+Gateway 成功启动 stream 后返回：
+
+```http
+Content-Type: application/x-ndjson
+Cache-Control: no-cache
+X-Accel-Buffering: no
 ```
 
-该 variant 禁止 `message`，已有 histories 最多 10 条。`resourceUrl` 不是授权依据；Gateway
-会从当前 `url` 重新规范化并要求两者相等。
+每行是一个 UTF-8 JSON event。Extension 要求 first event 为 sequence 0 `started`，同一
+`operation_id` 的 sequence 严格递增，并且 stream 恰好以 `completed` 或 `failed` 终止：
 
-Workspace Action 是强意图提示，而不是强制 Artifact 命令。用户消息优先于 Action，
-Gateway Orchestrator 决定普通回复还是正式产物。
+```text
+started   {operation_id, sequence, created_at}
+status    {operation_id, sequence, stage, artifact_type?}
+delta     {operation_id, sequence, text}
+completed {operation_id, sequence, response}
+failed    {operation_id, sequence, code, message, recoverable}
+```
 
-## 6. Workspace Response
+`stage` 为 `routing | generating_reply | generating_artifact | finalizing`。
+`artifact_type` 只在 `generating_artifact` 存在，值为 `cv | cover_letter`。其他 status 不
+输出该字段。
 
-Extension 对顶层对象做 exact-key 校验：
+### 6.1 Reply
+
+普通 reply 使用 Chat Completions streaming。模型 raw Markdown chunk 变成 `delta`，
+Extension 累积后增量渲染；完整 Markdown 仍在 terminal response 的 Assistant Message 中。
+
+### 6.2 Artifact
+
+CV / Cover Letter 生成时只发送 status，不发送 draft delta。Specialist chunk 在 Agent 内部
+累积，完成校验后才形成 typed result。完整 Artifact draft 和 Attachment 只出现在
+`completed.response`；失败、断开或取消都不能暴露 partial draft。
+
+所有模型生成调用都使用 OpenAI-compatible Chat Completions，不使用 Responses API。
+Specialist 返回 raw Markdown，不返回 JSON transport envelope。
+
+### 6.3 Terminal response
 
 ```text
 WorkspaceResponse
@@ -225,17 +190,19 @@ WorkspaceResponse
 ├── histories: HistoryMessage[]
 ├── artifacts: {cv: Artifact|null, cover_letter: Artifact|null}
 ├── meta: ExecutionMeta
-└── protocol_version: 2
+└── protocol_version: 3
 ```
 
-成功响应是完整 next state。Extension 不能自行 append User / Assistant Message，而是在
-完整校验后整体替换 histories 与 artifacts。
+`completed.response` 是唯一 canonical next state。`started`、`status`、`delta` 全部 transient；
+Extension 不能从它们 append canonical Message 或修改 Artifact。
 
-### 6.1 HistoryMessage
+## 7. Message、Attachment 与 Artifact
+
+`HistoryMessage`：
 
 ```json
 {
-  "id": "message-uuid",
+  "id": "00000000-0000-0000-0000-000000000010",
   "role": "assistant",
   "content": "已生成一版求职信。",
   "action_id": "write_cover_letter",
@@ -244,143 +211,74 @@ WorkspaceResponse
 }
 ```
 
-- id 为 UUID，`created_at` 必须是 UTC。
-- User content 为 1–10,000 字符；Assistant content 最多 100,000 字符。
-- `action_id` 可为 null 或稳定 Action id。
-- 每条 Message 最多一个 Attachment；User Message 必须没有 Attachment。
-- 合法响应 histories 最多 11 条。
+- id 为 UUID，`created_at` 为 UTC；合法 response 最多 11 条 histories。
+- User Message 不能带 Attachment；每条 Assistant Message 最多一个 Attachment。
+- Assistant content、Artifact draft 和 Cover Letter Attachment 最多 100,000 字符。
 
-### 6.2 Attachment
+`artifacts` 恰好有 nullable `cv` / `cover_letter` 两个 key。创建 version=1；更新复用同
+类型 Artifact id 并递增 version。`Artifact.attachment` 必须等于 histories 中最后一个同
+类型 Attachment。CV Attachment content 是绝对 HTTP(S) URL；Cover Letter content 是该
+历史版本的完整 Markdown。
 
-```json
-{
-  "id": "attachment-uuid",
-  "artifact_id": "artifact-uuid",
-  "version": 1,
-  "type": "cover_letter",
-  "title": "Cover Letter",
-  "content": "Dear Hiring Manager, ..."
-}
-```
+Gateway 与 Extension 都校验 UUID 唯一性、引用、类型、版本和最新 Attachment 一致性。
+任一检查失败都保留旧 canonical state。当前 CV URL 仍是临时测试预览，并不代表按用户
+隔离或版本化托管。
 
-- `cover_letter.content` 是该历史版本的完整 Markdown 快照。
-- `cv.content` 必须是最多 4,096 字符的绝对 HTTP(S) URL。
-- Attachment 是所属 Assistant Message 的不可变快照；更新会追加新 Message，不改旧值。
-- File / Image 尚不是协议版本 2 的合法类型。
+## 8. 渲染边界
 
-### 6.3 Artifact
+Workspace Markdown 字段是 `HistoryMessage.content`、`Artifact.draft` 与 Cover Letter
+`Attachment.content`。Gateway 不生成 Workspace HTML。
 
-```json
-{
-  "id": "artifact-uuid",
-  "type": "cover_letter",
-  "version": 1,
-  "title": "Cover Letter",
-  "draft": "Dear Hiring Manager, ...",
-  "attachment": {
-    "id": "attachment-uuid",
-    "artifact_id": "artifact-uuid",
-    "version": 1,
-    "type": "cover_letter",
-    "title": "Cover Letter",
-    "content": "Dear Hiring Manager, ..."
-  }
-}
-```
+[markdown.js](../extension/markdown.js) 使用包内 Marked（GFM）生成 HTML，再用 DOMPurify
+净化。Assistant reply 与 Cover Letter 支持标题、强调、列表、链接、代码和表格；User
+Message 使用 `textContent`。运行时不从 CDN 加载模块。
 
-`artifacts` 必须恰好有 `cv`、`cover_letter` 两个 nullable key。创建时 version=1；更新同
-类型时复用 Artifact id 并递增 version。`Artifact.attachment` 必须与 histories 中最后一个
-同类型 Attachment 完全相等。
+## 9. Local state、optimistic UI 与失败恢复
 
-Gateway 与 Extension 都校验 UUID 唯一性、Artifact 引用、固定 key/type、版本与最新
-Attachment 一致性。任一检查失败都保留旧 state。
-
-当前 CV Attachment URL 由 Gateway 固定返回 `https://browser.buildwithyang.com`。CV
-draft 可用于下一轮修改，但测试 URL 不是真实、私有或版本化的生成结果。
-
-## 7. Markdown 与渲染边界
-
-Workspace 只传 Markdown：
-
-- `HistoryMessage.content`
-- `Artifact.draft`
-- Cover Letter `Attachment.content`
-
-Workspace 响应没有 `content_html`、`html`、`sections`、`document` 或
-`currentDocument`。Gateway 不解析 Workspace Markdown。
-
-[markdown.js](../extension/markdown.js) 使用随包发布的 Marked（GFM）生成 HTML，再用
-DOMPurify 净化。依赖不从 CDN 加载。Assistant Message 与 Cover Letter Attachment 可渲染
-标题、强调、列表、链接、代码和表格；User Message 使用 `textContent`。
-
-CV Attachment 只渲染 Gateway 响应中的 URL。Cover Letter 的复制按钮复制原始 Markdown，
-不是渲染后的 HTML。
-
-## 8. 本地 state 与迁移
-
-Workspace schema 版本为 2，存储键为：
+canonical state 使用 storage key：
 
 ```text
 agent-bridge:workspace:v2:<encoded owner>:<encoded resourceUrl>
 ```
 
-state 字段：
+主体保存在 `chrome.storage.local`；tab 到 owner/resource 的 active mapping 保存在
+`chrome.storage.session`。不同 owner/resource 隔离，本期没有服务端 Thread、Artifact
+Repository 或跨设备恢复。
 
-```text
-schemaVersion
-resourceUrl
-pageTitle
-quickInsight
-actions
-selectedActionId
-histories
-artifacts
-updatedAt
+- 同一 owner/resource 使用 keyed queue；每次在队列内重读最新 state 并重新采集页面。
+- 发送时 Side Panel 先显示 optimistic User Message 和 transient Assistant，但不持久化。
+- delta 快照以最多 50ms 的频率绘制；completed 先完成 canonical storage commit，再发布。
+- 只有 `completed.response` 调用 `applyWorkspaceResponse()` 并写 local state。
+- failed、断流、超时、取消、schema/protocol/storage 错误不增加 history、不更新 Artifact，
+  并恢复原始 composer 输入供重试。
+- owner、tab、resource 或 operation 已变化时，迟到事件被丢弃；迟到 401 只有 owner/token
+  仍匹配才清认证。
+
+## 10. Nginx streaming boundary
+
+云端 exact route 必须关闭代理缓冲和缓存：
+
+```nginx
+location = /api/tasks/workspace {
+    proxy_pass http://gateway:17321/tasks/workspace;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_cache off;
+    # preserve Host / X-Real-IP / X-Forwarded-For / X-Forwarded-Proto
+}
 ```
 
-Extension 同时在 `chrome.storage.session` 保存 tab 到 owner/resource key 的 active mapping；
-历史主体在 `chrome.storage.local`。owner 变化时清除 tab mapping，不删除其他 owner 隔离的
-local records。
+通用 `/api/` location 保持原有前缀 rewrite。Gateway 与 Nginx 任一层重新缓冲都可能让
+reply delta 延迟到终态。
 
-加载仍指向 v1 key 的 active Workspace 时：
+## 11. Extension 协同发布边界
 
-1. 只迁移能通过 v2 校验且没有 Attachment 的旧 Message。
-2. 删除旧 `currentDocument` 语义，初始化空 artifacts。
-3. 先写入并重新读取 v2 state，校验后切换 active mapping。
-4. 最后删除旧 v1 record；失败时尽力恢复旧 mapping。
+通常可以只改 Gateway：Prompt、模型、文案、内部页面能力选择、URL 规范化细节，以及
+现有 wire shape 内的 ChatPlanner / Specialist 编排。
 
-本期没有服务端 Thread、Artifact Repository 或跨设备恢复。Gateway 仍可把一次调用写入
-既有 task record，但该记录不是可恢复 Workspace state。
+以下变更必须同步修改 Extension，并在不兼容时提升 protocol 版本：顶层或事件字段、事件
+顺序与终态、Action id、Insight card type、Attachment / Artifact type、渲染原语、Quick
+Action 语义、本地 schema 或迁移规则。
 
-## 9. 原子应用与并发边界
-
-- 同一 owner/resource 的 Workspace operations 用 keyed queue 串行。
-- 每个 operation 在队列内重新加载 canonical local state，再采集当前 Page Context。
-- 请求捕获 owner/token snapshot；owner 不匹配的迟到结果会被丢弃。
-- 迟到 401 只有 owner 与 token 都仍匹配时才清理认证。
-- 只有完整合法的 2xx response 才一次性写入 local state。
-- 网络、Agent、schema、protocol 或 storage 失败都不产生 optimistic / partial Message。
-
-Side Panel 会保留失败时的 composer draft，并在输入区附近显示可重试错误。
-
-## 10. 哪些改动需要重新发布 Extension
-
-通常可以只改 Gateway：
-
-- 修改现有 Agent Prompt、模型或输出文案。
-- 调整 Gateway 内部 Context Routing 与 URL 规范化规则，同时保持既有资源语义。
-- 在现有 card / Action / Message / Artifact contract 内改变具体内容。
-- 改变 Orchestrator 如何在四个现有 Specialist 之间路由。
-
-必须修改 Extension、提升协议版本（若 wire 不兼容）并重新发布：
-
-- 新增或删除 Workspace 顶层字段，或改变任一字段类型 / 必填性。
-- 新增 Attachment / Artifact 类型（如 file、image）。
-- 新增稳定 Action id；Extension 当前有固定 Action id 校验与 Quick command 映射。
-- 新增 Insight card type 或新渲染原语。
-- 改变 Quick Action 的 open-only / deterministic request 语义。
-- 增加新的响应 HTML、交互控件、文件下载或图片展示能力。
-- 修改本地 Workspace schema 或迁移规则。
-
-原则：**内容和后端编排可以独立演进；wire shape、稳定 id、渲染原语和本地 state 必须与
-Extension 协同发布。**
+原则：内容和后端编排可以独立演进；wire shape、稳定 id、渲染原语与 local state 必须
+协同发布。

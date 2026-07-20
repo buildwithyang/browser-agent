@@ -1,107 +1,158 @@
 # Agent Bridge Docker 部署（多租户云端）
 
-用 Docker Compose 一键拉起三个服务：
+Docker Compose 启动三个服务：
 
 | 服务 | 镜像 | 作用 |
 | --- | --- | --- |
-| `web` | nginx | 托管前端静态页 + 把 `/api/*` 反代到网关（对外唯一入口） |
-| `gateway` | python + uv | FastAPI 网关，连 Postgres / Casdoor / 阿里云 OSS / LLM |
-| `db` | postgres:16 | 数据库，首次启动用 `initdb/001-schema.sql` 自动建表 |
+| `web` | nginx | 托管前端，并把 `/api/*` 反代到 Gateway |
+| `gateway` | python + uv | FastAPI、Casdoor、OSS、PostgreSQL 与 Agent 编排 |
+| `db` | postgres:16 | 首次启动时执行 `initdb/001-schema.sql` |
 
-浏览器与扩展只跟 `web` 说话（对外统一端口 `http://<host>:17321`），网关与数据库都在 compose 内网，不直接对外暴露。
-前端走同源 `/api`，由 nginx 反代到网关——和开发期 Vite 代理行为一致，没有跨站 cookie / CORS 问题。
+浏览器与扩展只访问 `web` 的 `http://<host>:17321`。Gateway 和 PostgreSQL 只在 Compose
+内网可见；前端使用同源 `/api`，避免额外的 CORS 与跨站 cookie 配置。
 
 ## 前置条件
 
-- 装好 Docker 与 Docker Compose（`docker compose version` 可用）。
-- 一个 OpenAI 兼容的 LLM API Key。
-- 一个 Casdoor 应用（登录用）。
-- 一个阿里云 OSS bucket 及 AccessKey（简历存储用）。
+- Docker 与 Docker Compose（`docker compose version` 可用）。
+- 支持 OpenAI-compatible Chat Completions 的模型服务和 API Key。
+- Casdoor 应用。
+- 阿里云 OSS bucket 与 AccessKey。
 
-## 步骤
+Workspace 使用 Chat Completions streaming 和 protocol v3 NDJSON，不使用 Responses API。
+自定义模型代理必须兼容 `chat.completions.create(..., stream=True)`。
 
-### 1. 配置环境变量
+## 1. 配置环境变量
 
 ```bash
 cd deploy
 cp .env.example .env
 ```
 
-编辑 `.env`，**至少**填好：
+至少配置：
 
-- `POSTGRES_PASSWORD`：数据库密码。
-- `AGENT_BRIDGE_MODELS`：LLM 分层路由 JSON（至少含一个 `default` 层的 `{url, key, model}`）。
-- `AUTH_SESSION_SECRET`：换成随机长串，`openssl rand -hex 32`。
-- `AUTH_FRONTEND_REDIRECT_URL` 与 `CASDOOR_REDIRECT_URI`：把里面的 `YOUR_HOST:17321` 换成用户实际访问 web 的地址（域名或 IP + `WEB_PORT`）。
-- Casdoor：`CASDOOR_ENDPOINT` / `CASDOOR_CLIENT_ID` / `CASDOOR_CLIENT_SECRET`。
-- OSS：`ASSET_BASE_URL` / `OSS_BUCKET` / `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET`（及 `OSS_REGION`）。
+- `POSTGRES_PASSWORD`。
+- `AGENT_BRIDGE_MODELS`：至少包含 `default` 层的 `{url, key, model}`。
+- `AUTH_SESSION_SECRET`：使用 `openssl rand -hex 32` 生成随机值。
+- `AUTH_FRONTEND_REDIRECT_URL` 与 `CASDOOR_REDIRECT_URI`：把
+  `YOUR_HOST:17321` 换成真实域名或 IP 与 `WEB_PORT`。
+- `CASDOOR_ENDPOINT` / `CASDOOR_CLIENT_ID` / `CASDOOR_CLIENT_SECRET`。
+- `ASSET_BASE_URL` / `OSS_BUCKET` / `OSS_ACCESS_KEY_ID` /
+  `OSS_ACCESS_KEY_SECRET`，以及需要时的 `OSS_REGION`。
 
-> 各变量含义见 `.env.example` 内注释。`.env` 含密钥，已被 `.gitignore` 忽略，不要提交。
+变量说明见 `.env.example`。`.env` 含密钥并已被 `.gitignore` 忽略，不要提交。
 
-### 2. 在 Casdoor 后台配回调地址
+## 2. 配置 Casdoor 回调
 
-把 Casdoor 应用的 **Redirect URLs** 设为与 `.env` 里 `CASDOOR_REDIRECT_URI` **完全一致**，例如：
+Casdoor 应用的 **Redirect URLs** 必须与 `CASDOOR_REDIRECT_URI` 完全相同，例如：
 
-```
+```text
 http://YOUR_HOST:17321/api/auth/callback
 ```
 
-### 3. 启动
+## 3. 启动
 
 ```bash
-# 在 deploy/ 目录下
 docker compose up -d --build
-docker compose ps        # 三个服务应为 running / healthy
+docker compose ps
 ```
 
-首次启动：db 为空 → 自动执行 `initdb/001-schema.sql` 建表；网关随后连库（`create_all` 因表已存在成为 no-op）。
+首次启动时，空数据库会执行 `initdb/001-schema.sql`；Gateway 随后连接 PostgreSQL。
+三个服务应显示 running / healthy。
 
-### 4. 访问
+## 4. 访问与扩展
 
-浏览器打开 `http://<host>:17321`，点登录走完 Casdoor，回到简历管理页即成功。
+浏览器打开 `http://<host>:17321`，完成 Casdoor 登录并回到简历管理页。
 
-### 5. 安装浏览器扩展（Chrome 应用商店）
+扩展统一从 [Chrome 应用商店](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai)
+安装。商店包访问 `https://browser.buildwithyang.com/api`；从源码加载的开发包访问
+`http://127.0.0.1:17321`。开发调试时可在 `chrome://extensions` 选择仓库的
+`extension/` 目录。
 
-扩展已上架 Chrome 应用商店，所有用户（含自托管）统一从商店安装，自动更新、无启动警告：
+Extension 与 Gateway 必须都支持 protocol v3。旧扩展访问 Task 接口会收到
+`426 Upgrade Required`；此时更新扩展，不要尝试绕过 protocol Header。
 
-1. 打开 [Chrome 应用商店页面](https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai) → 「添加至 Chrome」。
-2. 回网页点「连接扩展」即可（前端「浏览器扩展」卡片未安装时也会给出商店链接）。
+## Workspace streaming 反代边界
 
-> 改扩展源码做开发调试时，才需要 `chrome://extensions` 开「开发者模式」→「加载已解压」选仓库 `extension/` 目录；因 manifest 含固定 key，加载后的 ID 与商店版一致。
+Quick Insight 是普通 JSON。`POST /api/tasks/workspace` 返回
+`application/x-ndjson`，普通 reply 的 Markdown 会增量到达；CV 和 Cover Letter 只发送
+生成状态，并在 `completed` 终态返回完整 Attachment。
+
+`nginx.conf` 使用精确 location 覆盖 Workspace 路径：
+
+```nginx
+location = /api/tasks/workspace {
+    proxy_pass http://gateway:17321/tasks/workspace;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+这个 exact location 的优先级高于通用 `/api/` 前缀 location，且 `proxy_pass` 显式映射到
+Gateway 的 `/tasks/workspace`。不要删除 `proxy_buffering off` 或 `proxy_cache off`；否则
+Nginx 可能聚合 delta，用户直到终态才看到回复。Gateway 也返回
+`X-Accel-Buffering: no`，两层配置共同保证 streaming boundary。
+
+其他 `/api/*` 继续使用原有 `location /api/`，由带尾部 `/` 的 `proxy_pass` 去掉 `/api`
+前缀。例如 `/api/auth/login` 转发为 `http://gateway:17321/auth/login`。
 
 ## 常用运维命令
 
 ```bash
-docker compose logs -f gateway      # 看网关日志
-docker compose logs -f web          # 看 nginx 日志
-docker compose ps                   # 服务状态
-docker compose restart gateway      # 重启网关
-docker compose down                 # 停并删容器（保留数据卷）
-docker compose down -v              # 连数据卷一起删（清库，谨慎）
-docker compose up -d --build        # 改代码后重建并更新
+docker compose logs -f gateway
+docker compose logs -f web
+docker compose ps
+docker compose restart gateway
+docker compose down
+docker compose down -v
+docker compose up -d --build
 ```
 
-数据库数据在命名卷 `agent-bridge_pgdata`，`down` 不会丢；只有 `down -v` 才会清空。
+数据库数据位于命名卷 `agent-bridge_pgdata`。`down` 保留数据；`down -v` 会删除数据卷，
+只能在确认需要清库时使用。
 
 ## 故障排查
 
-- **登录回跳报错 / redirect_uri 不匹配**：`CASDOOR_REDIRECT_URI` 必须和 Casdoor 后台、以及实际访问地址三者一致（含端口）。
-- **登录后 cookie 不生效**：只跑 HTTP 时 `AUTH_COOKIE_SECURE` 必须是 `false`；上 HTTPS 后才改 `true`。
-- **简历上传/解析失败**：检查 `STORAGE_PROVIDER=oss` 及 OSS 四个变量；`fake` 模式不会真正存储。
-- **网关起不来 / 连不上库**：`docker compose logs gateway` 看错误；确认 `db` 已 healthy，`POSTGRES_PASSWORD` 与 `DATABASE_URL` 一致。
+- **Workspace 回复直到最后才出现**：确认请求命中精确
+  `/api/tasks/workspace`，并检查 `proxy_buffering off` / `proxy_cache off` 没有被上层反代
+  覆盖。
+- **提示更新扩展 / HTTP 426**：安装最新扩展；Gateway 只接受
+  `X-Agent-Bridge-Protocol-Version: 3`。
+- **Workspace 失败后没有历史**：这是原子状态边界；只有 `completed.response` 会写入
+  canonical histories / artifacts。先检查 Gateway 的安全错误码与模型代理 streaming 兼容性。
+- **登录回跳或 `redirect_uri` 不匹配**：Casdoor、`.env` 和真实访问地址必须完全一致。
+- **HTTP 登录后 cookie 不生效**：HTTP 部署使用 `AUTH_COOKIE_SECURE=false`；TLS 部署改为
+  `true`。
+- **简历上传/解析失败**：检查 `STORAGE_PROVIDER=oss` 与 OSS 配置；`fake` 不会真实存储。
+- **Gateway 无法启动或连接数据库**：检查 `docker compose logs gateway`、db health、
+  `POSTGRES_PASSWORD` 与 `DATABASE_URL`。
+
+日志不得包含页面正文、完整 prompt、模型响应、bearer token、Casdoor/OSS/模型 key。
 
 ## 验证 checklist
 
 ```bash
 docker compose exec db pg_isready
-docker compose exec db psql -U agentbridge -d agentbridge -c '\dt'   # 应见 4 张表
-curl -I  http://localhost:17321/                  # 200，返回前端 SPA
-curl -i  http://localhost:17321/api/auth/login    # 302 跳转到 Casdoor
+docker compose exec db psql -U agentbridge -d agentbridge -c '\dt'
+curl -I http://localhost:17321/
+curl -i http://localhost:17321/api/auth/login
+docker compose exec web nginx -T
 ```
 
-## 说明 / 后续
+应确认：数据库 ready 且存在初始化表；SPA 返回 200；登录入口返回 Casdoor redirect；
+`nginx -T` 中 exact Workspace location 包含两个 off 指令和全部 forwarding headers。
 
-- **对外只有一个端口**：宿主机的 `17321` 映射到 web/nginx，是唯一入口；网关容器内部也叫 17321，但只在 compose 内网，不单独对外映射。SPA 在 `/`、API 在 `/api`（nginx 去掉 `/api` 前缀转发到 `gateway:17321`）。
-- **浏览器扩展**：扩展默认连 `http://127.0.0.1:17321`（见 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)），那是本地直连网关的老用法。要接入云端，需改扩展让它走 `http://<host>:17321/api`，并在网页登录后由扩展调 `POST /auth/extension-token` 取 bearer token——属扩展侧改动，不在本部署内。
-- **HTTPS**：当前只跑 HTTP。上公网前请在前面加 TLS 终止（反代证书 / Caddy 等），并把 `AUTH_COOKIE_SECURE=true`、各 URL 改 `https://`。
-- **构建架构**：在 Apple Silicon 上构建得到 arm64 镜像；若部署到 amd64 服务器，请在目标机构建，或用 `docker buildx build --platform linux/amd64`。
+真实 streaming 验收需要加载最新扩展，在 LinkedIn 或 Indeed 岗位页验证：普通 reply
+在 `completed` 前更新、Artifact 只显示状态、成功终态刷新后仍存在、失败恢复输入且不增加
+history。不要用伪造日志代替浏览器验收。
+
+## 部署说明
+
+- 对外唯一端口仍是 web/nginx 的 `17321`；不要直接暴露 Gateway 或 PostgreSQL。
+- 公网部署应在前方增加 TLS 终止，并把相关 URL 与 `AUTH_COOKIE_SECURE` 改为 HTTPS 配置。
+- Apple Silicon 默认构建 arm64 镜像；amd64 服务器应在目标机构建，或使用
+  `docker buildx build --platform linux/amd64`。

@@ -101,4 +101,9 @@ WorkspaceStreamEvent = Annotated[
 def encode_stream_event(event: WorkspaceStreamEvent) -> bytes:
     """Serialize exactly one UTF-8 NDJSON event line."""
 
-    return (event.model_dump_json() + "\n").encode("utf-8")
+    exclude = (
+        {"artifact_type"}
+        if isinstance(event, WorkspaceStatusEvent) and event.artifact_type is None
+        else None
+    )
+    return (event.model_dump_json(exclude=exclude) + "\n").encode("utf-8")

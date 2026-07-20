@@ -119,6 +119,13 @@ test("package contains local Markdown assets and excludes node_modules", async (
   assert.equal(entries.some((entry) => entry.includes("node_modules")), false);
 });
 
+/** Require the strict NDJSON parser in every production Extension archive. */
+test("production package contains Workspace streaming runtime", async () => {
+  const entries = await listArchiveEntries();
+
+  assert.ok(entries.includes("workspace-stream.js"));
+});
+
 test("package contains complete licenses copied from locked dependencies", async () => {
   await withExtractedArchive(async (root) => {
     for (const license of LICENSE_ASSETS) {

@@ -153,3 +153,31 @@ def test_status_event_allows_artifact_type_only_while_generating_artifact() -> N
             stage=WorkspaceStreamStage.ROUTING,
             artifact_type="cv",
         )
+
+
+def test_status_wire_omits_only_its_inapplicable_artifact_type() -> None:
+    """Omit status-only null metadata without stripping canonical null Artifacts."""
+
+    operation_id = uuid4()
+    status = WorkspaceStatusEvent(
+        operation_id=operation_id,
+        sequence=1,
+        stage=WorkspaceStreamStage.ROUTING,
+    )
+    completed = WorkspaceCompletedEvent(
+        operation_id=operation_id,
+        sequence=2,
+        response=WorkspaceResponse(
+            resource_url="https://example.com/article",
+            selected_action_id="ask_more",
+            result_type="reply",
+            histories=[],
+            artifacts=Artifacts(cv=None, cover_letter=None),
+        ),
+    )
+
+    assert "artifact_type" not in json.loads(encode_stream_event(status))
+    assert json.loads(encode_stream_event(completed))["response"]["artifacts"] == {
+        "cv": None,
+        "cover_letter": None,
+    }
