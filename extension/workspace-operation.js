@@ -97,6 +97,63 @@ function advanceStreamSnapshot(snapshot, event) {
   });
 }
 
+/** Build one stable cancellation error without exposing an AbortSignal reason string. */
+function workspaceAbortError() {
+  return new DOMException("Workspace operation aborted", "AbortError");
+}
+
+/** Lazily start one coordinator boundary and race it against generation cancellation. */
+function awaitWorkspaceBoundary(operation, signal) {
+  if (signal?.aborted) return Promise.reject(workspaceAbortError());
+  let value;
+  try {
+    value = operation();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (!signal) return Promise.resolve(value);
+  return new Promise((resolve, reject) => {
+    /** Reject this boundary exactly once when the active generation is canceled. */
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(workspaceAbortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(value).then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+/** Yield an async stream while racing every pending iterator read against cancellation. */
+async function* abortableWorkspaceStream(stream, signal) {
+  const iterator = stream[Symbol.asyncIterator]();
+  let exhausted = false;
+  try {
+    while (true) {
+      const next = await awaitWorkspaceBoundary(() => iterator.next(), signal);
+      if (next.done) {
+        exhausted = true;
+        return;
+      }
+      yield next.value;
+    }
+  } finally {
+    if (!exhausted && typeof iterator.return === "function") {
+      const close = Promise.resolve(iterator.return()).catch(() => undefined);
+      // A transport ignoring AbortSignal must not retain ownership of the keyed queue.
+      if (!signal?.aborted) await close;
+    }
+  }
+}
+
 /** Run one request Command as a strict event stream inside its keyed queue. */
 export async function runWorkspaceOperation(operation, dependencies) {
   if (!operation || operation.kind === "open_only") return null;
@@ -110,6 +167,7 @@ export async function runWorkspaceOperation(operation, dependencies) {
     executeRequest,
     onEvent,
     applyResponse,
+    signal,
   } = dependencies || {};
   if (!queue?.run || !key) throw new TypeError("Workspace operation queue and key are required");
   if (typeof operation.operationId !== "string" || !UUID_PATTERN.test(operation.operationId)) {
@@ -118,13 +176,16 @@ export async function runWorkspaceOperation(operation, dependencies) {
 
   return queue.run(key, async () => {
     // The click-time object is intentionally ignored; queue ordering makes only this reload current.
-    const latest = await loadLatest();
-    const pageContext = await collectPageContext();
+    const latest = await awaitWorkspaceBoundary(() => loadLatest(), signal);
+    const pageContext = await awaitWorkspaceBoundary(() => collectPageContext(), signal);
     const body = buildRequest(pageContext, latest, operation);
     if (body?.operationId !== operation.operationId) {
       throw new TypeError("Workspace request operationId does not match its operation");
     }
-    const stream = await executeRequest(body, latest, operation);
+    const stream = await awaitWorkspaceBoundary(
+      () => executeRequest(body, latest, operation),
+      signal
+    );
     if (!stream || typeof stream[Symbol.asyncIterator] !== "function") {
       throw new TypeError("Workspace request must return an async event stream");
     }
@@ -137,7 +198,7 @@ export async function runWorkspaceOperation(operation, dependencies) {
       createdAt: null,
     });
     let terminalEvent = null;
-    for await (const event of stream) {
+    for await (const event of abortableWorkspaceStream(stream, signal)) {
       if (!event || event.operation_id !== operation.operationId) {
         throw new TypeError("Workspace stream operation identity does not match the request");
       }
@@ -165,7 +226,10 @@ export async function runWorkspaceOperation(operation, dependencies) {
     if (terminalEvent.type === "failed") {
       throw new WorkspaceStreamFailedError(terminalEvent.code, terminalEvent.recoverable);
     }
-    return applyResponse(latest, terminalEvent.response, operation);
+    return awaitWorkspaceBoundary(
+      () => applyResponse(latest, terminalEvent.response, operation),
+      signal
+    );
   });
 }
 

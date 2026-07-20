@@ -10,6 +10,7 @@ import {
   WorkspaceOperationStaleError,
   workspaceOperationErrorEvent,
 } from "./workspace-operation.js";
+import { createKeyedQueue } from "./workspace-controller.js";
 
 /** Create a deterministic in-memory keyed queue for operation tests. */
 function immediateQueue() {
@@ -20,6 +21,15 @@ function immediateQueue() {
       return operation();
     },
   };
+}
+
+/** Create one manually resolved promise for queue cancellation tests. */
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }
 
 const OPERATION_ID = "50000000-0000-4000-8000-000000000001";
@@ -138,6 +148,83 @@ test("operation rejects a stream identity mismatch before applying completion", 
     /operation/i
   );
   assert.equal(applyCalls, 0);
+});
+
+test("aborting hung page-context collection releases the keyed queue", async (context) => {
+  const queue = createKeyedQueue();
+  const pageContextGate = deferred();
+  const controller = new AbortController();
+  let secondCollected = false;
+  context.after(() => pageContextGate.resolve({ url: "https://x/job/1" }));
+
+  const first = runWorkspaceOperation(identifiedOperation(), {
+    queue,
+    key: "workspace-a",
+    signal: controller.signal,
+    loadLatest: async () => ({}),
+    collectPageContext: () => pageContextGate.promise,
+    buildRequest: (_pageContext, _latest, operation) => ({ operationId: operation.operationId }),
+    executeRequest: async function* () {
+      yield streamEvent("started", 0, { created_at: "2026-07-20T12:00:00Z" });
+      yield streamEvent("completed", 1, { response: {} });
+    },
+    applyResponse: (_latest, response) => response,
+  });
+  await Promise.resolve();
+
+  const second = runWorkspaceOperation(identifiedOperation({
+    operationId: "50000000-0000-4000-8000-000000000002",
+  }), {
+    queue,
+    key: "workspace-a",
+    loadLatest: async () => ({}),
+    collectPageContext: async () => {
+      secondCollected = true;
+      return { url: "https://x/job/1" };
+    },
+    buildRequest: (_pageContext, _latest, operation) => ({ operationId: operation.operationId }),
+    executeRequest: async function* () {
+      yield {
+        ...streamEvent("started", 0, { created_at: "2026-07-20T12:00:00Z" }),
+        operation_id: "50000000-0000-4000-8000-000000000002",
+      };
+      yield {
+        ...streamEvent("completed", 1, { response: { ok: true } }),
+        operation_id: "50000000-0000-4000-8000-000000000002",
+      };
+    },
+    applyResponse: (_latest, response) => response,
+  });
+
+  const firstRejected = assert.rejects(first, /abort/i);
+  controller.abort("superseded");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(secondCollected, true, "the next same-key operation must enter after abort");
+  await firstRejected;
+  assert.deepEqual(await second, { ok: true });
+});
+
+test("an already-aborted queued generation starts no operation boundary", async () => {
+  const queue = createKeyedQueue();
+  const controller = new AbortController();
+  let loadCalls = 0;
+  controller.abort("superseded");
+
+  await assert.rejects(runWorkspaceOperation(identifiedOperation(), {
+    queue,
+    key: "workspace-a",
+    signal: controller.signal,
+    loadLatest: async () => {
+      loadCalls += 1;
+      return {};
+    },
+    collectPageContext: async () => ({}),
+    buildRequest: (_pageContext, _latest, operation) => ({ operationId: operation.operationId }),
+    executeRequest: async function* () {},
+    applyResponse: () => null,
+  }), /abort/i);
+
+  assert.equal(loadCalls, 0);
 });
 
 test("executable Quick Insight Actions map to one quick_insight_action request", () => {

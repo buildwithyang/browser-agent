@@ -175,7 +175,7 @@ test("replacing or closing an active stream aborts it without deleting a newer o
   assert.equal(streams.get("owner/resource"), second);
 
   assert.equal(
-    finishActiveWorkspaceStream(streams, "owner/resource", first.operationId),
+    finishActiveWorkspaceStream(streams, "owner/resource", first),
     false
   );
   assert.equal(streams.get("owner/resource"), second);
@@ -188,6 +188,44 @@ test("replacing or closing an active stream aborts it without deleting a newer o
   assert.equal(second.controller.signal.aborted, true);
   assert.equal(second.cancelReason, "tab_closed");
   assert.equal(streams.size, 0);
+});
+
+test("same operationId replacement is isolated by internal generation identity", () => {
+  const createActiveWorkspaceStream = requiredExport("createActiveWorkspaceStream");
+  const replaceActiveWorkspaceStream = requiredExport("replaceActiveWorkspaceStream");
+  const isActiveWorkspaceStream = requiredExport("isActiveWorkspaceStream");
+  const acceptActiveWorkspaceStreamEvent = requiredExport("acceptActiveWorkspaceStreamEvent");
+  const finishActiveWorkspaceStream = requiredExport("finishActiveWorkspaceStream");
+  const streams = new Map();
+  const operationId = "50000000-0000-4000-8000-000000000001";
+  const first = createActiveWorkspaceStream({
+    operationId,
+    tabId: 7,
+    resourceUrl: "https://x/job/1",
+    controller: new AbortController(),
+  });
+  const second = createActiveWorkspaceStream({
+    operationId,
+    tabId: 7,
+    resourceUrl: "https://x/job/1",
+    controller: new AbortController(),
+  });
+
+  replaceActiveWorkspaceStream(streams, "owner/resource", first);
+  replaceActiveWorkspaceStream(streams, "owner/resource", second);
+
+  assert.equal(first.generation === second.generation, false);
+  assert.equal(isActiveWorkspaceStream(streams, "owner/resource", first), false);
+  assert.equal(isActiveWorkspaceStream(streams, "owner/resource", second), true);
+  assert.equal(acceptActiveWorkspaceStreamEvent(streams, "owner/resource", first, {
+    type: "completed",
+    operation_id: operationId,
+    sequence: 0,
+    response: { private: "stale terminal" },
+  }), false);
+  assert.equal(second.markdown, "");
+  assert.equal(finishActiveWorkspaceStream(streams, "owner/resource", first), false);
+  assert.equal(streams.get("owner/resource"), second);
 });
 
 test("Workspace seed refreshes page metadata while preserving canonical conversation", () => {

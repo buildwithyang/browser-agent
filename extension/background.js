@@ -31,7 +31,7 @@ import {
 import {
   AuthSnapshotChangedError,
   abortWorkspaceStreams,
-  acceptWorkspaceStreamEvent,
+  acceptActiveWorkspaceStreamEvent,
   activeWorkspaceKey,
   applyForCurrentOwner,
   clearAuthWorkspaceStateIfCurrent,
@@ -432,20 +432,29 @@ async function executeWorkspaceOperation(tabId, operation, authSnapshot) {
   });
   // Replacement happens before queue entry so a newer same-resource command cancels old I/O now.
   replaceActiveWorkspaceStream(activeWorkspaceStreams, key, stream);
+  const timeout = setTimeout(() => {
+    abortWorkspaceStreams(
+      activeWorkspaceStreams,
+      (candidate) => candidate === stream,
+      "timeout"
+    );
+  }, 120000);
+  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
 
   try {
     return await runWorkspaceOperation(identifiedOperation, {
       queue: workspaceOperationQueue,
       key,
+      signal: stream.controller.signal,
       loadLatest: async () => {
-        if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)) {
+        if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream)) {
           throw new WorkspaceOperationStaleError();
         }
         const latest = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
         if (
           !latest
           || latest.mapping.storageKey !== key
-          || !isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)
+          || !isActiveWorkspaceStream(activeWorkspaceStreams, key, stream)
         ) {
           throw new WorkspaceOperationStaleError();
         }
@@ -458,35 +467,23 @@ async function executeWorkspaceOperation(tabId, operation, authSnapshot) {
       collectPageContext: () => collectPageContext(tabId),
       buildRequest: buildOperationRequest,
       executeRequest: async function* (body) {
-        const timeout = setTimeout(() => {
-          abortWorkspaceStreams(
-            activeWorkspaceStreams,
-            (candidate) => candidate === stream,
-            "timeout"
-          );
-        }, 120000);
-        const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
-        try {
-          const response = await fetch(taskUrl(DEFAULT_GATEWAY, "workspace"), {
-            method: "POST",
-            headers: buildWorkspaceHeaders(authSnapshot.token),
-            body: JSON.stringify(body),
-            signal: stream.controller.signal,
-          });
-          for await (const event of readWorkspaceEventStream(response)) yield event;
-        } finally {
-          clearTimeout(timeout);
-          clearInterval(keepAlive);
-        }
+        const response = await fetch(taskUrl(DEFAULT_GATEWAY, "workspace"), {
+          method: "POST",
+          headers: buildWorkspaceHeaders(authSnapshot.token),
+          body: JSON.stringify(body),
+          signal: stream.controller.signal,
+        });
+        for await (const event of readWorkspaceEventStream(response)) yield event;
       },
       onEvent: (event) => {
-        if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)) return false;
-        if (!acceptWorkspaceStreamEvent(stream, event)) return false;
+        if (!acceptActiveWorkspaceStreamEvent(activeWorkspaceStreams, key, stream, event)) {
+          return false;
+        }
         notifyWorkspaceStream(event.type, stream);
         return true;
       },
       applyResponse: (latest, workspaceResponse) => {
-        if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)) {
+        if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream)) {
           throw new WorkspaceOperationStaleError();
         }
         return applyForCurrentOwner({
@@ -494,7 +491,7 @@ async function executeWorkspaceOperation(tabId, operation, authSnapshot) {
           readCurrentSnapshot: readAuthSnapshot,
           onOwnerMismatch: () => notifyWorkspaceReset(tabId),
           apply: async () => {
-            if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)) {
+            if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream)) {
               throw new WorkspaceOperationStaleError();
             }
             // Only the validated completed.response replaces the canonical persisted Workspace.
@@ -514,10 +511,12 @@ async function executeWorkspaceOperation(tabId, operation, authSnapshot) {
     }
     throw error;
   } finally {
+    clearTimeout(timeout);
+    clearInterval(keepAlive);
     finishActiveWorkspaceStream(
       activeWorkspaceStreams,
       key,
-      stream.operationId,
+      stream,
       stream.cancelReason || "terminal"
     );
   }

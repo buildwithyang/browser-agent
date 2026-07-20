@@ -92,6 +92,7 @@ export function createActiveWorkspaceStream({
     throw new TypeError("Active Workspace AbortController is required");
   }
   return {
+    generation: Symbol("workspace-stream-generation"),
     operationId,
     tabId,
     resourceUrl,
@@ -152,19 +153,26 @@ export function replaceActiveWorkspaceStream(activeStreams, key, active) {
 }
 
 /** Return whether one operation still owns its exact owner/resource registry slot. */
-export function isActiveWorkspaceStream(activeStreams, key, operationId) {
-  return activeStreams.get(key)?.operationId === operationId;
+export function isActiveWorkspaceStream(activeStreams, key, active) {
+  const current = activeStreams.get(key);
+  return current === active && current?.generation === active?.generation;
+}
+
+/** Accept one event only while the supplied record owns the current internal generation. */
+export function acceptActiveWorkspaceStreamEvent(activeStreams, key, active, event) {
+  if (!isActiveWorkspaceStream(activeStreams, key, active)) return false;
+  return acceptWorkspaceStreamEvent(active, event);
 }
 
 /** Finish only the matching registry generation so stale cleanup cannot delete its successor. */
 export function finishActiveWorkspaceStream(
   activeStreams,
   key,
-  operationId,
+  expected,
   reason = "terminal"
 ) {
   const active = activeStreams.get(key);
-  if (!active || active.operationId !== operationId) return false;
+  if (!isActiveWorkspaceStream(activeStreams, key, expected)) return false;
   cancelWorkspaceStream(active, reason);
   activeStreams.delete(key);
   return true;

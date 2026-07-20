@@ -33,6 +33,7 @@ function fakeStorageArea(initial = {}) {
   return {
     data,
     setCalls,
+    nextSetError: null,
     async get(query) {
       if (query === null) return { ...data };
       if (typeof query === "string") return { [query]: data[query] };
@@ -42,6 +43,11 @@ function fakeStorageArea(initial = {}) {
       return Object.assign({}, query, data);
     },
     async set(values) {
+      if (this.nextSetError) {
+        const error = this.nextSetError;
+        this.nextSetError = null;
+        throw error;
+      }
       setCalls.push(values);
       Object.assign(data, values);
     },
@@ -51,8 +57,8 @@ function fakeStorageArea(initial = {}) {
   };
 }
 
-/** Create one manually driven NDJSON response and bind network abort to its body. */
-function controlledStreamResponse(signal) {
+/** Create one manually driven NDJSON response with configurable abort cooperation. */
+function controlledStreamResponse(signal, { ignoreAbort = false } = {}) {
   let streamController = null;
   let closed = false;
   const body = new ReadableStream({
@@ -61,6 +67,7 @@ function controlledStreamResponse(signal) {
     },
   });
   signal.addEventListener("abort", () => {
+    if (ignoreAbort) return;
     if (closed) return;
     closed = true;
     streamController.error(new DOMException("Aborted", "AbortError"));
@@ -84,6 +91,15 @@ function controlledStreamResponse(signal) {
       streamController.close();
     },
   };
+}
+
+/** Create one manually resolved promise for hung Chrome API behavior. */
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }
 
 /** Wait for one asynchronous Background effect without using a fixed sleep. */
@@ -259,6 +275,34 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const runtimeMessages = [];
   const fetchCalls = [];
   const streams = [];
+  const nextStreamOptions = [];
+  let collectContextCalls = 0;
+  let collectContext = async () => ({
+    url: RESOURCE_URL,
+    title: "Job",
+    selectedText: "JD",
+    pageText: "Job description",
+    imageText: "",
+  });
+  let transientLastError = null;
+  let lastErrorReads = 0;
+  const runtimeApi = {
+    onMessage: runtimeOnMessage,
+    onMessageExternal: runtimeOnMessageExternal,
+    onInstalled: fakeEvent(),
+    onStartup: fakeEvent(),
+    sendMessage(message, callback) {
+      runtimeMessages.push(message);
+      transientLastError = { message: "Could not establish connection. Receiving end does not exist." };
+      callback?.();
+      transientLastError = null;
+    },
+    getPlatformInfo(callback) { callback?.({}); },
+    get lastError() {
+      lastErrorReads += 1;
+      return transientLastError;
+    },
+  };
 
   globalThis.chrome = {
     contextMenus: {
@@ -268,18 +312,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
       update() {},
     },
     i18n: { getUILanguage: () => "en" },
-    runtime: {
-      onMessage: runtimeOnMessage,
-      onMessageExternal: runtimeOnMessageExternal,
-      onInstalled: fakeEvent(),
-      onStartup: fakeEvent(),
-      sendMessage(message, callback) {
-        runtimeMessages.push(message);
-        callback?.();
-      },
-      getPlatformInfo(callback) { callback?.({}); },
-      lastError: null,
-    },
+    runtime: runtimeApi,
     scripting: { executeScript: async () => undefined },
     sidePanel: {
       setOptions: async () => undefined,
@@ -294,17 +327,14 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     tabs: {
       onRemoved: tabsOnRemoved,
       create() {},
-      sendMessage: async () => ({
-        url: RESOURCE_URL,
-        title: "Job",
-        selectedText: "JD",
-        pageText: "Job description",
-        imageText: "",
-      }),
+      sendMessage: async () => {
+        collectContextCalls += 1;
+        return collectContext();
+      },
     },
   };
   globalThis.fetch = async (_url, options) => {
-    const stream = controlledStreamResponse(options.signal);
+    const stream = controlledStreamResponse(options.signal, nextStreamOptions.shift());
     streams.push(stream);
     fetchCalls.push({ options, stream });
     return stream.response;
@@ -399,11 +429,14 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   assert.doesNotMatch(failed.error, /secret|provider|prompt/i);
   assert.equal(local.setCalls.length, writesAfterCompletion);
 
+  const replayedOperationId = "50000000-0000-4000-8000-000000000099";
+  nextStreamOptions.push({ ignoreAbort: true });
   const supersededSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
     actionId: "write_cover_letter",
     message: "Old same-resource operation",
+    operationId: replayedOperationId,
   });
   await waitFor(() => fetchCalls.length === 3, "Superseded Workspace fetch did not start");
   const supersededRequest = JSON.parse(fetchCalls[2].options.body);
@@ -418,6 +451,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     tabId: 7,
     actionId: "write_cover_letter",
     message: "New same-resource operation",
+    operationId: replayedOperationId,
   });
   await waitFor(
     () => fetchCalls[2].options.signal.aborted,
@@ -427,6 +461,8 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   assert.equal(superseded.stale, true);
   await waitFor(() => fetchCalls.length === 4, "Replacement Workspace fetch did not start");
   const replacementRequest = JSON.parse(fetchCalls[3].options.body);
+  assert.equal(supersededRequest.operationId, replayedOperationId);
+  assert.equal(replacementRequest.operationId, replayedOperationId);
   streams[3].emit({
     type: "started",
     operation_id: replacementRequest.operationId,
@@ -443,6 +479,84 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const replacement = await replacementSend;
   assert.equal(replacement.ok, true);
 
+  const writesBeforeInvalidTerminal = local.setCalls.length;
+  const invalidTerminalSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Reject invalid terminal",
+  });
+  await waitFor(() => fetchCalls.length === 5, "Invalid-terminal fetch did not start");
+  const invalidRequest = JSON.parse(fetchCalls[4].options.body);
+  streams[4].emit({
+    type: "started",
+    operation_id: invalidRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:03:00Z",
+  });
+  streams[4].emit({
+    type: "completed",
+    operation_id: invalidRequest.operationId,
+    sequence: 1,
+    response: { protocol_version: 3 },
+  });
+  streams[4].close();
+  const invalidTerminal = await invalidTerminalSend;
+  assert.equal(invalidTerminal.ok, false);
+  assert.equal(invalidTerminal.error, "Workspace response was invalid. Please retry.");
+  assert.equal(local.setCalls.length, writesBeforeInvalidTerminal);
+
+  local.nextSetError = new Error("quota details must remain private");
+  const rejectedApplySend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Rejected apply",
+  });
+  await waitFor(() => fetchCalls.length === 6, "Rejected-apply fetch did not start");
+  const rejectedApplyRequest = JSON.parse(fetchCalls[5].options.body);
+  streams[5].emit({
+    type: "started",
+    operation_id: rejectedApplyRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:04:00Z",
+  });
+  streams[5].emit({
+    type: "completed",
+    operation_id: rejectedApplyRequest.operationId,
+    sequence: 1,
+    response: firstArtifactResponse(),
+  });
+  streams[5].close();
+  const rejectedApply = await rejectedApplySend;
+  assert.equal(rejectedApply.ok, false);
+  assert.doesNotMatch(rejectedApply.error, /quota|private/i);
+  assert.equal(local.setCalls.length, writesBeforeInvalidTerminal);
+
+  const applyRecoverySend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Queue recovers after rejected apply",
+  });
+  await waitFor(() => fetchCalls.length === 7, "Apply-recovery fetch did not start");
+  const applyRecoveryRequest = JSON.parse(fetchCalls[6].options.body);
+  streams[6].emit({
+    type: "started",
+    operation_id: applyRecoveryRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:04:01Z",
+  });
+  streams[6].emit({
+    type: "completed",
+    operation_id: applyRecoveryRequest.operationId,
+    sequence: 1,
+    response: firstArtifactResponse(),
+  });
+  streams[6].close();
+  const applyRecovery = await applyRecoverySend;
+  assert.equal(applyRecovery.ok, true);
+
   const realSetTimeout = globalThis.setTimeout;
   const realClearTimeout = globalThis.clearTimeout;
   const timeoutHandle = {};
@@ -458,6 +572,11 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     handle === timeoutHandle ? undefined : realClearTimeout(handle)
   );
   const writesBeforeTimeout = local.setCalls.length;
+  const fetchesBeforeTimeout = fetchCalls.length;
+  const contextCallsBeforeTimeout = collectContextCalls;
+  const normalCollectContext = collectContext;
+  const timeoutContext = deferred();
+  collectContext = () => timeoutContext.promise;
   try {
     const timedOutSend = dispatchRuntime(runtimeOnMessage, {
       type: "AGENT_BRIDGE_WORKSPACE_SEND",
@@ -465,51 +584,128 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
       actionId: "write_cover_letter",
       message: "Timeout must not persist",
     });
-    await waitFor(() => fetchCalls.length === 5, "Timed Workspace fetch did not start");
+    await waitFor(
+      () => collectContextCalls === contextCallsBeforeTimeout + 1,
+      "Timed Workspace context collection did not start"
+    );
+    assert.equal(fetchCalls.length, fetchesBeforeTimeout);
     assert.equal(typeof workspaceTimeout, "function");
     workspaceTimeout();
     const timedOut = await timedOutSend;
-    assert.equal(fetchCalls[4].options.signal.aborted, true);
     assert.equal(timedOut.ok, false);
     assert.equal(local.setCalls.length, writesBeforeTimeout);
+    timeoutContext.resolve({
+      url: RESOURCE_URL,
+      title: "Late timeout context",
+      selectedText: "late",
+      pageText: "late",
+      imageText: "",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fetchCalls.length, fetchesBeforeTimeout);
   } finally {
+    collectContext = normalCollectContext;
     globalThis.setTimeout = realSetTimeout;
     globalThis.clearTimeout = realClearTimeout;
   }
 
+  const timeoutRecoverySend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Queue recovers after pre-fetch timeout",
+  });
+  await waitFor(() => fetchCalls.length === 8, "Timeout recovery did not reach fetch");
+  const timeoutRecoveryRequest = JSON.parse(fetchCalls[7].options.body);
+  streams[7].emit({
+    type: "started",
+    operation_id: timeoutRecoveryRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:05:00Z",
+  });
+  streams[7].emit({
+    type: "completed",
+    operation_id: timeoutRecoveryRequest.operationId,
+    sequence: 1,
+    response: firstArtifactResponse(),
+  });
+  streams[7].close();
+  assert.equal((await timeoutRecoverySend).ok, true);
+
+  const replacementContext = deferred();
+  const contextCallsBeforeReplacement = collectContextCalls;
+  let useHungReplacementContext = true;
+  collectContext = () => {
+    if (useHungReplacementContext) {
+      useHungReplacementContext = false;
+      return replacementContext.promise;
+    }
+    return normalCollectContext();
+  };
+  const hungContextSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Hung pre-fetch operation",
+  });
+  await waitFor(
+    () => collectContextCalls === contextCallsBeforeReplacement + 1,
+    "Hung replacement context did not start"
+  );
+  const replacementAfterHungSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Replacement after hung context",
+  });
+  const hungContextResult = await hungContextSend;
+  assert.equal(hungContextResult.stale, true);
+  await waitFor(() => fetchCalls.length === 9, "Replacement did not release pre-fetch queue");
+  const replacementAfterHungRequest = JSON.parse(fetchCalls[8].options.body);
+  streams[8].emit({
+    type: "started",
+    operation_id: replacementAfterHungRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:06:00Z",
+  });
+  streams[8].emit({
+    type: "completed",
+    operation_id: replacementAfterHungRequest.operationId,
+    sequence: 1,
+    response: firstArtifactResponse(),
+  });
+  streams[8].close();
+  assert.equal((await replacementAfterHungSend).ok, true);
+  replacementContext.resolve({
+    url: RESOURCE_URL,
+    title: "Late superseded context",
+    selectedText: "late",
+    pageText: "late",
+    imageText: "",
+  });
+  collectContext = normalCollectContext;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fetchCalls.length, 9, "late old context must not start another fetch");
+
   const writesBeforeTabAbort = local.setCalls.length;
+  const tabContext = deferred();
+  const contextCallsBeforeTabAbort = collectContextCalls;
+  collectContext = () => tabContext.promise;
   const abortedSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
     actionId: "write_cover_letter",
     message: "Do not persist this",
   });
-  await waitFor(() => fetchCalls.length === 6, "Tab-aborted Workspace fetch did not start");
-  const abortedRequest = JSON.parse(fetchCalls[5].options.body);
-  streams[5].emit({
-    type: "started",
-    operation_id: abortedRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:01:00Z",
-  });
-  streams[5].emit({
-    type: "delta",
-    operation_id: abortedRequest.operationId,
-    sequence: 1,
-    text: "private partial",
-  });
   await waitFor(
-    () => runtimeMessages.some(
-      (message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM"
-        && message.snapshot.operationId === abortedRequest.operationId
-        && message.snapshot.markdown === "private partial"
-    ),
-    "Second stream did not become active"
+    () => collectContextCalls === contextCallsBeforeTabAbort + 1,
+    "Tab-aborted context collection did not start"
   );
   for (const listener of tabsOnRemoved.listeners) listener(7);
   const aborted = await abortedSend;
-  assert.equal(fetchCalls[5].options.signal.aborted, true);
   assert.equal(aborted.ok, false);
+  assert.equal(aborted.stale, true);
+  assert.equal(fetchCalls.length, 9);
   assert.equal(local.setCalls.length, writesBeforeTabAbort);
   assert.equal(
     runtimeMessages.some(
@@ -518,6 +714,14 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     ),
     false
   );
+  tabContext.resolve({
+    url: RESOURCE_URL,
+    title: "Late closed-tab context",
+    selectedText: "late",
+    pageText: "late",
+    imageText: "",
+  });
+  collectContext = normalCollectContext;
 
   session.data[activeWorkspaceKey(7)] = {
     ownerId: "user-a",
@@ -525,13 +729,36 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     resourceUrl: RESOURCE_URL,
     lang: "en",
   };
+  const tabRecoverySend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Queue recovers after tab-close pre-fetch abort",
+  });
+  await waitFor(() => fetchCalls.length === 10, "Tab-close recovery did not reach fetch");
+  const tabRecoveryRequest = JSON.parse(fetchCalls[9].options.body);
+  streams[9].emit({
+    type: "started",
+    operation_id: tabRecoveryRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:07:00Z",
+  });
+  streams[9].emit({
+    type: "completed",
+    operation_id: tabRecoveryRequest.operationId,
+    sequence: 1,
+    response: firstArtifactResponse(),
+  });
+  streams[9].close();
+  assert.equal((await tabRecoverySend).ok, true);
+
   const ownerStaleSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
     actionId: "write_cover_letter",
     message: "Old owner operation",
   });
-  await waitFor(() => fetchCalls.length === 7, "Owner-stale Workspace fetch did not start");
+  await waitFor(() => fetchCalls.length === 11, "Owner-stale Workspace fetch did not start");
   const canonicalWritesBeforeOwnerChange = local.setCalls.filter(
     (values) => Object.prototype.hasOwnProperty.call(values, storageKey)
   ).length;
@@ -543,11 +770,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   });
   const ownerStale = await ownerStaleSend;
   assert.equal(authChanged.ok, true);
-  assert.equal(fetchCalls[6].options.signal.aborted, true);
+  assert.equal(fetchCalls[10].options.signal.aborted, true);
   assert.equal(ownerStale.stale, true);
   assert.equal(session.data[activeWorkspaceKey(7)], undefined);
   assert.equal(local.data.workspaceOwnerId, "user-b");
   assert.equal(local.setCalls.filter(
     (values) => Object.prototype.hasOwnProperty.call(values, storageKey)
   ).length, canonicalWritesBeforeOwnerChange);
+  assert.ok(lastErrorReads > 0, "no-receiver runtime callbacks must consume chrome.runtime.lastError");
 });
