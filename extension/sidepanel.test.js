@@ -900,7 +900,7 @@ test("same-resource and initial same-tab loads do not clear a draft", async () =
   assert.equal(initial.elements.messageInput.value, "draft before initial state arrives");
 });
 
-test("light responsive CSS contains horizontal overflow and keeps rich content local", async () => {
+test("Quiet Precision CSS contains horizontal overflow and keeps rich content local", async () => {
   const [html, css] = await Promise.all([
     readFile(new URL("./sidepanel.html", import.meta.url), "utf8"),
     readFile(new URL("./sidepanel.css", import.meta.url), "utf8"),
@@ -908,8 +908,25 @@ test("light responsive CSS contains horizontal overflow and keeps rich content l
 
   assert.doesNotMatch(html, /brand-mark|signal-rule|connection-status/);
   assert.match(css, /color-scheme:\s*light/);
+  assert.match(
+    css,
+    /@font-face[\s\S]*font-family:\s*["']DM Sans["'][\s\S]*fonts\/dm-sans-latin-variable\.woff2/
+  );
+  assert.match(css, /--brand:\s*#604bd8/i);
+  assert.match(css, /--ink-soft:\s*#70727d/i);
   assert.match(css, /html,\s*body\s*\{[^}]*overflow-x:\s*hidden/s);
   assert.match(css, /\.workspace-shell\s*\{[^}]*overflow-x:\s*hidden/s);
+  assert.match(css, /\.timeline-empty-state\s*\{[^}]*place-items:\s*center/s);
+  assert.match(css, /\.input-shell\s*\{[^}]*position:\s*relative/s);
+  assert.match(css, /#send-button\s*\{[^}]*position:\s*absolute/s);
+  assert.match(
+    css,
+    /\.message\.assistant\s+\.message-surface\s*\{[^}]*border:\s*(?:0|none)/s
+  );
+  assert.match(
+    css,
+    /\.message\.user\s+\.message-surface\s*\{[^}]*background:\s*var\(--brand-soft\)/s
+  );
   assert.match(css, /\.action-chips\s*\{[^}]*flex-wrap:\s*wrap/s);
   assert.doesNotMatch(css, /\.action-chips\s*\{[^}]*overflow-x:\s*(?:auto|scroll)/s);
   assert.match(css, /\.markdown-content\s+table\s*\{[^}]*overflow-x:\s*auto/s);

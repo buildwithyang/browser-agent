@@ -26,9 +26,13 @@ POST /tasks/workspace
 ```
 
 - Quick Insight 的 Actions 使用紧凑标签，在空间不足时自动换行。
-- Side Panel 使用浅色经典聊天布局，只保留页面标题、来源与可选匹配分。
+- Side Panel 使用 Quiet Precision 浅色工作台：冷中性色背景、品牌紫交互状态、
+  无气泡 Assistant 正文、轻紫 User Message 和 Artifact-only 卡片。
+- 无历史时显示居中任务引导；底部 Composer 把发送按钮集成到输入框，Action
+  仍在上方自动换行。
 - Chrome 不提供设置 Side Panel 默认宽度的 API；布局会适配常见窄宽度，用户可以拖动
   面板边界。
+- Side Panel 英文与数字使用扩展包内的 DM Sans WOFF2，不会运行时请求远程字体。
 
 ## 页面路由与 Actions
 
@@ -170,7 +174,8 @@ Quick Insight 请求再附加 `lang`。Workspace 请求使用最新 Page Context
 | `background.js` | Quick Insight、Workspace 命令队列、鉴权快照与 Side Panel 消息路由 |
 | `content.js` | 采集当前标签页纯文本上下文 |
 | `quick-insight.js` | typed Insight 视图与 Quick Action 执行语义 |
-| `sidepanel.html` / `.css` / `.js` | 经典聊天时间线、Attachment、Action chips 与 composer |
+| `sidepanel.html` / `.css` / `.js` | Quiet Precision 时间线、Attachment、Action chips 与 composer |
+| `fonts/` | Side Panel 本地 DM Sans WOFF2 与 OFL 授权 |
 | `workspace.js` | schema v2、完整 state 校验、v1 迁移与消息上限 |
 | `workspace-controller.js` | owner/resource 存储、协议响应、tab 映射与并发边界 |
 | `workspace-operation.js` | Quick Action / User Message command 与 keyed queue |
