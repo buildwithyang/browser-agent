@@ -15,6 +15,7 @@ import {
 } from "./auth.js";
 import {
   quickInsightActionErrorView,
+  quickInsightRequestErrorView,
   quickInsightView,
   runQuickInsightAction,
 } from "./quick-insight.js";
@@ -285,16 +286,12 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
         });
         return false;
       }
-      const hint =
-        error.name === "AbortError"
-          ? "请求超时,网关无响应。"
-          : "无法连接网关 (" + error.message + ")。";
+      const errorView = quickInsightRequestErrorView(error, errLang(lang));
       showResult(tabId, {
         state: "error",
         source,
-        errorHint: hint,
-        errorCmd: "./dev-start backend",
-        text: "Agent Bridge 出错:" + hint,
+        ...errorView,
+        text: "Agent Bridge 出错:" + errorView.errorHint,
       });
       return false;
     });
@@ -1095,6 +1092,14 @@ function renderPanel(payload) {
         close.addEventListener("click", stop); // 关掉面板即视为取消
         wrap.append(note);
       }
+    }
+    if (payload.updateUrl) {
+      const updateLink = el("a", "login-link");
+      updateLink.href = payload.updateUrl;
+      updateLink.target = payload.updateTarget;
+      updateLink.rel = payload.updateRel;
+      updateLink.textContent = payload.updateLabel || payload.updateUrl;
+      wrap.append(updateLink);
     }
     if (payload.errorCmd) {
       const sub = el("p", "error-sub");

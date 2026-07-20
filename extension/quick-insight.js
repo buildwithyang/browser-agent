@@ -1,4 +1,7 @@
-import { createQuickInsightOperation } from "./workspace-operation.js";
+import {
+  createQuickInsightOperation,
+  workspaceOperationErrorEvent,
+} from "./workspace-operation.js";
 
 /** Normalize a typed Quick Insight response for the existing overlay renderer. */
 export function quickInsightView(insight = {}, actions = []) {
@@ -58,5 +61,28 @@ export function quickInsightActionErrorView(errorEvent, lang) {
       : "Workspace 打开失败，请重试。",
     updateUrl: null,
     updateLabel: "",
+  };
+}
+
+/** Describe the initial Quick Insight request error without mutating auth or Workspace state. */
+export function quickInsightRequestErrorView(error, lang) {
+  const event = workspaceOperationErrorEvent(error);
+  if (event.type === "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED") {
+    const update = quickInsightActionErrorView(event, lang);
+    return {
+      errorTitle: lang === "en" ? "Update required" : "需要更新",
+      errorHint: update.message,
+      updateUrl: update.updateUrl,
+      updateLabel: update.updateLabel,
+      updateTarget: "_blank",
+      updateRel: "noopener noreferrer",
+    };
+  }
+  const hint = error?.name === "AbortError"
+    ? "请求超时,网关无响应。"
+    : `无法连接网关 (${error?.message || "Unknown error"})。`;
+  return {
+    errorHint: hint,
+    errorCmd: "./dev-start backend",
   };
 }
