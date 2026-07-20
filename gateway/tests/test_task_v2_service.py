@@ -1,14 +1,22 @@
 from dataclasses import replace
 
-from app.agents.base import AgentContext, AgentExecution, TaskAgent
+from app.agents.base import (
+    AgentContext,
+    AgentExecution,
+    TaskAgent,
+    WorkspaceAgent,
+    WorkspaceAgentContext,
+)
 from app.modules.task.schema import (
     Action,
     ActionId,
     AgentName,
+    ChatResult,
     DocumentContent,
     HistoryMessage,
     Insight,
     QuickInsightRequest,
+    ReplyResult,
     Section,
     TaskRequest,
     WorkspaceRequest,
@@ -16,7 +24,7 @@ from app.modules.task.schema import (
 from app.modules.task.service import TaskService
 
 
-class FakeAgent(TaskAgent):
+class FakeAgent(TaskAgent, WorkspaceAgent):
     name = AgentName.SUMMARY_PAGE
 
     def actions(self, ctx: AgentContext) -> list[Action]:
@@ -45,6 +53,16 @@ class FakeAgent(TaskAgent):
             raw_result="document",
             prompt="task prompt",
             model="fake",
+        )
+
+    def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
+        """Return a v2 reply without using the legacy document execution path."""
+
+        return AgentExecution(
+            content=ReplyResult(type="reply", markdown="chat reply"),
+            raw_result="chat reply",
+            prompt="chat prompt",
+            model="fake-chat",
         )
 
 
@@ -123,3 +141,25 @@ def test_workspace_ask_more_preserves_current_document() -> None:
     assert "<h1>Existing draft</h1>" in response.document.html
     assert response.histories[-1].content == "document"
     assert response.histories[-1].action_id is ActionId.ASK_MORE
+
+
+def test_legacy_execute_and_workspace_remain_runnable_during_v2_staging() -> None:
+    """Keep both temporary v1 Service methods until Task 8 migrates the API."""
+
+    task_response = service().execute(
+        TaskRequest(url="https://example.com", actionId="ask_more"),
+        user_id=None,
+    )
+    workspace_response = service().workspace(
+        WorkspaceRequest(
+            url="https://example.com",
+            resourceUrl="https://example.com/",
+            actionId=ActionId.ASK_MORE,
+            message="Follow up",
+        ),
+        user_id=None,
+    )
+
+    assert task_response.document.text == "document"
+    assert workspace_response.document is None
+    assert workspace_response.histories[-1].content == "document"

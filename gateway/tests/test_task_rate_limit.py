@@ -9,17 +9,27 @@ from sqlalchemy.orm import sessionmaker
 
 import app.modules.task.model  # noqa: F401
 from app import main
-from app.agents.base import AgentContext, AgentExecution, TaskAgent
+from app.agents.base import (
+    AgentContext,
+    AgentExecution,
+    TaskAgent,
+    WorkspaceAgent,
+    WorkspaceAgentContext,
+)
 from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.task.repo import TaskRepository
 from app.modules.task.schema import (
     Action,
+    ActionId,
     AgentName,
+    ChatResult,
     DocumentContent,
     Insight,
     QuickInsightRequest,
+    ReplyResult,
     TaskRecordData,
+    UserMessageWorkspaceRequest,
 )
 from app.modules.task.service import RateLimitError, TaskService
 
@@ -105,3 +115,70 @@ def test_api_maps_rate_limit_to_429(monkeypatch):
     client = TestClient(main.app)
     r = client.post("/tasks/quick-insight", json={"url": "https://x"})
     assert r.status_code == 429
+
+
+def test_workspace_chat_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
+    """Apply the shared operational quota before each v2 Agent call."""
+
+    repo = _repo(tmp_path)
+
+    class Agent(TaskAgent, WorkspaceAgent):
+        """Return one deterministic reply while counting v2 calls."""
+
+        name = AgentName.SUMMARY_PAGE
+
+        def __init__(self) -> None:
+            """Start with no Workspace calls."""
+
+            self.calls = 0
+
+        def actions(self, ctx: AgentContext) -> list[Action]:
+            """Declare no Quick Insight actions."""
+
+            return []
+
+        def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+            """Keep the unrelated legacy contract concrete."""
+
+            raise NotImplementedError
+
+        def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
+            """Reject accidental legacy execution."""
+
+            raise AssertionError("workspace_chat must not call execute")
+
+        def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
+            """Count and return one v2 reply execution."""
+
+            self.calls += 1
+            return AgentExecution(
+                content=ReplyResult(type="reply", markdown="ok"),
+                raw_result="ok",
+                prompt="P",
+                model="m",
+            )
+
+    agent = Agent()
+    service = TaskService(
+        agents={AgentName.SUMMARY_PAGE: agent},
+        repository=repo,
+        resume_service=None,
+        default_model="m",
+        rate_limit_max=1,
+        rate_limit_window_seconds=3600,
+    )
+    request = UserMessageWorkspaceRequest(
+        trigger="user_message",
+        url="https://example.com",
+        resourceUrl="https://example.com/",
+        actionId=ActionId.ASK_MORE,
+        histories=[],
+        artifacts={"cv": None, "cover_letter": None},
+        message="Question",
+    )
+
+    service.workspace_chat(request, user_id=USER)
+    with pytest.raises(RateLimitError):
+        service.workspace_chat(request, user_id=USER)
+
+    assert agent.calls == 1
