@@ -694,9 +694,11 @@ export async function submitMessage(elements, model, dependencies = {}) {
     );
   } finally {
     if (isCurrentSettledOperation(model, settledOperation)) {
-      model.loading = false;
+      model.loading = model.latestLoadGeneration != null;
       render(elements, model, dependencies);
-      if (!isUpdateRequired(model.error)) elements.messageInput.focus();
+      if (!model.loading && !isUpdateRequired(model.error)) {
+        elements.messageInput.focus();
+      }
     }
   }
 }
@@ -755,10 +757,15 @@ export async function loadWorkspaceForTab(
       COPY[locale].retryFallback
     );
   } finally {
-    if (model.latestLoadGeneration === operation.generation) {
+    const releasedLatestLoad = model.latestLoadGeneration === operation.generation;
+    if (releasedLatestLoad) {
       model.latestLoadGeneration = null;
     }
     if (isCurrentSettledOperation(model, completionOperation)) {
+      model.loading = false;
+      render(elements, model, dependencies);
+      if (model.state && !isUpdateRequired(model.error)) elements.messageInput.focus();
+    } else if (releasedLatestLoad && !model.pendingSendGeneration) {
       model.loading = false;
       render(elements, model, dependencies);
       if (model.state && !isUpdateRequired(model.error)) elements.messageInput.focus();

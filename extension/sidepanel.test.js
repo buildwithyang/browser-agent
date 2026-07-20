@@ -717,6 +717,116 @@ test("same-tab resource B GET survives resource A SEND settling first", async ()
   assert.equal(model.loading, false);
 });
 
+test("settled resource A SEND keeps a newer resource load exclusive", async () => {
+  const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const sendRequest = deferred();
+  const getRequest = deferred();
+  const runtimeTypes = [];
+  const dependencies = {
+    sendRuntime: (request) => {
+      runtimeTypes.push(request.type);
+      return request.type === sidepanel.WORKSPACE_SEND
+        ? sendRequest.promise
+        : getRequest.promise;
+    },
+  };
+  elements.messageInput.value = "resource A private instruction";
+
+  const send = sidepanel.submitMessage(elements, model, dependencies);
+  const load = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  sendRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Resource A SEND result" }),
+    lang: "en",
+  });
+  await send;
+
+  assert.equal(model.loading, true);
+  assert.equal(elements.messageInput.disabled, true);
+  elements.messageInput.value = "must wait for resource B";
+  await sidepanel.submitMessage(elements, model, dependencies);
+  assert.deepEqual(runtimeTypes, [sidepanel.WORKSPACE_SEND, sidepanel.WORKSPACE_GET]);
+
+  getRequest.resolve({
+    ok: true,
+    state: workspace({ resourceUrl: OTHER_RESOURCE_URL, pageTitle: "Resource B" }),
+    lang: "en",
+  });
+  await load;
+  assert.equal(model.state?.resourceUrl, OTHER_RESOURCE_URL);
+  assert.equal(model.loading, false);
+});
+
+test("same-resource tracked load releases loading after an older SEND settles", async () => {
+  const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const sendRequest = deferred();
+  const getRequest = deferred();
+  const dependencies = {
+    sendRuntime: (request) => (
+      request.type === sidepanel.WORKSPACE_SEND ? sendRequest.promise : getRequest.promise
+    ),
+  };
+  elements.messageInput.value = "resource A private instruction";
+
+  const send = sidepanel.submitMessage(elements, model, dependencies);
+  const load = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  sendRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Canonical SEND" }),
+    lang: "en",
+  });
+  await send;
+  assert.equal(model.loading, true);
+
+  getRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Stale same-resource GET" }),
+    lang: "en",
+  });
+  await load;
+  assert.equal(model.state?.pageTitle, "Canonical SEND");
+  assert.equal(model.loading, false);
+  assert.equal(elements.messageInput.disabled, false);
+});
+
+test("failed tracked load releases loading after an older SEND settles", async () => {
+  const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const sendRequest = deferred();
+  const getRequest = deferred();
+  const dependencies = {
+    sendRuntime: (request) => (
+      request.type === sidepanel.WORKSPACE_SEND ? sendRequest.promise : getRequest.promise
+    ),
+  };
+  elements.messageInput.value = "resource A private instruction";
+
+  const send = sidepanel.submitMessage(elements, model, dependencies);
+  const load = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  sendRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Canonical SEND" }),
+    lang: "en",
+  });
+  await send;
+  assert.equal(model.loading, true);
+
+  getRequest.resolve({ ok: false, error: "Stale load failure" });
+  await load;
+  assert.equal(model.state?.pageTitle, "Canonical SEND");
+  assert.equal(model.error, null);
+  assert.equal(model.loading, false);
+  assert.equal(elements.messageInput.disabled, false);
+});
+
 test("same-resource and initial same-tab loads do not clear a draft", async () => {
   const sameResourceRequest = deferred();
   const rendered = await renderState(workspace({ pageTitle: "Resource A" }), { tabId: 7 });
