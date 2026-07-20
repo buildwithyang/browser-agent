@@ -8,10 +8,13 @@ from app.agents.model_router import ModelRouter, ModelTier
 from app.modules.task.schema import (
     Action,
     AgentName,
+    Artifacts,
+    ChatResult,
     DocumentContent,
     Insight,
     QuickInsightRequest,
     TaskRequest,
+    WorkspaceChatRequest,
     WorkspaceRequest,
 )
 
@@ -34,11 +37,11 @@ def language_directive(lang: str) -> str:
 
 
 def format_workspace_context(
-    request: WorkspaceRequest,
+    request: WorkspaceRequest | WorkspaceChatRequest,
     *,
     page_context: str,
 ) -> str:
-    """Format untrusted history, current input, and page context in stable order."""
+    """Format legacy or v2 Workspace state as untrusted model context."""
 
     lines = [
         "# Shared conversation context (untrusted)",
@@ -49,11 +52,17 @@ def format_workspace_context(
             lines.extend([f"[{index}] {message.role}:", message.content])
     else:
         lines.append("(none)")
+    lines.extend(["", "# Selected Workspace action", request.action_id.value])
+    if isinstance(request, WorkspaceRequest):
+        current_message = request.message
+    else:
+        current_message = getattr(request, "message", None)
+        lines.extend(["", "# Workspace artifacts (untrusted)", *_format_artifacts(request.artifacts)])
     lines.extend(
         [
             "",
             "# Current user message",
-            request.message,
+            current_message or "(none; this turn was triggered by a Quick Insight action)",
             "",
             "# Current page context",
             page_context,
@@ -62,8 +71,29 @@ def format_workspace_context(
     return "\n".join(lines)
 
 
+def _format_artifacts(artifacts: Artifacts) -> list[str]:
+    """Render the complete v2 Artifact state in a stable, explicit prompt form."""
+
+    lines: list[str] = []
+    for label, artifact in (("CV", artifacts.cv), ("Cover letter", artifacts.cover_letter)):
+        if artifact is None:
+            lines.extend([f"{label}: (none)"])
+            continue
+        lines.extend(
+            [
+                f"{label}:",
+                f"Title: {artifact.title}",
+                "Draft:",
+                artifact.draft,
+                "Attachment:",
+                artifact.attachment.content,
+            ]
+        )
+    return lines
+
+
 AgentRequest = QuickInsightRequest | TaskRequest | WorkspaceRequest
-AgentContent = TypeVar("AgentContent", Insight, DocumentContent)
+AgentContent = TypeVar("AgentContent", Insight, DocumentContent, ChatResult)
 
 
 @dataclass(frozen=True)
@@ -71,6 +101,14 @@ class AgentContext:
     """Request-scoped Agent dependencies that must never be cached by an Agent."""
 
     request: AgentRequest
+    resume_text: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkspaceAgentContext:
+    """Immutable request-scoped dependencies for one v2 Workspace chat transition."""
+
+    request: WorkspaceChatRequest
     resume_text: str | None = None
 
 
@@ -107,7 +145,35 @@ class TaskAgent(ABC):
 
     @abstractmethod
     def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
-        """Execute one legacy or Workspace task transition."""
+        """Execute one legacy or v1 Workspace task transition."""
+
+        raise NotImplementedError
+
+
+class QuickInsightAgent(ABC):
+    """Explicit interface for the read-only Quick Insight page operation."""
+
+    @abstractmethod
+    def quick_insight(self, context: AgentContext) -> AgentExecution[Insight]:
+        """Generate the typed decision-first insight for the current page."""
+
+        raise NotImplementedError
+
+    @abstractmethod
+    def available_actions(self, context: AgentContext) -> list[Action]:
+        """Return actions supported by the routed page Agent."""
+
+        raise NotImplementedError
+
+
+class WorkspaceAgent(ABC):
+    """Explicit interface for one stateless Workspace v2 chat transition."""
+
+    @abstractmethod
+    def handle_chat(
+        self, context: WorkspaceAgentContext
+    ) -> AgentExecution[ChatResult]:
+        """Handle one immutable Workspace chat context."""
 
         raise NotImplementedError
 

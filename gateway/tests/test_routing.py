@@ -1,9 +1,23 @@
 import pytest
 
-from app.agents.base import AgentContext, AgentExecution, OpenAIChatAgent
+from app.agents.base import (
+    AgentContext,
+    AgentExecution,
+    OpenAIChatAgent,
+    QuickInsightAgent,
+    TaskAgent,
+    WorkspaceAgent,
+    WorkspaceAgentContext,
+)
 from app.agents.model_router import ModelRouter, ModelTier
 from app.modules.task.router import normalize_resource_url
-from app.modules.task.schema import Action, DocumentContent, Insight, QuickInsightRequest
+from app.modules.task.schema import (
+    Action,
+    ChatResult,
+    DocumentContent,
+    Insight,
+    QuickInsightRequest,
+)
 
 
 def test_linkedin_search_and_view_urls_share_resource() -> None:
@@ -115,7 +129,7 @@ def test_from_json_allows_empty_url_and_key():
 
 # --- agent.pick_model 经 router 生效 ----------------------------------------
 
-class DummyAgent(OpenAIChatAgent):
+class DummyAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
     name = "dummy"
 
     def actions(self, ctx: AgentContext) -> list[Action]:
@@ -128,6 +142,36 @@ class DummyAgent(OpenAIChatAgent):
 
     def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
         raise NotImplementedError
+
+    def quick_insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        """Provide the explicit Quick Insight operation for routing tests."""
+
+        raise NotImplementedError
+
+    def available_actions(self, ctx: AgentContext) -> list[Action]:
+        """Provide the explicit Quick Insight action operation for routing tests."""
+
+        return []
+
+    def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
+        """Provide the explicit Workspace chat operation for routing tests."""
+
+        raise NotImplementedError
+
+
+def test_task_agent_keeps_legacy_insight_and_execute_abstract_contract() -> None:
+    """Keep v1 consumers protected until their scheduled migration."""
+
+    class IncompleteLegacyAgent(TaskAgent):
+        """Intentionally omit the v1 execution methods."""
+
+        def actions(self, ctx: AgentContext) -> list[Action]:
+            """Provide the sole method needed to isolate the abstract contract."""
+
+            return []
+
+    with pytest.raises(TypeError, match="insight.*execute|execute.*insight"):
+        IncompleteLegacyAgent()
 
 
 def test_agent_pick_model_routes_by_length():

@@ -2,6 +2,9 @@ from app.agents.base import (
     AgentContext,
     AgentExecution,
     OpenAIChatAgent,
+    QuickInsightAgent,
+    WorkspaceAgent,
+    WorkspaceAgentContext,
     format_workspace_context,
     language_directive,
 )
@@ -9,11 +12,15 @@ from app.modules.task.schema import (
     Action,
     ActionId,
     AgentName,
+    ChatResult,
     DocumentContent,
     Insight,
     PageContext,
+    QuickInsightRequest,
+    ReplyResult,
     Section,
     TextInsightCard,
+    WorkspaceChatRequest,
     WorkspaceRequest,
 )
 from app.render import render_markdown
@@ -37,7 +44,7 @@ WORKSPACE_SYSTEM_PROMPT = (
 )
 
 
-class SummaryPageAgent(OpenAIChatAgent):
+class SummaryPageAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
     """Stateless Agent for generic page summaries and open follow-up questions."""
 
     name = AgentName.SUMMARY_PAGE
@@ -50,6 +57,11 @@ class SummaryPageAgent(OpenAIChatAgent):
             self._validate_workspace_action(ctx.request)
 
     def actions(self, ctx: AgentContext) -> list[Action]:
+        """Bridge the v1 TaskAgent action contract to Quick Insight actions."""
+
+        return self.available_actions(ctx)
+
+    def available_actions(self, ctx: AgentContext) -> list[Action]:
         """Declare Ask More as the only generic-page Workspace mode."""
 
         title = "Ask More" if ctx.request.lang == "en" else "继续提问"
@@ -85,6 +97,30 @@ class SummaryPageAgent(OpenAIChatAgent):
             ]
         )
 
+    def _workspace_chat_page_context(self, task: WorkspaceChatRequest) -> str:
+        """Render the v2 Workspace page context without trusting page content."""
+
+        selection = task.selected_text.strip()
+        if selection:
+            return "\n".join(
+                [
+                    f"Title: {task.title}",
+                    f"URL: {task.url}",
+                    "Selected text:",
+                    selection,
+                ]
+            )
+        return "\n".join(
+            [
+                f"Title: {task.title}",
+                f"URL: {task.url}",
+                "Page text:",
+                task.page_text.strip() or "(none)",
+                "Image clues (alt/caption/aria-label):",
+                task.image_text.strip() or "(none)",
+            ]
+        )
+
     def _build_workspace_prompt(self, task: WorkspaceRequest) -> str:
         """Build the ordered shared-context prompt for a generic-page follow-up."""
 
@@ -93,6 +129,21 @@ class SummaryPageAgent(OpenAIChatAgent):
             task,
             page_context=self._workspace_page_context(task),
         )
+
+    def _build_workspace_chat_prompt(self, task: WorkspaceChatRequest) -> str:
+        """Build the v2 Workspace prompt from the complete immutable request state."""
+
+        self._validate_workspace_chat_action(task)
+        return format_workspace_context(
+            task,
+            page_context=self._workspace_chat_page_context(task),
+        )
+
+    def _validate_workspace_chat_action(self, task: WorkspaceChatRequest) -> None:
+        """Validate the single v2 Workspace Action supported by generic pages."""
+
+        if task.action_id != ActionId.ASK_MORE:
+            raise ValueError(f"Unsupported workspace action: {task.action_id}")
 
     def build_prompt(self, task: PageContext) -> str:
         """Build a Workspace follow-up or the unchanged Quick Insight page prompt."""
@@ -155,13 +206,32 @@ class SummaryPageAgent(OpenAIChatAgent):
         )
 
     def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
-        """Generate one compact page summary."""
+        """Bridge the v1 TaskAgent insight contract to Quick Insight."""
+
+        return self.quick_insight(ctx)
+
+    def quick_insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        """Generate one compact page summary for the explicit Quick Insight path."""
 
         prompt = self.build_prompt(ctx.request)
         system = self.system_prompt + "\n\n" + language_directive(ctx.request.lang)
         result, model = self.complete_prompt(system=system, prompt=prompt)
         return AgentExecution(
             content=self.build_insight(result, ctx.request.lang),
+            raw_result=result,
+            prompt=prompt,
+            model=model,
+        )
+
+    def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
+        """Answer one v2 Workspace turn with a Markdown-only ReplyResult."""
+
+        request = ctx.request
+        prompt = self._build_workspace_chat_prompt(request)
+        system = WORKSPACE_SYSTEM_PROMPT + "\n\n" + language_directive(request.lang)
+        result, model = self.complete_prompt(system=system, prompt=prompt)
+        return AgentExecution(
+            content=ReplyResult(type="reply", markdown=result),
             raw_result=result,
             prompt=prompt,
             model=model,
