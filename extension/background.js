@@ -340,7 +340,7 @@ async function loadActiveWorkspace(tabId, ownerId = null) {
   });
 }
 
-/** Ask the existing content script for current page context immediately before SEND. */
+/** Ask the content script for current page context immediately before a Workspace request. */
 async function collectPageContext(tabId) {
   const fresh = await chrome.tabs.sendMessage(tabId, {
     type: "AGENT_BRIDGE_COLLECT_CONTEXT",

@@ -37,6 +37,13 @@ test("executable Quick Insight Actions map to one quick_insight_action request",
   }
 });
 
+test("unknown Quick Insight Actions are rejected before opening Workspace", () => {
+  assert.throws(
+    () => createQuickInsightOperation("unknown_action"),
+    /Unsupported Quick Insight Action/
+  );
+});
+
 test("Ask More describes an open-only operation", async () => {
   const operation = createQuickInsightOperation("ask_more");
   const queue = immediateQueue();
