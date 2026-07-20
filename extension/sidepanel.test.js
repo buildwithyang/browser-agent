@@ -137,6 +137,16 @@ function streamMessage(eventType, overrides = {}) {
   };
 }
 
+/** Build the bounded identity retained after one local SEND has settled. */
+function settledLocalOperation(overrides = {}) {
+  return {
+    operationId: "00000000-0000-4000-8000-000000000001",
+    tabId: 7,
+    resourceUrl: RESOURCE_URL,
+    ...overrides,
+  };
+}
+
 test("submit immediately renders a transient user turn and clears the composer", async () => {
   const setup = await renderState(workspace(), {
     tabId: 7,
@@ -167,6 +177,191 @@ test("submit immediately renders a transient user turn and clears the composer",
   assert.equal(setup.model.pendingTurn, null);
   assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["answer"]);
   assert.equal(setup.elements.timeline.querySelector(".message.transient"), null);
+});
+
+test("successful SEND settlement ignores a same-operation late delta", async () => {
+  const canonical = workspace({ histories: [message(1, { content: "canonical answer" })] });
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  setup.elements.messageInput.value = "local request";
+  await sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    sendRuntime: async () => ({ ok: true, state: canonical, lang: "en" }),
+  });
+
+  const accepted = sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", { sequence: 1, markdown: "late delta" })
+  );
+
+  assert.equal(accepted, false);
+  assert.equal(setup.model.pendingTurn, null);
+  assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["canonical answer"]);
+  assert.doesNotMatch(setup.elements.timeline.textContent, /late delta/);
+});
+
+test("successful SEND settlement ignores same-operation completed without reload", async () => {
+  const canonical = workspace({ histories: [message(1, { content: "canonical answer" })] });
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  setup.elements.messageInput.value = "local request";
+  await sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    sendRuntime: async () => ({ ok: true, state: canonical, lang: "en" }),
+  });
+  let reloads = 0;
+
+  const accepted = sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("completed", { sequence: 1 }),
+    { reloadWorkspace: () => { reloads += 1; } }
+  );
+
+  assert.equal(accepted, false);
+  assert.equal(reloads, 0);
+  assert.equal(setup.model.pendingTurn, null);
+});
+
+test("settled local operation does not block a different Background operation", async () => {
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    settledLocalOperation: settledLocalOperation(),
+  });
+
+  const accepted = sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", {
+      operationId: "00000000-0000-4000-8000-000000000002",
+      sequence: 1,
+      markdown: "different active operation",
+    })
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(
+    setup.model.pendingTurn?.operationId,
+    "00000000-0000-4000-8000-000000000002"
+  );
+});
+
+test("tab resource and owner boundaries clear the settled local operation", async () => {
+  const tabSetup = await renderState(workspace(), {
+    tabId: 7,
+    settledLocalOperation: settledLocalOperation(),
+  });
+  const tabRequest = deferred();
+  const tabLoad = sidepanel.loadWorkspaceForTab(tabSetup.elements, tabSetup.model, 8, {
+    sendRuntime: () => tabRequest.promise,
+  });
+  assert.equal(tabSetup.model.settledLocalOperation, null);
+  tabRequest.resolve({ ok: true, state: workspace({ resourceUrl: OTHER_RESOURCE_URL }), lang: "en" });
+  await tabLoad;
+
+  const resourceSetup = await renderState(workspace(), {
+    tabId: 7,
+    settledLocalOperation: settledLocalOperation(),
+  });
+  const resourceRequest = deferred();
+  const resourceLoad = sidepanel.loadWorkspaceForTab(resourceSetup.elements, resourceSetup.model, 7, {
+    sendRuntime: () => resourceRequest.promise,
+  });
+  resourceRequest.resolve({
+    ok: true,
+    state: workspace({ resourceUrl: OTHER_RESOURCE_URL }),
+    lang: "en",
+  });
+  await resourceLoad;
+  assert.equal(resourceSetup.model.settledLocalOperation, null);
+
+  const ownerSetup = await renderState(workspace(), {
+    tabId: 7,
+    settledLocalOperation: settledLocalOperation(),
+  });
+  const ownerRequest = deferred();
+  const ownerLoad = sidepanel.loadWorkspaceForTab(
+    ownerSetup.elements,
+    ownerSetup.model,
+    7,
+    { sendRuntime: () => ownerRequest.promise },
+    { cancelPendingSend: true, clearState: true }
+  );
+  assert.equal(ownerSetup.model.settledLocalOperation, null);
+  ownerRequest.resolve({ ok: true, state: workspace(), lang: "en" });
+  await ownerLoad;
+});
+
+test("failed and stale local settlements ignore late runtime resurrection", async () => {
+  for (const response of [
+    { ok: false, error: "failed" },
+    { ok: false, stale: true, error: "stale" },
+  ]) {
+    const setup = await renderState(workspace(), {
+      tabId: 7,
+      selectedActionId: "analyze",
+    });
+    setup.elements.messageInput.value = "restore me";
+    await sidepanel.submitMessage(setup.elements, setup.model, {
+      randomUUID: () => "00000000-0000-4000-8000-000000000001",
+      sendRuntime: async () => response,
+    });
+    let reloads = 0;
+
+    const deltaAccepted = sidepanel.handleWorkspaceStreamMessage(
+      setup.elements,
+      setup.model,
+      streamMessage("delta", { sequence: 1, markdown: "late resurrection" })
+    );
+    const completedAccepted = sidepanel.handleWorkspaceStreamMessage(
+      setup.elements,
+      setup.model,
+      streamMessage("completed", { sequence: 2 }),
+      { reloadWorkspace: () => { reloads += 1; } }
+    );
+
+    assert.equal(deltaAccepted, false);
+    assert.equal(completedAccepted, false);
+    assert.equal(setup.model.pendingTurn?.status, "failed");
+    assert.equal(setup.elements.messageInput.value, "restore me");
+    assert.equal(reloads, 0);
+    assert.doesNotMatch(setup.elements.timeline.textContent, /late resurrection/);
+  }
+});
+
+test("normal completed-before-response ordering applies canonical state without reload", async () => {
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const request = deferred();
+  setup.elements.messageInput.value = "local request";
+  const submit = sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    sendRuntime: () => request.promise,
+  });
+  let reloads = 0;
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("completed", { sequence: 1 }),
+    { reloadWorkspace: () => { reloads += 1; } }
+  );
+  request.resolve({
+    ok: true,
+    state: workspace({ histories: [message(1, { content: "canonical once" })] }),
+    lang: "en",
+  });
+  await submit;
+
+  assert.equal(reloads, 0);
+  assert.equal(setup.model.pendingTurn, null);
+  assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["canonical once"]);
 });
 
 test("cumulative stream snapshots render at most once per 50 ms and reject stale identities", async () => {

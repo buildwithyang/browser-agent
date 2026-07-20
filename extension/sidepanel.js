@@ -284,6 +284,24 @@ function settleSendOperation(model, operation) {
   return Object.freeze({ generation, tabId: operation.tabId });
 }
 
+/** Retain the single latest local SEND identity after its response settles. */
+function rememberSettledLocalOperation(model, operation) {
+  model.settledLocalOperation = Object.freeze({
+    operationId: operation.operationId,
+    tabId: operation.tabId,
+    resourceUrl: operation.resourceUrl,
+  });
+}
+
+/** Return whether a runtime snapshot belongs to the latest settled local SEND. */
+function isSettledLocalSnapshot(model, snapshot) {
+  const settled = model.settledLocalOperation;
+  return !!settled
+    && snapshot?.operationId === settled.operationId
+    && snapshot.tabId === settled.tabId
+    && snapshot.resourceUrl === settled.resourceUrl;
+}
+
 /** Return whether two non-empty canonical state URLs cross a Workspace resource boundary. */
 function isResourceSwitch(currentState, incomingState) {
   const currentUrl = typeof currentState?.resourceUrl === "string"
@@ -744,6 +762,7 @@ function clearWorkspaceTransient(elements, model, dependencies = {}) {
   cancelStreamRender(model, dependencies);
   elements.messageInput.value = "";
   model.pendingTurn = null;
+  model.settledLocalOperation = null;
   model.state = null;
   model.selectedActionId = null;
   model.renderedHistoryCount = -1;
@@ -911,6 +930,7 @@ export function handleWorkspaceStreamMessage(elements, model, message, dependenc
     return false;
   }
   const snapshot = message.snapshot;
+  if (isSettledLocalSnapshot(model, snapshot)) return false;
   if (!isCurrentStreamSnapshot(model, snapshot)) return false;
 
   if (!model.pendingTurn) model.pendingTurn = pendingTurnFromSnapshot(snapshot);
@@ -966,6 +986,8 @@ export async function submitMessage(elements, model, dependencies = {}) {
   const createdAt = typeof dependencies.now === "function"
     ? dependencies.now()
     : new Date().toISOString();
+  // A new local operation supersedes the bounded identity of the prior local settlement.
+  model.settledLocalOperation = null;
   model.pendingTurn = {
     operationId,
     tabId: requestTabId,
@@ -996,6 +1018,7 @@ export async function submitMessage(elements, model, dependencies = {}) {
     });
     settledOperation = settleSendOperation(model, operation);
     if (!settledOperation) return;
+    rememberSettledLocalOperation(model, operation);
     if (response?.stale === true) {
       failPendingTurn(
         elements,
@@ -1020,6 +1043,7 @@ export async function submitMessage(elements, model, dependencies = {}) {
   } catch (error) {
     settledOperation = settleSendOperation(model, operation);
     if (!settledOperation) return;
+    rememberSettledLocalOperation(model, operation);
     model.retry = () => elements.messageForm.requestSubmit();
     model.error = workspaceResponseError(
       { error: error?.message || view.strings.retryFallback },
@@ -1144,6 +1168,7 @@ async function initSidePanel() {
     latestLoadGeneration: null,
     pendingSendGeneration: null,
     pendingTurn: null,
+    settledLocalOperation: null,
     streamRenderTimer: null,
     streamEpoch: 0,
     loading: false,
