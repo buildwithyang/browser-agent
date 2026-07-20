@@ -24,6 +24,8 @@ FILES=(
   workspace-operation.js
   workspace.js
   workspace-controller.js
+  markdown.js
+  vendor
   content.js
   sidepanel.html
   sidepanel.css
