@@ -53,7 +53,7 @@ Insight 浮层渲染。
   "actionId": "tailor_resume",
   "histories": [],
   "artifacts": {"cv": null, "cover_letter": null},
-  "message": "我最应该突出哪段经历？"
+  "message": "请生成一版针对这个岗位的简历。"
 }
 ```
 
