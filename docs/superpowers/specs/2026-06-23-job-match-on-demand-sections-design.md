@@ -2,6 +2,12 @@
 
 日期：2026-06-23
 
+> [!WARNING]
+> 本文是已退役的 `/tasks` + sections 设计，仅保留为历史记录。当前 `POST /tasks` 只返回
+> `426 Upgrade Required`；Quick Insight、Workspace、Action、Markdown 与 Artifact 契约以
+> [2026-07-19 Job Match Workspace Orchestration Design](2026-07-19-job-match-workspace-orchestration-design.md)
+> 和 [Extension Contract](../../extension-contract.md) 为准。
+
 ## 背景与目标
 
 现状：`job_match` 一次 `POST /tasks` 调用即生成全部 5 个区块

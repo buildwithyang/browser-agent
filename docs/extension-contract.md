@@ -1,129 +1,386 @@
-# 扩展 ↔ 网关 数据契约（Extension Contract）
+# Extension ↔ Gateway Contract
 
-> 本文是「扩展能渲染什么」的**唯一事实来源**,与具体功能无关。新增功能前先读这里,判断改动是
-> **纯后端**(不动扩展、不重新发版上架)还是**触及契约边界**(必须改扩展并重新发 Chrome 商店版)。
+本文是 Extension 与 Gateway 当前 wire contract 的工程事实来源。它用于判断一次改动是纯
+后端实现，还是需要提升协议版本、修改扩展并重新发布 Chrome Web Store 包。
 
-## 1. 设计意图:扩展是「哑壳」
+当前协议版本：
 
-[extension/background.js](../extension/background.js) 被刻意做成一个**通用渲染器(哑壳)**:它对内容本身
-一无所知,只照网关响应里的固定字段渲染面板。**所有内容与结构都由网关决定**。
-
-这一设计目标在 [job_match 按需分块设计 spec](superpowers/specs/2026-06-23-job-match-on-demand-sections-design.md)
-里写得很明确:
-
-- spec 标题直接写「`extension/background.js`(一次性改成「哑壳」,**之后新功能不再动它**)」
-  ([L165-178](superpowers/specs/2026-06-23-job-match-on-demand-sections-design.md#L165-L178))。
-- 延伸愿景:未来基于 JD 生成「定制简历」,届时只是**后端多加一个 section + 一个 action,扩展不用改、
-  不用重新发版**([L21-22](superpowers/specs/2026-06-23-job-match-on-demand-sections-design.md#L21-L22))。
-- 完整的 API 契约见该 spec 的
-  [「API 契约」段](superpowers/specs/2026-06-23-job-match-on-demand-sections-design.md#L38-L61)。
-
-## 2. 扩展发送的数据(采集侧)
-
-[extension/content.js](../extension/content.js) 注入页面后,发一条消息给 background:
-
-```js
-{ type: "AGENT_BRIDGE_CONTEXT",
-  payload: { url, title, selectedText, pageText, imageText } }
+```text
+X-Agent-Bridge-Protocol-Version: 2
 ```
 
-| 字段 | 来源 | 处理 |
-|---|---|---|
-| `url` | `location.href` | — |
-| `title` | `document.title` | — |
-| `selectedText` | 选区文字 | background 会优先用右键事件的选区快照覆盖([background.js:117-121](../extension/background.js#L117-L121)) |
-| `pageText` | `document.body.innerText` | 空白压缩后截断到 **20000** 字符([content.js:3](../extension/content.js#L3)) |
-| `imageText` | `img[alt]`/`img[title]`/`figcaption`/`[aria-label]` 等 | 去重、最多 **40** 条、截断到 **4000** 字符([content.js:24-32](../extension/content.js#L24-L32)) |
+协议整数独立于 `manifest.json` 的发布版本。完整产品与编排语义见
+[Job Match Workspace Orchestration Design](superpowers/specs/2026-07-19-job-match-workspace-orchestration-design.md)。
 
-background 收到后,再附加 `agent`(由点击的右键菜单决定)与 `lang`(由弹窗语言偏好解析,
-[background.js:131-138](../extension/background.js#L131-L138)),组装成请求体 POST 到网关 `/tasks`。
+## 1. 两个公开场景接口
 
-> 采集侧字段稳定且与「改内容/提升体验」无关;本文档重点是下面的**响应契约**。
+```text
+POST /tasks/quick-insight
+  -> QuickInsightResponse
 
-## 3. 扩展接收的数据(网关响应契约)——核心
-
-扩展在 `dispatchTask` 里读网关 `/tasks` 返回的 JSON,只认这些顶层字段
-([background.js:184-195](../extension/background.js#L184-L195)):
-
-| 字段 | 类型 | 用途 | 缺省 |
-|---|---|---|---|
-| `result_html` | string | 已净化的 Markdown→HTML,直接注入面板 `body`;第一个 `<p>` 自动升级为 lede([background.js:630-633](../extension/background.js#L630-L633)) | — |
-| `sections` | array | 结构化区块;**非空时优先**走分块渲染,`result_html` 被忽略([background.js:588](../extension/background.js#L588)) | `[]` |
-| `actions` | array | 结果上可触发的后续动作按钮 | `[]` |
-| `result` | string | 原始文本:复制按钮用 + 续跑时作为 `priorResult` 回传([background.js:191](../extension/background.js#L191)) | `""` |
-| `detail` | string | 纯文本兜底(无 `result` 时的错误/占位文本) | — |
-| `request.url` | string | 来源页地址(面板显示来源、落库指标) | 回退到本地 `source` |
-| `duration_ms` | number | 本次耗时 | — |
-
-**渲染优先级**(`renderPanel`):`sections` 非空 → 分块渲染([background.js:588-629](../extension/background.js#L588-L629));
-否则有 `result_html` → 整段注入([background.js:630-633](../extension/background.js#L630-L633));
-再否则 → `text` 纯文本兜底([background.js:634-636](../extension/background.js#L634-L636))。
-
-### section 对象
-
-分块渲染逻辑见 [background.js:292-328](../extension/background.js#L292-L328):
-
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `id` | string | `"conclusion"` 特殊处理为高亮 **lede**;其余渲染成可折叠 `<details>` 区块 |
-| `title` | string | 区块标题(`conclusion` 不显示标题) |
-| `html` | string | 已净化的 HTML 正文 |
-| `collapsible` | bool | `false` = 始终展开;否则正文超过 **160** 字符(`SECTION_COLLAPSE_CHARS`,[background.js:273](../extension/background.js#L273))默认折叠 |
-| `copyable` | bool | `true` = 该区块显示「复制」按钮([background.js:314-324](../extension/background.js#L314-L324)) |
-
-### action 对象
-
-动作按钮渲染逻辑见 [background.js:592-611](../extension/background.js#L592-L611):
-
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `label` | string | 按钮文字(后端按 `lang` 出中/英) |
-| `sections` | array | 点击后续跑时要请求的 section id 列表,扩展**原样回传** `/tasks` |
-
-> 注:网关的 `Action` 模型里还有个 `id` 字段,但**扩展不读 `action.id`**——哑壳只用 `label` + `sections`。
-> 因此后端增删/改动 action 的 `id` 不影响扩展。
-
-## 4. 续跑机制(on-demand / `AGENT_BRIDGE_CONTINUE`)
-
-点击 action 按钮后,扩展把上一阶段结果原样带回,触发第二阶段生成
-([background.js:598-624](../extension/background.js#L598-L624)):
-
-```js
-chrome.runtime.sendMessage({
-  type: "AGENT_BRIDGE_CONTINUE",
-  sections,                 // action.sections
-  priorResult: payload.result,
-  lang, url, agent,
-});
+POST /tasks/workspace
+  -> WorkspaceResponse
 ```
 
-background 的处理器([background.js:221-244](../extension/background.js#L221-L244))用同一个 `/tasks`
-重新 POST(请求体带 `sections` + `prior_result`),网关返回**合并后的全量区块**,扩展整体重渲染面板。
+- Quick Insight 是 decision-first 的只读页面浮层，使用 typed cards。
+- Workspace 是共享历史的无状态 state transition，使用 Markdown Message 与 Artifact。
+- `POST /tasks` 只保留升级 shim，始终返回 `426`，不再执行旧 Agent。
+- `POST /tasks/current-task` 从未上线，当前代码不存在该接口。
 
-关键点:**扩展不保存任何阶段状态**——上下文随消息回传,因此能扛 MV3 service worker 重启。
+公开请求不接受 `agent`。Gateway 根据当前 Page Context 做 Context Routing，并用规范化
+`resourceUrl` 标识 Workspace 业务资源。
 
-## 5. 不改扩展就能做的事(纯后端改动)
+## 2. 协议版本门
 
-因为扩展只是「拿到什么渲染什么」,以下全部是后端独占、**不动扩展、不重新发版**:
+Extension 对两个新版接口的每个请求都发送：
 
-- ✅ **改文案 / 提示词 / 模型 / 分层路由**——内容质量随便调。
-- ✅ **增删 / 重排区块**——后端 `DISPLAY_ORDER` 说了算,扩展只是 `forEach(sections)`。
-- ✅ **每区块是否折叠 / 可复制**——`collapsible` / `copyable` 是服务端下发的标志位。
-- ✅ **新增 action 按钮**(如「生成定制简历」)——后端往 `actions` 加一项即可。
-- ✅ **用更丰富的 Markdown**——标题/列表/表格/`code`/blockquote/链接/`**强调**` 都已在面板 CSS
-  里有样式([background.js:421-442](../extension/background.js#L421-L442)),后端多用 Markdown 就更好看。
+```http
+X-Agent-Bridge-Protocol-Version: 2
+```
 
-## 6. 必须改扩展并重新发版的边界
+Gateway 在 Session、鉴权、request body 解析和路由之前严格校验该 Header。缺失、重复、
+无法解析或不等于 `2` 时返回：
 
-以下触及契约本身,扩展要改代码并重新发 Chrome 商店版:
+```http
+HTTP/1.1 426 Upgrade Required
+Upgrade: Agent-Bridge/2
+X-Agent-Bridge-Protocol-Version: 2
+Content-Type: application/json
 
-- ❌ **新增需要扩展读取的 section 属性**(徽章 / 图标 / 新交互类型)。
-- ❌ **新增顶层响应字段**(扩展只认第 3 节那张表里的字段)。
-- ❌ **action 想做「重打 `/tasks`(带 `sections`+`prior_result`)」以外的事**——例如拆分 URL 走别的端点,
-  需要给 action 加一个目标 `path` 字段由壳照打(spec 已预留这个演进方向,
-  [L177-178](superpowers/specs/2026-06-23-job-match-on-demand-sections-design.md#L177-L178))。
-- ❌ **新渲染原语**:图片、图表、区块内嵌按钮、不同的复制变体等。
+{
+  "code": "extension_update_required",
+  "message": "Extension update required",
+  "required_protocol_version": 2,
+  "update_url": "https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai"
+}
+```
 
-## 7. 一句话原则
+通过协议 gate 的所有 Task 响应，包括 2xx、400、401、429、502，都必须携带当前协议
+Header。成功的 Quick Insight / Workspace body 还必须有 `protocol_version: 2`。
 
-> **只要新体验能表达成「Markdown 内容 + section 标志位 + action 按钮」,就不用动扩展、不用重新发版。**
+Extension 在认证和业务错误之前先检查响应 Header；成功时再检查 body 版本。任一版本
+缺失或不相等都会变成 `ExtensionUpdateRequiredError`，不会清除 token，也不会把响应
+写入本地 Workspace。
+
+`OPTIONS` 与非 POST 请求不经过版本 gate。CORS 必须允许请求并暴露协议 Header。
+
+## 3. Page Context
+
+[content.js](../extension/content.js) 只采集纯文本：
+
+```js
+{
+  url,
+  title,
+  selectedText,
+  pageText,
+  imageText,
+}
+```
+
+| 字段 | 来源 | Extension 边界 |
+| --- | --- | --- |
+| `url` | `location.href` | 当前完整 URL |
+| `title` | `document.title` | 当前标签页标题 |
+| `selectedText` | 当前选区 | 用户明确关注的文字 |
+| `pageText` | `document.body.innerText` | 压缩空白后最多 20,000 字符 |
+| `imageText` | `alt` / `title` / `figcaption` / `aria-label` | 去重最多 40 条、合计最多 4,000 字符 |
+
+不采集或发送图片像素、页面 HTML、CSS、脚本。Page Context 每次 Workspace 请求前重新
+采集，不长期写入本地 Workspace。
+
+## 4. Quick Insight
+
+### 4.1 Request
+
+```json
+{
+  "url": "https://www.linkedin.com/jobs/search/?currentJobId=4442412976",
+  "title": "Full Stack Engineer",
+  "selectedText": "selected JD",
+  "pageText": "visible page text",
+  "imageText": "image text clues",
+  "lang": "zh"
+}
+```
+
+`lang` 为 `auto | zh | en`。Request 不包含 owner、Workspace state 或 Agent selector；Bearer
+token 在 HTTP Header 中发送。
+
+### 4.2 Response
+
+```text
+QuickInsightResponse
+├── request: QuickInsightRequest
+├── insight: Insight
+├── actions: Action[]
+├── workspace: WorkspaceDescriptor
+├── meta: ExecutionMeta
+└── protocol_version: 2
+```
+
+`WorkspaceDescriptor`：
+
+```json
+{
+  "resource_url": "https://www.linkedin.com/jobs/view/4442412976",
+  "default_action_id": "analyze"
+}
+```
+
+`Action` 只有：
+
+```json
+{"id": "tailor_resume", "title": "Tailor Resume"}
+```
+
+当前 Extension 与 Gateway 共同接受的稳定 Action ids：
+
+- `analyze`
+- `tailor_resume`
+- `write_cover_letter`
+- `ask_more`
+
+### 4.3 Insight cards
+
+```text
+Insight
+├── title
+└── cards[]
+    ├── score   {id, title, score, max_score, recommendation, reason}
+    ├── text    {id, title, body_html}
+    └── details {id, title, items, summary}
+```
+
+Job Match 使用结构化 score / details / text cards。普通页面摘要由 Gateway 用 Markdown
+renderer 生成经过净化的 `body_html`，再放进 text card。Workspace 不消费这个 HTML。
+
+### 4.4 Action 点击语义
+
+- `analyze`、`tailor_resume`、`write_cover_letter`：先打开并 seed Workspace，再发送
+  `trigger=quick_insight_action`。
+- `ask_more`：只打开 Workspace 并聚焦输入框，不请求 `/tasks/workspace`。
+
+前三个 Action 是确定性 Quick commands；Gateway 跳过 IntentRouter，且不伪造 User
+Message。它们仍携带该资源已有的完整 histories 与 artifacts。
+
+## 5. Workspace Request
+
+`POST /tasks/workspace` 使用 `trigger` 作为 discriminator。
+
+### 5.1 User Message
+
+```json
+{
+  "trigger": "user_message",
+  "url": "https://www.linkedin.com/jobs/search/?currentJobId=4442412976",
+  "title": "Full Stack Engineer",
+  "selectedText": "selected JD",
+  "pageText": "visible page text",
+  "imageText": "image text clues",
+  "lang": "zh",
+  "resourceUrl": "https://www.linkedin.com/jobs/view/4442412976",
+  "actionId": "tailor_resume",
+  "histories": [],
+  "artifacts": {"cv": null, "cover_letter": null},
+  "message": "我的哪段经历最值得突出？"
+}
+```
+
+`message` 必须为 1–10,000 字符，且已有 histories 最多 9 条。
+
+### 5.2 Quick Insight Action
+
+```json
+{
+  "trigger": "quick_insight_action",
+  "url": "https://www.linkedin.com/jobs/search/?currentJobId=4442412976",
+  "title": "Full Stack Engineer",
+  "selectedText": "selected JD",
+  "pageText": "visible page text",
+  "imageText": "image text clues",
+  "lang": "zh",
+  "resourceUrl": "https://www.linkedin.com/jobs/view/4442412976",
+  "actionId": "tailor_resume",
+  "histories": [],
+  "artifacts": {"cv": null, "cover_letter": null}
+}
+```
+
+该 variant 禁止 `message`，已有 histories 最多 10 条。`resourceUrl` 不是授权依据；Gateway
+会从当前 `url` 重新规范化并要求两者相等。
+
+Workspace Action 是强意图提示，而不是强制 Artifact 命令。用户消息优先于 Action，
+Gateway Orchestrator 决定普通回复还是正式产物。
+
+## 6. Workspace Response
+
+Extension 对顶层对象做 exact-key 校验：
+
+```text
+WorkspaceResponse
+├── resource_url
+├── selected_action_id
+├── result_type: reply | create_artifact | update_artifact
+├── histories: HistoryMessage[]
+├── artifacts: {cv: Artifact|null, cover_letter: Artifact|null}
+├── meta: ExecutionMeta
+└── protocol_version: 2
+```
+
+成功响应是完整 next state。Extension 不能自行 append User / Assistant Message，而是在
+完整校验后整体替换 histories 与 artifacts。
+
+### 6.1 HistoryMessage
+
+```json
+{
+  "id": "message-uuid",
+  "role": "assistant",
+  "content": "已生成一版求职信。",
+  "action_id": "write_cover_letter",
+  "created_at": "2026-07-20T10:00:00Z",
+  "attachments": []
+}
+```
+
+- id 为 UUID，`created_at` 必须是 UTC。
+- User content 为 1–10,000 字符；Assistant content 最多 100,000 字符。
+- `action_id` 可为 null 或稳定 Action id。
+- 每条 Message 最多一个 Attachment；User Message 必须没有 Attachment。
+- 合法响应 histories 最多 11 条。
+
+### 6.2 Attachment
+
+```json
+{
+  "id": "attachment-uuid",
+  "artifact_id": "artifact-uuid",
+  "version": 1,
+  "type": "cover_letter",
+  "title": "Cover Letter",
+  "content": "Dear Hiring Manager, ..."
+}
+```
+
+- `cover_letter.content` 是该历史版本的完整 Markdown 快照。
+- `cv.content` 必须是最多 4,096 字符的绝对 HTTP(S) URL。
+- Attachment 是所属 Assistant Message 的不可变快照；更新会追加新 Message，不改旧值。
+- File / Image 尚不是协议版本 2 的合法类型。
+
+### 6.3 Artifact
+
+```json
+{
+  "id": "artifact-uuid",
+  "type": "cover_letter",
+  "version": 1,
+  "title": "Cover Letter",
+  "draft": "Dear Hiring Manager, ...",
+  "attachment": {
+    "id": "attachment-uuid",
+    "artifact_id": "artifact-uuid",
+    "version": 1,
+    "type": "cover_letter",
+    "title": "Cover Letter",
+    "content": "Dear Hiring Manager, ..."
+  }
+}
+```
+
+`artifacts` 必须恰好有 `cv`、`cover_letter` 两个 nullable key。创建时 version=1；更新同
+类型时复用 Artifact id 并递增 version。`Artifact.attachment` 必须与 histories 中最后一个
+同类型 Attachment 完全相等。
+
+Gateway 与 Extension 都校验 UUID 唯一性、Artifact 引用、固定 key/type、版本与最新
+Attachment 一致性。任一检查失败都保留旧 state。
+
+当前 CV Attachment URL 由 Gateway 固定返回 `https://browser.buildwithyang.com`。CV
+draft 可用于下一轮修改，但测试 URL 不是真实、私有或版本化的生成结果。
+
+## 7. Markdown 与渲染边界
+
+Workspace 只传 Markdown：
+
+- `HistoryMessage.content`
+- `Artifact.draft`
+- Cover Letter `Attachment.content`
+
+Workspace 响应没有 `content_html`、`html`、`sections`、`document` 或
+`currentDocument`。Gateway 不解析 Workspace Markdown。
+
+[markdown.js](../extension/markdown.js) 使用随包发布的 Marked（GFM）生成 HTML，再用
+DOMPurify 净化。依赖不从 CDN 加载。Assistant Message 与 Cover Letter Attachment 可渲染
+标题、强调、列表、链接、代码和表格；User Message 使用 `textContent`。
+
+CV Attachment 只渲染 Gateway 响应中的 URL。Cover Letter 的复制按钮复制原始 Markdown，
+不是渲染后的 HTML。
+
+## 8. 本地 state 与迁移
+
+Workspace schema 版本为 2，存储键为：
+
+```text
+agent-bridge:workspace:v2:<encoded owner>:<encoded resourceUrl>
+```
+
+state 字段：
+
+```text
+schemaVersion
+resourceUrl
+pageTitle
+quickInsight
+actions
+selectedActionId
+histories
+artifacts
+updatedAt
+```
+
+Extension 同时在 `chrome.storage.session` 保存 tab 到 owner/resource key 的 active mapping；
+历史主体在 `chrome.storage.local`。owner 变化时清除 tab mapping，不删除其他 owner 隔离的
+local records。
+
+加载仍指向 v1 key 的 active Workspace 时：
+
+1. 只迁移能通过 v2 校验且没有 Attachment 的旧 Message。
+2. 删除旧 `currentDocument` 语义，初始化空 artifacts。
+3. 先写入并重新读取 v2 state，校验后切换 active mapping。
+4. 最后删除旧 v1 record；失败时尽力恢复旧 mapping。
+
+本期没有服务端 Thread、Artifact Repository 或跨设备恢复。Gateway 仍可把一次调用写入
+既有 task record，但该记录不是可恢复 Workspace state。
+
+## 9. 原子应用与并发边界
+
+- 同一 owner/resource 的 Workspace operations 用 keyed queue 串行。
+- 每个 operation 在队列内重新加载 canonical local state，再采集当前 Page Context。
+- 请求捕获 owner/token snapshot；owner 不匹配的迟到结果会被丢弃。
+- 迟到 401 只有 owner 与 token 都仍匹配时才清理认证。
+- 只有完整合法的 2xx response 才一次性写入 local state。
+- 网络、Agent、schema、protocol 或 storage 失败都不产生 optimistic / partial Message。
+
+Side Panel 会保留失败时的 composer draft，并在输入区附近显示可重试错误。
+
+## 10. 哪些改动需要重新发布 Extension
+
+通常可以只改 Gateway：
+
+- 修改现有 Agent Prompt、模型或输出文案。
+- 调整 Gateway 内部 Context Routing 与 URL 规范化规则，同时保持既有资源语义。
+- 在现有 card / Action / Message / Artifact contract 内改变具体内容。
+- 改变 Orchestrator 如何在四个现有 Specialist 之间路由。
+
+必须修改 Extension、提升协议版本（若 wire 不兼容）并重新发布：
+
+- 新增或删除 Workspace 顶层字段，或改变任一字段类型 / 必填性。
+- 新增 Attachment / Artifact 类型（如 file、image）。
+- 新增稳定 Action id；Extension 当前有固定 Action id 校验与 Quick command 映射。
+- 新增 Insight card type 或新渲染原语。
+- 改变 Quick Action 的 open-only / deterministic request 语义。
+- 增加新的响应 HTML、交互控件、文件下载或图片展示能力。
+- 修改本地 Workspace schema 或迁移规则。
+
+原则：**内容和后端编排可以独立演进；wire shape、稳定 id、渲染原语和本地 state 必须与
+Extension 协同发布。**

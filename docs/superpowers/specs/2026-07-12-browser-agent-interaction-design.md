@@ -2,6 +2,12 @@
 
 日期：2026-07-12
 
+> [!WARNING]
+> 本文是历史设计。Decision First、Context Routing 与 Quick Insight 原则仍有效；
+> Current Task、`DocumentContent`、`prior_result`、Actions 和 Follow-up wire contract 已由
+> [2026-07-19 Job Match Workspace Orchestration Design](2026-07-19-job-match-workspace-orchestration-design.md)
+> 替代。当前接口是 `/tasks/quick-insight` + `/tasks/workspace` 协议版本 2。
+
 ## 1. 目标
 
 Browser Agent 不从聊天框开始，而是先在用户当前关注的页面上给出 **Quick Insight**，回答：

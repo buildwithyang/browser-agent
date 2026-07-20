@@ -2,6 +2,12 @@
 
 日期：2026-07-19
 
+> [!WARNING]
+> 本文是历史视觉方案。Chrome 无法设置 Side Panel 默认宽度、浅色布局与 Action 自动换行
+> 约束仍有效；Quick Insight cards、经典聊天时间线、Markdown、Artifact Attachment 与
+> CV URL 契约以 [2026-07-19 Job Match Workspace Orchestration Design](2026-07-19-job-match-workspace-orchestration-design.md)
+> 为准。
+
 ## 1. 目标
 
 将 Chrome Side Panel 从深色工业仪表盘改为简单、清晰的 Chrome 原生浅色工作台，同时修复窄宽度下标题、Actions 和正文横向溢出的问题。Quick Insight 网页浮层继续保持现有深色信息卡，只把 Actions 改成可自动换行的标签按钮。

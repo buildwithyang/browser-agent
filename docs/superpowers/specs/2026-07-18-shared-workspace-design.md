@@ -2,7 +2,11 @@
 
 日期：2026-07-18
 
-> 后续设计：[2026-07-19-job-match-workspace-orchestration-design.md](2026-07-19-job-match-workspace-orchestration-design.md) 已替代本文中的 Action 执行语义、`currentDocument` / `document` 单产物模型、Workspace 消息/Attachment 契约和 Workspace 展示方式。本文的 Workspace 身份、URL 规范化、用户隔离与消息数量限制仍然有效。
+> [!WARNING]
+> 本文是历史设计。[2026-07-19 Job Match Workspace Orchestration Design](2026-07-19-job-match-workspace-orchestration-design.md)
+> 已替代本文中的 Action 执行语义、`currentDocument` / `document` 单产物模型、Workspace
+> 消息/Attachment 契约、旧 `/tasks` 兼容结论和 Workspace 展示方式。本文的 Workspace
+> 身份、URL 规范化、用户隔离与消息数量限制仍然有效。
 
 实现状态：本仓库已实现 Quick Insight + Shared Workspace 的网关与扩展代码。本设计不代表云端网关或 Chrome 应用商店版本已经发布；上线仍需分别部署网关并发布扩展。`POST /tasks/current-task` 从未在线上发布，已从代码删除。
 
