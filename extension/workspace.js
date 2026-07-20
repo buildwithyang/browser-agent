@@ -1,15 +1,52 @@
 /** The explicit owner used by self-hosted extensions without authentication. */
 export const ANONYMOUS_WORKSPACE_OWNER = "anonymous";
 
-const WORKSPACE_STORAGE_PREFIX = "agent-bridge:workspace:v1";
+/** The local Workspace schema version, independent from Extension release versions. */
+export const WORKSPACE_SCHEMA_VERSION = 2;
+
+const WORKSPACE_STORAGE_PREFIX = `agent-bridge:workspace:v${WORKSPACE_SCHEMA_VERSION}`;
 const USER_HISTORY_CONTENT_MAX_CHARS = 10_000;
-const ASSISTANT_HISTORY_CONTENT_MAX_CHARS = 100_000;
+const DOCUMENT_TEXT_MAX_CHARS = 100_000;
+const CV_ATTACHMENT_CONTENT_MAX_CHARS = 4_096;
+const TITLE_MAX_CHARS = 500;
+const ARTIFACT_VERSION_MAX = 2_147_483_647;
+const MAX_RESPONSE_HISTORIES = 11;
+const ACTION_IDS = new Set([
+  "analyze",
+  "tailor_resume",
+  "write_cover_letter",
+  "ask_more",
+]);
+const ARTIFACT_TYPES = new Set(["cv", "cover_letter"]);
+const RESULT_TYPES = new Set(["reply", "create_artifact", "update_artifact"]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Return a stable owner id without deriving identity from a bearer token. */
 function normalizedOwnerId(ownerId) {
   return typeof ownerId === "string" && ownerId.trim()
     ? ownerId.trim()
     : ANONYMOUS_WORKSPACE_OWNER;
+}
+
+/** Return whether a value is a non-array object with the default JSON shape. */
+function isObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Throw a stable schema error when one assertion is false. */
+function requireSchema(condition, message) {
+  if (!condition) throw new TypeError(message);
+}
+
+/** Require an object to contain exactly the named wire keys. */
+function requireExactKeys(value, keys, label) {
+  requireSchema(isObject(value), `${label} must be an object`);
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  requireSchema(
+    actual.length === expected.length && actual.every((key, index) => key === expected[index]),
+    `${label} must contain exactly ${expected.join(", ")}`
+  );
 }
 
 /** Return only the valid action ids from a backend-declared Action collection. */
@@ -28,7 +65,210 @@ function selectActionId(actions, selectedActionId, defaultActionId) {
   return ids[0] || null;
 }
 
-/** Return an owner- and resource-scoped, versioned chrome.storage.local key. */
+/** Return whether a string is one canonical JSON UUID value. */
+function isUuid(value) {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+/** Return whether a wire timestamp represents UTC explicitly. */
+function isUtcTimestamp(value) {
+  if (typeof value !== "string") return false;
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-]00:00)$/
+  );
+  if (!match) return false;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return false;
+  const [, year, month, day, hour, minute, second] = match.map(Number);
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() + 1 === month
+    && parsed.getUTCDate() === day
+    && parsed.getUTCHours() === hour
+    && parsed.getUTCMinutes() === minute
+    && parsed.getUTCSeconds() === second;
+}
+
+/** Validate one immutable Artifact Attachment without interpreting Markdown. */
+function validateAttachment(value) {
+  requireExactKeys(
+    value,
+    ["id", "artifact_id", "version", "type", "title", "content"],
+    "Attachment"
+  );
+  requireSchema(isUuid(value.id), "Attachment id must be a UUID");
+  requireSchema(isUuid(value.artifact_id), "Attachment artifact_id must be a UUID");
+  requireSchema(
+    Number.isInteger(value.version)
+      && value.version >= 1
+      && value.version <= ARTIFACT_VERSION_MAX,
+    "Attachment version is invalid"
+  );
+  requireSchema(ARTIFACT_TYPES.has(value.type), "Attachment type is invalid");
+  requireSchema(
+    typeof value.title === "string"
+      && value.title.length >= 1
+      && value.title.length <= TITLE_MAX_CHARS,
+    "Attachment title is invalid"
+  );
+  requireSchema(
+    typeof value.content === "string"
+      && value.content.length >= 1
+      && value.content.length <= DOCUMENT_TEXT_MAX_CHARS,
+    "Attachment content is invalid"
+  );
+  if (value.type === "cv") {
+    let parsed = null;
+    try {
+      parsed = new URL(value.content);
+    } catch {
+      // The assertion below produces one stable schema error.
+    }
+    requireSchema(
+      value.content === value.content.trim()
+        && value.content.length <= CV_ATTACHMENT_CONTENT_MAX_CHARS
+        && !!parsed
+        && (parsed.protocol === "http:" || parsed.protocol === "https:")
+        && !!parsed.host,
+      "CV Attachment content must be an absolute HTTP(S) URL"
+    );
+  }
+}
+
+/** Validate one complete HistoryMessage, including role-specific Attachment rules. */
+function validateHistoryMessage(message) {
+  requireExactKeys(
+    message,
+    ["id", "role", "content", "action_id", "created_at", "attachments"],
+    "Workspace message"
+  );
+  requireSchema(isUuid(message.id), "Workspace message id must be a UUID");
+  requireSchema(
+    message.role === "user" || message.role === "assistant",
+    "Workspace message role is invalid"
+  );
+  requireSchema(typeof message.content === "string", "Workspace message content is invalid");
+  if (message.role === "user") {
+    requireSchema(
+      message.content.length >= 1 && message.content.length <= USER_HISTORY_CONTENT_MAX_CHARS,
+      "User Workspace message content is invalid"
+    );
+  } else {
+    requireSchema(
+      message.content.length <= DOCUMENT_TEXT_MAX_CHARS,
+      "Assistant Workspace message content is invalid"
+    );
+  }
+  requireSchema(
+    message.action_id === null || ACTION_IDS.has(message.action_id),
+    "Workspace message Action is invalid"
+  );
+  requireSchema(isUtcTimestamp(message.created_at), "Workspace message created_at must be UTC");
+  requireSchema(Array.isArray(message.attachments), "Workspace message attachments must be an array");
+  requireSchema(message.attachments.length <= 1, "Workspace message has too many Attachments");
+  requireSchema(
+    message.role !== "user" || message.attachments.length === 0,
+    "User Workspace message Attachments must be empty"
+  );
+  for (let index = 0; index < message.attachments.length; index += 1) {
+    requireSchema(index in message.attachments, "Workspace message Attachments cannot be sparse");
+    validateAttachment(message.attachments[index]);
+  }
+}
+
+/** Validate one latest Artifact snapshot and its embedded Attachment. */
+function validateArtifact(artifact) {
+  requireExactKeys(
+    artifact,
+    ["id", "type", "version", "title", "draft", "attachment"],
+    "Artifact"
+  );
+  requireSchema(isUuid(artifact.id), "Artifact id must be a UUID");
+  requireSchema(ARTIFACT_TYPES.has(artifact.type), "Artifact type is invalid");
+  requireSchema(
+    Number.isInteger(artifact.version)
+      && artifact.version >= 1
+      && artifact.version <= ARTIFACT_VERSION_MAX,
+    "Artifact version is invalid"
+  );
+  requireSchema(
+    typeof artifact.title === "string"
+      && artifact.title.length >= 1
+      && artifact.title.length <= TITLE_MAX_CHARS,
+    "Artifact title is invalid"
+  );
+  requireSchema(
+    typeof artifact.draft === "string" && artifact.draft.length <= DOCUMENT_TEXT_MAX_CHARS,
+    "Artifact draft is invalid"
+  );
+  validateAttachment(artifact.attachment);
+}
+
+/** Return whether two validated Attachment snapshots are byte-for-field identical. */
+function attachmentsEqual(left, right) {
+  return left.id === right.id
+    && left.artifact_id === right.artifact_id
+    && left.version === right.version
+    && left.type === right.type
+    && left.title === right.title
+    && left.content === right.content;
+}
+
+/** Validate the complete protocol-v2 histories/Artifacts graph without mutating it. */
+export function validateWorkspaceState(histories, artifacts) {
+  requireSchema(Array.isArray(histories), "Workspace histories must be an array");
+  requireSchema(
+    histories.length <= MAX_RESPONSE_HISTORIES,
+    `Workspace histories must contain at most ${MAX_RESPONSE_HISTORIES} messages`
+  );
+  requireExactKeys(artifacts, ["cv", "cover_letter"], "Workspace Artifacts");
+
+  const messageIds = new Set();
+  const attachmentIds = new Set();
+  const latestByType = new Map();
+  for (let index = 0; index < histories.length; index += 1) {
+    requireSchema(index in histories, "Workspace histories cannot be sparse");
+    const message = histories[index];
+    validateHistoryMessage(message);
+    requireSchema(!messageIds.has(message.id), "Workspace message IDs must be unique");
+    messageIds.add(message.id);
+    for (const item of message.attachments) {
+      requireSchema(!attachmentIds.has(item.id), "Attachment IDs must be unique");
+      attachmentIds.add(item.id);
+      latestByType.set(item.type, item);
+    }
+  }
+
+  const artifactIds = new Set();
+  for (const type of ARTIFACT_TYPES) {
+    const artifact = artifacts[type];
+    requireSchema(artifact === null || isObject(artifact), `Artifact ${type} must be nullable`);
+    if (artifact === null) continue;
+    validateArtifact(artifact);
+    requireSchema(artifact.type === type, "Artifact type must match its fixed key");
+    requireSchema(!artifactIds.has(artifact.id), "Artifact IDs must be unique");
+    artifactIds.add(artifact.id);
+    requireSchema(
+      artifact.attachment.artifact_id === artifact.id,
+      "Artifact Attachment must reference its Artifact"
+    );
+    const latest = latestByType.get(type);
+    requireSchema(
+      !!latest && attachmentsEqual(latest, artifact.attachment),
+      "Artifact Attachment must equal the latest Attachment of its type"
+    );
+  }
+
+  for (const latest of latestByType.values()) {
+    const artifact = artifacts[latest.type];
+    requireSchema(
+      artifact !== null && latest.artifact_id === artifact.id,
+      "Attachment artifact_id must reference its current Artifact"
+    );
+  }
+  return true;
+}
+
+/** Return an owner- and resource-scoped, schema-versioned chrome.storage.local key. */
 export function workspaceStorageKey(ownerId, resourceUrl) {
   if (typeof resourceUrl !== "string" || !resourceUrl.trim()) {
     throw new TypeError("resourceUrl must be a non-empty string");
@@ -40,10 +280,20 @@ export function workspaceStorageKey(ownerId, resourceUrl) {
   ].join(":");
 }
 
-/** Create the privacy-bounded local Workspace state stored by the extension. */
+/** Copy only the two fixed Artifact slots into local state. */
+function localArtifacts(value) {
+  const source = isObject(value) ? value : {};
+  return {
+    cv: source.cv ?? null,
+    cover_letter: source.cover_letter ?? null,
+  };
+}
+
+/** Create the privacy-bounded local Workspace schema-v2 state. */
 export function createWorkspace(seed = {}) {
   const actions = Array.isArray(seed.actions) ? [...seed.actions] : [];
   return {
+    schemaVersion: WORKSPACE_SCHEMA_VERSION,
     resourceUrl: typeof seed.resourceUrl === "string" ? seed.resourceUrl : "",
     pageTitle: typeof seed.pageTitle === "string" ? seed.pageTitle : "",
     quickInsight: seed.quickInsight ?? null,
@@ -54,89 +304,117 @@ export function createWorkspace(seed = {}) {
       seed.defaultActionId ?? seed.default_action_id
     ),
     histories: Array.isArray(seed.histories) ? [...seed.histories] : [],
-    currentDocument: seed.currentDocument ?? null,
+    artifacts: localArtifacts(seed.artifacts),
     updatedAt: seed.updatedAt ?? null,
   };
 }
 
-/** Replace canonical Workspace fields with one complete gateway response. */
+/** Convert one v1 local state without manufacturing IDs, timestamps, or Attachments. */
+export function migrateWorkspaceV1(seed = {}) {
+  const histories = [];
+  const messageIds = new Set();
+  for (const message of Array.isArray(seed.histories) ? seed.histories : []) {
+    if (!isObject(message)) continue;
+    const candidate = {
+      ...message,
+      attachments: Object.prototype.hasOwnProperty.call(message, "attachments")
+        ? message.attachments
+        : [],
+    };
+    try {
+      validateHistoryMessage(candidate);
+    } catch {
+      continue;
+    }
+    // v1 has no Artifact graph, so only Attachment-free messages can remain valid.
+    if (candidate.attachments.length || messageIds.has(candidate.id)) continue;
+    messageIds.add(candidate.id);
+    histories.push(candidate);
+  }
+  return createWorkspace({
+    resourceUrl: seed.resourceUrl,
+    pageTitle: seed.pageTitle,
+    quickInsight: seed.quickInsight,
+    actions: seed.actions,
+    selectedActionId: seed.selectedActionId,
+    defaultActionId: seed.defaultActionId ?? seed.default_action_id,
+    histories,
+    artifacts: { cv: null, cover_letter: null },
+    updatedAt: seed.updatedAt,
+  });
+}
+
+/** Validate and atomically replace canonical Workspace fields from one complete response. */
 export function applyWorkspaceResponse(state, response) {
   const current = createWorkspace(state);
-  if (!response || typeof response !== "object" || Array.isArray(response)) {
-    throw new TypeError("Workspace response must be an object");
-  }
-  const incoming = response;
-  if (!Array.isArray(incoming.histories)) {
-    throw new TypeError("Workspace response histories must be an array");
-  }
-  for (let index = 0; index < incoming.histories.length; index += 1) {
-    if (
-      !(index in incoming.histories)
-      || !isValidHistoryMessage(incoming.histories[index])
-    ) {
-      throw new TypeError("Workspace response histories contain an invalid message");
-    }
-  }
-  if (!Object.prototype.hasOwnProperty.call(incoming, "document")) {
-    throw new TypeError("Workspace response document is required");
-  }
-  if (
-    incoming.document !== null
-    && (
-      typeof incoming.document !== "object"
-      || Array.isArray(incoming.document)
-      || typeof incoming.document.text !== "string"
-    )
-  ) {
-    throw new TypeError("Workspace response document is invalid");
-  }
-  const incomingResourceUrl = incoming.resourceUrl ?? incoming.resource_url;
-  const incomingSelectedActionId = incoming.selectedActionId ?? incoming.selected_action_id;
-  if (typeof incomingResourceUrl !== "string" || !incomingResourceUrl.trim()) {
-    throw new TypeError("Workspace response resource URL is required");
-  }
-  if (
-    typeof incomingSelectedActionId !== "string"
-    || !incomingSelectedActionId.trim()
-  ) {
-    throw new TypeError("Workspace response selected Action is required");
-  }
-  const resourceUrl =
-    incomingResourceUrl;
+  requireExactKeys(
+    response,
+    [
+      "resource_url",
+      "selected_action_id",
+      "result_type",
+      "histories",
+      "artifacts",
+      "meta",
+      "protocol_version",
+    ],
+    "Workspace response"
+  );
+  requireSchema(
+    typeof response.resource_url === "string" && !!response.resource_url.trim(),
+    "Workspace response resource URL is required"
+  );
+  requireSchema(
+    !current.resourceUrl || response.resource_url === current.resourceUrl,
+    "Workspace response resource URL does not match the current Workspace"
+  );
+  requireSchema(
+    ACTION_IDS.has(response.selected_action_id),
+    "Workspace response selected Action is invalid"
+  );
+  requireSchema(RESULT_TYPES.has(response.result_type), "Workspace response result type is invalid");
+  requireSchema(response.protocol_version === 2, "Workspace response protocol version is invalid");
+  requireSchema(isObject(response.meta), "Workspace response meta is required");
+  requireSchema(
+    isUtcTimestamp(response.meta.created_at),
+    "Workspace response meta created_at must be UTC"
+  );
+  validateWorkspaceState(response.histories, response.artifacts);
+
+  // Construct only after every nested invariant passes so the caller's old object stays untouched.
   return {
     ...current,
-    resourceUrl,
-    selectedActionId: selectActionId(
-      current.actions,
-      incomingSelectedActionId,
-      current.selectedActionId
-    ),
-    histories: Array.isArray(incoming.histories) ? [...incoming.histories] : [],
-    currentDocument: incoming.document ?? null,
-    updatedAt: incoming.updatedAt ?? incoming.meta?.created_at ?? null,
+    resourceUrl: response.resource_url,
+    selectedActionId: response.selected_action_id,
+    histories: [...response.histories],
+    artifacts: localArtifacts(response.artifacts),
+    updatedAt: response.meta.created_at,
   };
 }
 
-/** Return whether one local entry satisfies the gateway HistoryMessage input contract. */
-function isValidHistoryMessage(message) {
-  if (!message || typeof message !== "object" || Array.isArray(message)) return false;
-  if (message.role !== "user" && message.role !== "assistant") return false;
-  if (typeof message.content !== "string") return false;
-  if (message.role === "user") {
-    return message.content.length >= 1 && message.content.length <= USER_HISTORY_CONTENT_MAX_CHARS;
+/** Return whether one valid v2 state can append a user message within the input cap. */
+export function canSendUserMessage(state) {
+  if (!state || state.schemaVersion !== WORKSPACE_SCHEMA_VERSION) return false;
+  if (!Array.isArray(state.histories) || state.histories.length > 9) return false;
+  try {
+    return validateWorkspaceState(state.histories, state.artifacts);
+  } catch {
+    return false;
   }
-  return message.content.length <= ASSISTANT_HISTORY_CONTENT_MAX_CHARS;
 }
 
-/** Return whether the next user message fits the ten-message request contract. */
-export function canSend(state) {
-  if (!state || !Array.isArray(state.histories)) return false;
-  if (state.histories.length + 1 > 10) return false;
-  // Array.prototype.every skips holes, so validate by index instead.
-  for (let index = 0; index < state.histories.length; index += 1) {
-    if (!(index in state.histories) || !isValidHistoryMessage(state.histories[index])) {
-      return false;
-    }
+/** Return whether one valid v2 state can run a Quick Insight Action within the input cap. */
+export function canRunQuickInsightAction(state) {
+  if (!state || state.schemaVersion !== WORKSPACE_SCHEMA_VERSION) return false;
+  if (!Array.isArray(state.histories) || state.histories.length > 10) return false;
+  try {
+    return validateWorkspaceState(state.histories, state.artifacts);
+  } catch {
+    return false;
   }
-  return true;
+}
+
+/** Keep the current Side Panel API mapped to user-message semantics until its UI migration. */
+export function canSend(state) {
+  return canSendUserMessage(state);
 }

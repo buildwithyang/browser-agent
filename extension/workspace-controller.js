@@ -1,7 +1,19 @@
-import { createWorkspace } from "./workspace.js";
+import {
+  WORKSPACE_SCHEMA_VERSION,
+  createWorkspace,
+  migrateWorkspaceV1,
+  validateWorkspaceState,
+  workspaceStorageKey,
+} from "./workspace.js";
+import {
+  DEFAULT_EXTENSION_UPDATE_URL,
+  EXTENSION_PROTOCOL_HEADER,
+  EXTENSION_PROTOCOL_VERSION,
+} from "./config.js";
 
 const ACTIVE_WORKSPACE_PREFIX = "agent-bridge:active-workspace:v1";
 const INITIAL_SELECTION_PREFIX = "agent-bridge:initial-selection:v1";
+const LEGACY_WORKSPACE_PREFIX = "agent-bridge:workspace:v1:";
 
 /** Error raised when the gateway returns a syntactically valid non-success response. */
 export class GatewayHttpError extends Error {
@@ -10,6 +22,22 @@ export class GatewayHttpError extends Error {
     super(message || `Gateway request failed (${status})`);
     this.name = "GatewayHttpError";
     this.status = status;
+  }
+}
+
+/** Error raised before auth/business handling when Gateway wire versions are incompatible. */
+export class ExtensionUpdateRequiredError extends Error {
+  /** Preserve the required protocol and best available Extension update destination. */
+  constructor({
+    requiredVersion = EXTENSION_PROTOCOL_VERSION,
+    updateUrl = DEFAULT_EXTENSION_UPDATE_URL,
+    message = "Extension update required",
+  } = {}) {
+    super(message);
+    this.name = "ExtensionUpdateRequiredError";
+    this.status = 426;
+    this.requiredVersion = requiredVersion;
+    this.updateUrl = updateUrl;
   }
 }
 
@@ -113,7 +141,62 @@ export async function loadOwnerScopedWorkspace(
   }
   const stored = await workspaceStore.get(mapping.storageKey);
   const state = stored[mapping.storageKey];
-  return state ? { mapping, state, lang: mapping.lang || "en" } : null;
+  if (!state) return null;
+  if (!mapping.storageKey.startsWith(LEGACY_WORKSPACE_PREFIX)) {
+    return { mapping, state, lang: mapping.lang || "en" };
+  }
+  return migrateOwnerScopedWorkspace({
+    mappingKey,
+    mapping,
+    state,
+    sessionStore,
+    workspaceStore,
+  });
+}
+
+/** Safely migrate an active v1 record before removing its only recoverable copy. */
+async function migrateOwnerScopedWorkspace({
+  mappingKey,
+  mapping,
+  state,
+  sessionStore,
+  workspaceStore,
+}) {
+  const resourceUrl = mapping.resourceUrl || state.resourceUrl;
+  const nextState = migrateWorkspaceV1({ ...state, resourceUrl });
+  const nextStorageKey = workspaceStorageKey(mapping.ownerId, resourceUrl);
+  const nextMapping = {
+    ...mapping,
+    storageKey: nextStorageKey,
+    resourceUrl,
+  };
+  let mappingWriteAttempted = false;
+
+  try {
+    // Keep v1 intact until v2 has survived both Chrome serialization and a fresh read.
+    await workspaceStore.set({ [nextStorageKey]: nextState });
+    const confirmedData = await workspaceStore.get(nextStorageKey);
+    const confirmed = confirmedData[nextStorageKey];
+    if (!confirmed || confirmed.schemaVersion !== WORKSPACE_SCHEMA_VERSION) {
+      throw new Error("Workspace v2 migration verification failed");
+    }
+    validateWorkspaceState(confirmed.histories, confirmed.artifacts);
+
+    mappingWriteAttempted = true;
+    await sessionStore.set({ [mappingKey]: nextMapping });
+    await workspaceStore.remove(mapping.storageKey);
+    return { mapping: nextMapping, state: confirmed, lang: mapping.lang || "en" };
+  } catch (error) {
+    // If the mapping write or final removal fails, restore the old active pointer.
+    if (mappingWriteAttempted) {
+      try {
+        await sessionStore.set({ [mappingKey]: mapping });
+      } catch {
+        // Preserve the original failure; Chrome storage writes are atomic per call.
+      }
+    }
+    throw error;
+  }
 }
 
 /** Create an operation queue that serializes work per key without coupling other keys. */
@@ -149,7 +232,7 @@ export async function loadAfterPendingSeed(pendingSeed, loadWorkspace) {
   return loadWorkspace();
 }
 
-/** Refresh Quick Insight metadata without discarding a Workspace conversation or artifact. */
+/** Refresh Quick Insight metadata without discarding a Workspace conversation or Artifacts. */
 export function mergeWorkspaceSeed(existing, seed = {}) {
   const current = createWorkspace(existing || {});
   const actions = Array.isArray(seed.actions) ? seed.actions : [];
@@ -169,7 +252,7 @@ export function mergeWorkspaceSeed(existing, seed = {}) {
     selectedActionId,
     defaultActionId: seed.defaultActionId,
     histories: current.histories,
-    currentDocument: current.currentDocument,
+    artifacts: current.artifacts,
     updatedAt: current.updatedAt,
   });
 }
@@ -191,14 +274,43 @@ export function restoreInitialSelection(pageContext, initialSelection) {
   return fresh;
 }
 
-/** Parse a gateway response and reject every non-2xx status with a useful detail. */
+/** Select a positive integer protocol requirement from direct 426 metadata or Header text. */
+function requiredProtocolVersion(body, headerValue) {
+  const direct = body?.required_protocol_version;
+  if (Number.isInteger(direct) && direct > 0) return direct;
+  if (/^[1-9]\d*$/.test(headerValue || "")) return Number(headerValue);
+  return EXTENSION_PROTOCOL_VERSION;
+}
+
+/** Build one protocol error using direct Gateway metadata with local fallbacks. */
+function extensionUpdateError(body, headerValue) {
+  return new ExtensionUpdateRequiredError({
+    requiredVersion: requiredProtocolVersion(body, headerValue),
+    updateUrl: typeof body?.update_url === "string" && body.update_url.trim()
+      ? body.update_url
+      : DEFAULT_EXTENSION_UPDATE_URL,
+    message: typeof body?.message === "string" && body.message
+      ? body.message
+      : "Extension update required",
+  });
+}
+
+/** Validate protocol compatibility before converting HTTP status or JSON failures. */
 export async function readGatewayResponse(response) {
+  // Header inspection is deliberately first so a version mismatch can never become a 401 clear.
+  const protocolHeader = response?.headers?.get?.(EXTENSION_PROTOCOL_HEADER) ?? null;
+  if (protocolHeader !== String(EXTENSION_PROTOCOL_VERSION)) {
+    throw extensionUpdateError(null, protocolHeader);
+  }
   let body = null;
   let parseFailed = false;
   try {
     body = await response.json();
   } catch {
     parseFailed = true;
+  }
+  if (response.status === 426) {
+    throw extensionUpdateError(body, protocolHeader);
   }
   if (!response.ok) {
     const detail = typeof body?.detail === "string"
@@ -215,6 +327,9 @@ export async function readGatewayResponse(response) {
     || Array.isArray(body)
   ) {
     throw new TypeError("Gateway returned no valid JSON object");
+  }
+  if (body.protocol_version !== EXTENSION_PROTOCOL_VERSION) {
+    throw extensionUpdateError(body, protocolHeader);
   }
   return body;
 }

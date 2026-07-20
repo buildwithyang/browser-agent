@@ -1,4 +1,8 @@
-import { GATEWAY_BASE as DEFAULT_GATEWAY } from "./config.js";
+import {
+  EXTENSION_PROTOCOL_HEADER,
+  EXTENSION_PROTOCOL_VERSION,
+  GATEWAY_BASE as DEFAULT_GATEWAY,
+} from "./config.js";
 
 // 纯逻辑：消息处理 / 鉴权头 / 网关地址 / 401 判定。无 chrome 依赖，便于 node --test。
 export const TOKEN_KEY = "authToken";
@@ -6,8 +10,12 @@ export const EXPIRES_KEY = "authTokenExpiresAt";
 export const WORKSPACE_OWNER_KEY = "workspaceOwnerId";
 export { DEFAULT_GATEWAY };
 
+/** Build versioned JSON headers, adding bearer authentication only when available. */
 export function buildAuthHeaders(token) {
-  const headers = { "Content-Type": "application/json" };
+  const headers = {
+    "Content-Type": "application/json",
+    [EXTENSION_PROTOCOL_HEADER]: String(EXTENSION_PROTOCOL_VERSION),
+  };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
 }
@@ -74,27 +82,34 @@ export function buildQuickInsightBody(payload, lang) {
   return { ...pageContextBody(payload), lang };
 }
 
-/** Reduce a rendered DocumentContent to the gateway's editable DocumentDraft contract. */
-function documentDraft(documentState) {
-  if (!documentState || typeof documentState !== "object") return null;
+/** Copy only the two fixed protocol-v2 Artifact slots. */
+function artifactBody(artifacts) {
+  const source = artifacts && typeof artifacts === "object" ? artifacts : {};
   return {
-    kind: typeof documentState.kind === "string" ? documentState.kind : "",
-    title: typeof documentState.title === "string" ? documentState.title : "",
-    text: typeof documentState.text === "string" ? documentState.text : "",
+    cv: source.cv ?? null,
+    cover_letter: source.cover_letter ?? null,
   };
 }
 
 /** Build one stateless Workspace transition from fresh page context and local state. */
 export function buildWorkspaceBody(pageContext, workspace = {}) {
-  return {
+  // Task 9 keeps old SEND callers working until Task 10 passes an explicit trigger.
+  const trigger = workspace.trigger
+    || (typeof workspace.message === "string" ? "user_message" : "quick_insight_action");
+  if (trigger !== "user_message" && trigger !== "quick_insight_action") {
+    throw new TypeError("Workspace trigger must be user_message or quick_insight_action");
+  }
+  const body = {
+    trigger,
     ...pageContextBody(pageContext),
     resourceUrl: workspace.resourceUrl,
     actionId: workspace.actionId,
     histories: Array.isArray(workspace.histories) ? workspace.histories : [],
-    currentDocument: documentDraft(workspace.currentDocument),
-    message: workspace.message,
+    artifacts: artifactBody(workspace.artifacts),
     lang: workspace.lang,
   };
+  if (trigger === "user_message") body.message = workspace.message;
+  return body;
 }
 
 export function shouldClearToken(status) {

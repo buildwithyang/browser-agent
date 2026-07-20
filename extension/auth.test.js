@@ -16,6 +16,9 @@ import {
   WORKSPACE_OWNER_KEY,
   DEFAULT_GATEWAY,
 } from "./auth.js";
+import * as config from "./config.js";
+
+const { EXTENSION_PROTOCOL_HEADER } = config;
 
 function fakeStore(initial = {}) {
   const data = { ...initial };
@@ -32,10 +35,14 @@ function fakeStore(initial = {}) {
   };
 }
 
-test("buildAuthHeaders adds bearer only when token present", () => {
-  assert.deepEqual(buildAuthHeaders(""), { "Content-Type": "application/json" });
+test("buildAuthHeaders always versions requests and adds bearer only when token present", () => {
+  assert.deepEqual(buildAuthHeaders(""), {
+    "Content-Type": "application/json",
+    [EXTENSION_PROTOCOL_HEADER]: "2",
+  });
   assert.deepEqual(buildAuthHeaders("t"), {
     "Content-Type": "application/json",
+    [EXTENSION_PROTOCOL_HEADER]: "2",
     Authorization: "Bearer t",
   });
 });
@@ -215,13 +222,17 @@ test("Quick Insight request contains only page context and language", () => {
   });
 });
 
-test("Workspace request contains the complete public contract without agent", () => {
+test("user-message Workspace request carries full v2 state without legacy fields", () => {
+  const histories = [{ id: "message", role: "assistant", content: "Earlier" }];
+  const artifacts = { cv: { id: "cv" }, cover_letter: null };
   const body = buildWorkspaceBody(
     { url: "u", title: "Page", pageText: "fresh", agent: "job_match" },
     {
+      trigger: "user_message",
       resourceUrl: "https://x/resource",
       actionId: "write_cover_letter",
-      histories: [{ role: "assistant", content: "Earlier" }],
+      histories,
+      artifacts: { ...artifacts, unexpected: "drop" },
       currentDocument: {
         kind: "cover_letter",
         title: "Draft",
@@ -235,6 +246,7 @@ test("Workspace request contains the complete public contract without agent", ()
     }
   );
   assert.deepEqual(body, {
+    trigger: "user_message",
     url: "u",
     title: "Page",
     selectedText: "",
@@ -242,9 +254,42 @@ test("Workspace request contains the complete public contract without agent", ()
     imageText: "",
     resourceUrl: "https://x/resource",
     actionId: "write_cover_letter",
-    histories: [{ role: "assistant", content: "Earlier" }],
-    currentDocument: { kind: "cover_letter", title: "Draft", text: "draft" },
+    histories,
+    artifacts,
     message: "Improve it",
     lang: "en",
   });
+  assert.equal("currentDocument" in body, false);
+  assert.equal("agent" in body, false);
+});
+
+test("Quick Insight Action Workspace request omits message and fixes Artifact keys", () => {
+  const body = buildWorkspaceBody(
+    { url: "u", currentDocument: { text: "legacy" }, agent: "summary_page" },
+    {
+      trigger: "quick_insight_action",
+      resourceUrl: "https://x/resource",
+      actionId: "analyze",
+      histories: [],
+      artifacts: { cv: null },
+      message: "must not cross the discriminated-union boundary",
+      lang: "zh",
+    }
+  );
+
+  assert.deepEqual(body, {
+    trigger: "quick_insight_action",
+    url: "u",
+    title: "",
+    selectedText: "",
+    pageText: "",
+    imageText: "",
+    resourceUrl: "https://x/resource",
+    actionId: "analyze",
+    histories: [],
+    artifacts: { cv: null, cover_letter: null },
+    lang: "zh",
+  });
+  assert.equal("message" in body, false);
+  assert.equal("currentDocument" in body, false);
 });
