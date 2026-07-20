@@ -86,6 +86,13 @@ test("keeps HTML content while removing style, SVG, and MathML injection surface
   assert.equal(body.querySelector("math"), null);
 });
 
+test("removes style elements while preserving following allowed HTML", () => {
+  const { body } = render("<style>.workspace-shell { display: none }</style><b>x</b>");
+
+  assert.equal(body.querySelector("style"), null);
+  assert.equal(body.querySelector("b")?.textContent, "x");
+});
+
 test("rejects non-string Markdown input", () => {
   const dom = new JSDOM("<!doctype html>");
 

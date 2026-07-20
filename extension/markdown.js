@@ -18,5 +18,6 @@ export function renderMarkdown(markdown, windowRef) {
   return createDOMPurify(windowRef).sanitize(parsedHtml, {
     USE_PROFILES: { html: true },
     FORBID_ATTR: ["style"],
+    FORBID_TAGS: ["style"],
   });
 }

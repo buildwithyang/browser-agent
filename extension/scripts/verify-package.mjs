@@ -11,8 +11,7 @@ import { fileURLToPath } from "node:url";
 const execFileAsync = promisify(execFile);
 const ZIP_PATH = new URL("../dist/agent-bridge-extension.zip", import.meta.url);
 const EXTENSION_ROOT = fileURLToPath(new URL("../", import.meta.url));
-const MODULE_CDN_PATTERN =
-  /https?:\/\/(?:cdn\.|unpkg\.com|cdn\.jsdelivr\.net|esm\.sh|cdnjs\.cloudflare\.com|cdn\.skypack\.dev)/i;
+const REMOTE_MODULE_SPECIFIER_PATTERN = /^https?:\/\//i;
 const REMOTE_CSS_IMPORT_PATTERN =
   /@import\s+(?:url\(\s*)?["']?\s*https?:\/\//i;
 const LICENSE_ASSETS = [
@@ -49,16 +48,36 @@ async function withExtractedArchive(operation) {
   }
 }
 
-/** Return static and dynamic relative imports declared by one JavaScript module. */
-function relativeImports(source) {
-  const importPattern =
-    /(?:(?:import|export)\s+(?:[^"'()]*?\s+from\s+)?["'](\.[^"']+)["']|import\s*\(\s*["'](\.[^"']+)["'])/g;
-  return [...source.matchAll(importPattern)].map((match) => match[1] || match[2]);
+/** Return static and literal dynamic module specifiers in source order. */
+function moduleSpecifiers(source) {
+  const staticPattern =
+    /(?:import|export)\s+(?:[^\n;"'`()]*?\s+from\s+)?(["'])([^"'`]+)\1/g;
+  const dynamicPattern = /import\s*\(\s*(["'`])([^"'`]+)\1\s*\)/g;
+  const matches = [];
+
+  for (const match of source.matchAll(staticPattern)) {
+    matches.push({ index: match.index, specifier: match[2] });
+  }
+  for (const match of source.matchAll(dynamicPattern)) {
+    if (match[1] === "`" && match[2].includes("${")) continue;
+    matches.push({ index: match.index, specifier: match[2] });
+  }
+
+  matches.sort((left, right) => left.index - right.index);
+  return matches.map((match) => match.specifier);
 }
 
-/** Identify external runtime dependencies while allowing normal product URLs. */
-function containsRemoteRuntimeDependency(source) {
-  return MODULE_CDN_PATTERN.test(source) || REMOTE_CSS_IMPORT_PATTERN.test(source);
+/** Return relative module specifiers that must resolve inside the package. */
+function relativeImports(source) {
+  return moduleSpecifiers(source).filter((specifier) => specifier.startsWith("."));
+}
+
+/** Identify HTTP(S) module imports without inspecting unrelated URL strings. */
+function containsRemoteModuleImport(source) {
+  for (const specifier of moduleSpecifiers(source)) {
+    if (REMOTE_MODULE_SPECIFIER_PATTERN.test(specifier)) return true;
+  }
+  return false;
 }
 
 /** Traverse the Side Panel module graph and assert every relative import exists. */
@@ -112,33 +131,36 @@ test("package contains complete licenses copied from locked dependencies", async
   });
 });
 
-test("package runtime contains no CDN references", async () => {
+test("package runtime contains no remote module or stylesheet imports", async () => {
   const entries = await listArchiveEntries();
   await withExtractedArchive(async (root) => {
-    const runtimeSources = await Promise.all(
-      entries
-        .filter((entry) => /\.(?:css|html|js|mjs)$/.test(entry))
-        .map((entry) => readFile(path.join(root, entry), "utf8"))
-    );
-    assert.equal(containsRemoteRuntimeDependency(runtimeSources.join("\n")), false);
+    for (const entry of entries.filter((candidate) => /\.(?:css|js|mjs)$/.test(candidate))) {
+      const source = await readFile(path.join(root, entry), "utf8");
+      if (entry.endsWith(".css")) {
+        assert.doesNotMatch(source, REMOTE_CSS_IMPORT_PATTERN, `${entry} imports a remote CSS file`);
+      } else {
+        assert.equal(containsRemoteModuleImport(source), false, `${entry} imports a remote module`);
+      }
+    }
   });
 });
 
-test("remote dependency policy covers ESM CDNs and CSS imports without blocking product URLs", () => {
+test("remote dependency policy rejects HTTP imports and CSS imports without blocking product URLs", () => {
   for (const source of [
-    'import "https://esm.sh/marked";',
-    'import "https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.4.12/purify.es.mjs";',
-    'import "https://cdn.skypack.dev/marked";',
-    '@import url("https://example.com/theme.css");',
+    'import "https://modules.example.com/runtime.js";',
+    'const development = import("http://127.0.0.1/runtime.js");',
+    'const template = import(`https://modules.example.com/template.js`);',
+    'export { runtime } from "https://modules.example.com/export.js";',
   ]) {
-    assert.equal(containsRemoteRuntimeDependency(source), true);
+    assert.equal(containsRemoteModuleImport(source), true);
   }
+  assert.match('@import url("https://example.com/theme.css");', REMOTE_CSS_IMPORT_PATTERN);
 
   for (const source of [
-    "https://chromewebstore.google.com/detail/agent-bridge/id",
-    "https://browser.buildwithyang.com/api/tasks/workspace",
+    'const STORE_URL = "https://chromewebstore.google.com/detail/agent-bridge/id";',
+    'const API_URL = "https://browser.buildwithyang.com/api/tasks/workspace";',
   ]) {
-    assert.equal(containsRemoteRuntimeDependency(source), false);
+    assert.equal(containsRemoteModuleImport(source), false);
   }
 });
 
@@ -146,10 +168,17 @@ test("import scanner recognizes static, exported, and dynamic relative modules",
   const source = [
     'import value from "./static.js";',
     'const lazy = import("./lazy.js");',
+    'const template = import(`./template.js`);',
+    'const computed = import(`./${name}.js`);',
     'export { other } from "./other.js";',
   ].join("\n");
 
-  assert.deepEqual(relativeImports(source), ["./static.js", "./lazy.js", "./other.js"]);
+  assert.deepEqual(relativeImports(source), [
+    "./static.js",
+    "./lazy.js",
+    "./template.js",
+    "./other.js",
+  ]);
 });
 
 test("every Side Panel module import resolves inside the package", async () => {
