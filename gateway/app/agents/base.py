@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import AsyncIterator, Generic, Protocol, TypeVar, runtime_checkable
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from app.agents.model_router import ModelRouter, ModelTier
+from app.agents.stream import AgentStreamEvent, ModelTextStream, _text_chunks
 from app.modules.task.schema import (
     Action,
     AgentName,
@@ -147,6 +148,21 @@ class WorkspaceAgent(Protocol):
         ...
 
 
+@runtime_checkable
+class StreamingWorkspaceAgent(Protocol):
+    """Stateless Agent capable of producing one streamed Workspace result."""
+
+    name: AgentName
+    requires_resume: bool
+
+    def stream_chat(
+        self, context: WorkspaceAgentContext
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """Yield request-scoped progress, text deltas, and one complete result."""
+
+        ...
+
+
 class RegisteredAgent(QuickInsightAgent, WorkspaceAgent, Protocol):
     """Intersection contract required for every object in the routed registry."""
 
@@ -165,17 +181,20 @@ class OpenAIChatAgent:
         router: ModelRouter | None = None,
         *,
         client: OpenAI | None = None,
+        async_client: AsyncOpenAI | None = None,
         model: str | None = None,
     ) -> None:
-        """Configure model routing and an optional shared test client."""
+        """Configure model routing and optional synchronous/asynchronous clients."""
 
         # 无 router(测试/简单场景):用固定 model 合成一个单层 default router。
         if router is None:
             router = ModelRouter(default=ModelTier(model=model or DEFAULT_MODEL))
         self._router = router
-        # 注入的 client 用于所有层(测试);否则按 (url,key) 懒构建并缓存,同厂多层共用。
+        # 注入的 clients 用于所有层；否则同步和异步 client 分别按 provider identity 缓存。
         self._injected_client = client
         self._clients: dict[tuple[str, str], OpenAI] = {}
+        self._injected_async_client = async_client
+        self._async_clients: dict[tuple[str, str], AsyncOpenAI] = {}
 
     def _client_for(self, tier: ModelTier) -> OpenAI:
         """Return or lazily construct the client for one provider tier."""
@@ -193,6 +212,24 @@ class OpenAIChatAgent:
                 kwargs["base_url"] = tier.url
             client = OpenAI(**kwargs)
             self._clients[cache_key] = client
+        return client
+
+    def _async_client_for(self, tier: ModelTier) -> AsyncOpenAI:
+        """Return or lazily construct the asynchronous client for one tier."""
+
+        if self._injected_async_client is not None:
+            return self._injected_async_client
+        cache_key = (tier.url, tier.key)
+        client = self._async_clients.get(cache_key)
+        if client is not None:
+            return client
+        kwargs = {}
+        if tier.key:
+            kwargs["api_key"] = tier.key
+        if tier.url:
+            kwargs["base_url"] = tier.url
+        client = AsyncOpenAI(**kwargs)
+        self._async_clients[cache_key] = client
         return client
 
     def pick_model(self, prompt: str) -> str:
@@ -215,3 +252,33 @@ class OpenAIChatAgent:
         """Execute one prompt and return (text, selected model)."""
         tier = self._router.pick(len(prompt))
         return self.complete(system, prompt, tier=tier), tier.model
+
+    async def acomplete_prompt(self, *, system: str, prompt: str) -> tuple[str, str]:
+        """Execute one non-streaming asynchronous Chat Completion."""
+
+        tier = self._router.pick(len(prompt))
+        response = await self._async_client_for(tier).chat.completions.create(
+            model=tier.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            stream=False,
+        )
+        return response.choices[0].message.content or "", tier.model
+
+    async def open_prompt_stream(
+        self, *, system: str, prompt: str
+    ) -> ModelTextStream:
+        """Open one asynchronous Chat Completions text stream."""
+
+        tier = self._router.pick(len(prompt))
+        stream = await self._async_client_for(tier).chat.completions.create(
+            model=tier.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            stream=True,
+        )
+        return ModelTextStream(model=tier.model, chunks=_text_chunks(stream))
