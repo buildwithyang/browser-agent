@@ -13,7 +13,13 @@ from app.agents.base import (
     StreamingWorkspaceAgent,
     WorkspaceAgentContext,
 )
-from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
+from app.agents.stream import (
+    AgentCompleted,
+    AgentDelta,
+    AgentStatus,
+    AgentStreamEvent,
+    ModelTextStream,
+)
 from app.modules.task.schema import (
     ActionId,
     DOCUMENT_TEXT_MAX_CHARS,
@@ -65,6 +71,40 @@ class FakeAsyncClient:
         stream = FakeAsyncStream(self.chunks)
         self.streams.append(stream)
         return stream
+
+
+class PlainTextStream:
+    """Provide a valid text async iterator without an optional cleanup method."""
+
+    def __init__(self, chunks: list[str]) -> None:
+        """Store ordered chunks for deterministic asynchronous consumption."""
+
+        self._chunks = iter(chunks)
+
+    def __aiter__(self) -> "PlainTextStream":
+        """Return this iterator for asynchronous consumption."""
+
+        return self
+
+    async def __anext__(self) -> str:
+        """Return the next configured chunk or terminate the stream."""
+
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+
+class PlainIteratorSummaryAgent(SummaryPageAgent):
+    """Expose a declared text iterator without an optional cleanup method."""
+
+    async def open_prompt_stream(self, *, system: str, prompt: str) -> ModelTextStream:
+        """Return deterministic Markdown through the narrow stream boundary."""
+
+        return ModelTextStream(
+            model="plain-model",
+            chunks=PlainTextStream(["Plain summary."]),
+        )
 
 
 def full_page_task() -> QuickInsightRequest:
@@ -200,6 +240,28 @@ def test_summary_workspace_streams_reply_only_markdown() -> None:
     assert "Respond entirely in English" in cast(
         list[dict[str, str]], client.calls[0]["messages"]
     )[0]["content"]
+
+
+def test_summary_completes_with_plain_async_iterator_without_aclose() -> None:
+    """Complete normally when the declared async iterator has no cleanup hook."""
+
+    agent = PlainIteratorSummaryAgent()
+
+    events = asyncio.run(
+        _collect_events(
+            agent.stream_chat(WorkspaceAgentContext(request=workspace_request()))
+        )
+    )
+
+    assert [event.stage for event in events if isinstance(event, AgentStatus)] == [
+        "generating_reply",
+        "finalizing",
+    ]
+    completed = cast(AgentCompleted, events[-1])
+    assert completed.execution.content == ReplyResult(
+        type="reply",
+        markdown="Plain summary.",
+    )
 
 
 def test_closing_summary_agent_stream_closes_provider_chunks() -> None:

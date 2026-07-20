@@ -81,6 +81,28 @@ class TrackingChunkStream:
         self.closed = True
 
 
+class PlainChunkStream:
+    """Provide a valid async iterator without an optional cleanup method."""
+
+    def __init__(self, chunks: list[str]) -> None:
+        """Store ordered chunks for deterministic asynchronous consumption."""
+
+        self._chunks = iter(chunks)
+
+    def __aiter__(self) -> "PlainChunkStream":
+        """Return this iterator for asynchronous consumption."""
+
+        return self
+
+    async def __anext__(self) -> str:
+        """Return the next configured chunk or terminate the stream."""
+
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+
 class SpySpecialist:
     """Record Strategy calls while returning a prepared Markdown stream."""
 
@@ -90,14 +112,16 @@ class SpySpecialist:
         *,
         name: str,
         model: str | None = None,
+        closeable: bool = True,
     ) -> None:
         """Configure raw chunks and observable execution metadata."""
 
         self.chunks = chunks
         self.name = name
         self.model = model or f"{name}-model"
+        self.closeable = closeable
         self.calls: list[tuple[JobChatContext, OutputMode]] = []
-        self.streams: list[TrackingChunkStream] = []
+        self.streams: list[TrackingChunkStream | PlainChunkStream] = []
 
     async def open_stream(
         self,
@@ -108,7 +132,11 @@ class SpySpecialist:
 
         self.calls.append((context, output_mode))
 
-        stream = TrackingChunkStream(self.chunks)
+        stream = (
+            TrackingChunkStream(self.chunks)
+            if self.closeable
+            else PlainChunkStream(self.chunks)
+        )
         self.streams.append(stream)
 
         return SimpleNamespace(
@@ -267,6 +295,7 @@ def _specialists(
     chunks: list[str],
     selected: SpecialistId,
     model: str | None = None,
+    closeable: bool = True,
 ) -> Mapping[SpecialistId, SpySpecialist]:
     """Build a complete injectable Strategy registry with one selected output."""
 
@@ -275,6 +304,7 @@ def _specialists(
             chunks if specialist_id is selected else ["unexpected"],
             name=specialist_id.value,
             model=model if specialist_id is selected else None,
+            closeable=closeable if specialist_id is selected else True,
         )
         for specialist_id in SpecialistId
     }
@@ -285,11 +315,17 @@ def _job_agent(
     plan: ChatPlan,
     chunks: list[str],
     model: str | None = None,
+    closeable: bool = True,
 ) -> tuple[JobMatchAgent, SpyPlanner, Mapping[SpecialistId, SpySpecialist]]:
     """Build one streaming Facade and its observable collaborators."""
 
     planner = SpyPlanner(plan)
-    specialists = _specialists(chunks=chunks, selected=plan.specialist, model=model)
+    specialists = _specialists(
+        chunks=chunks,
+        selected=plan.specialist,
+        model=model,
+        closeable=closeable,
+    )
     return (
         JobMatchAgent(planner=planner, specialists=specialists),
         planner,
@@ -329,6 +365,29 @@ def test_resume_reply_streams_markdown_deltas() -> None:
     )
     assert len(planner.calls) == 1
     assert sum(len(specialist.calls) for specialist in specialists.values()) == 1
+
+
+def test_job_agent_completes_with_plain_async_iterator_without_aclose() -> None:
+    """Complete normally when the declared async iterator has no cleanup hook."""
+
+    agent, _planner, _specialists_map = _job_agent(
+        plan=ChatPlan(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
+        chunks=["Plain reply."],
+        closeable=False,
+    )
+
+    events = asyncio.run(_collect_events(agent.stream_chat(_context())))
+
+    assert [event.stage for event in events if isinstance(event, AgentStatus)] == [
+        "routing",
+        "generating_reply",
+        "finalizing",
+    ]
+    completed = cast(AgentCompleted, events[-1])
+    assert completed.execution.content == ReplyResult(
+        type="reply",
+        markdown="Plain reply.",
+    )
 
 
 def test_closing_job_agent_stream_closes_specialist_chunks() -> None:

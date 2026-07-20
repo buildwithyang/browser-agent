@@ -1,5 +1,4 @@
 from collections.abc import AsyncIterator
-from contextlib import aclosing
 
 from app.agents.base import (
     AgentContext,
@@ -12,7 +11,13 @@ from app.agents.base import (
     format_workspace_context,
     language_directive,
 )
-from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
+from app.agents.stream import (
+    AgentCompleted,
+    AgentDelta,
+    AgentStatus,
+    AgentStreamEvent,
+    closing_if_supported,
+)
 from app.modules.task.schema import (
     Action,
     ActionId,
@@ -201,7 +206,7 @@ class SummaryPageAgent(
 
         chunks: list[str] = []
         total_chars = 0
-        async with aclosing(opened.chunks) as text_chunks:
+        async with closing_if_supported(opened.chunks) as text_chunks:
             async for chunk in text_chunks:
                 if not chunk:
                     continue

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, AsyncIterator, Literal
+from typing import TYPE_CHECKING, AsyncIterator, Literal, TypeVar
 
 from openai.types.chat import ChatCompletionChunk
 
@@ -11,6 +12,8 @@ from app.modules.task.schema import ArtifactType, ChatResult
 
 if TYPE_CHECKING:
     from app.agents.base import AgentExecution
+
+ChunkT = TypeVar("ChunkT")
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,20 @@ class AgentCompleted:
 
 
 AgentStreamEvent = AgentStatus | AgentDelta | AgentCompleted
+
+
+@asynccontextmanager
+async def closing_if_supported(
+    iterator: AsyncIterator[ChunkT],
+) -> AsyncIterator[AsyncIterator[ChunkT]]:
+    """Close an async iterator on exit only when it exposes ``aclose``."""
+
+    try:
+        yield iterator
+    finally:
+        close = getattr(iterator, "aclose", None)
+        if callable(close):
+            await close()
 
 
 async def _text_chunks(

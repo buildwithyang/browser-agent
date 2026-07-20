@@ -3,7 +3,6 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator, Mapping
-from contextlib import aclosing
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -29,7 +28,13 @@ from app.agents.job_match.specialists.base import JobMatchSpecialist, Specialist
 from app.agents.job_match.specialists.cover_letter import CoverLetterAgent
 from app.agents.job_match.specialists.general_qa import GeneralQAAgent
 from app.agents.job_match.specialists.resume import ResumeTailoringAgent
-from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
+from app.agents.stream import (
+    AgentCompleted,
+    AgentDelta,
+    AgentStatus,
+    AgentStreamEvent,
+    closing_if_supported,
+)
 from app.modules.task.schema import (
     Action,
     ActionId,
@@ -291,7 +296,7 @@ class JobMatchAgent(
         # cross the Agent event boundary; reply chunks remain visible as Markdown deltas.
         chunks: list[str] = []
         total_chars = 0
-        async with aclosing(opened.chunks) as text_chunks:
+        async with closing_if_supported(opened.chunks) as text_chunks:
             async for chunk in text_chunks:
                 if not chunk:
                     continue
