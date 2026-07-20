@@ -210,6 +210,17 @@ function advanceOperationGeneration(model, cancelPendingSend = false) {
   return generation;
 }
 
+/** Return the monotonic revision of transient stream identity and content. */
+function currentStreamEpoch(model) {
+  return Number.isInteger(model.streamEpoch) ? model.streamEpoch : 0;
+}
+
+/** Advance the transient stream revision after one accepted identity/content change. */
+function advanceStreamEpoch(model) {
+  model.streamEpoch = currentStreamEpoch(model) + 1;
+  return model.streamEpoch;
+}
+
 /** Start one load generation, invalidating prior loads and identity-bound SENDs on tab change. */
 function beginLoadOperation(model, tabId, cancelPendingSend = false) {
   const tabChanged = model.tabId !== tabId;
@@ -218,7 +229,12 @@ function beginLoadOperation(model, tabId, cancelPendingSend = false) {
     cancelPendingSend || tabChanged
   );
   model.latestLoadGeneration = tabId ? generation : null;
-  return Object.freeze({ generation, tabId, tabChanged });
+  return Object.freeze({
+    generation,
+    tabId,
+    tabChanged,
+    streamEpoch: currentStreamEpoch(model),
+  });
 }
 
 /** Return whether one load generation is still latest for its captured tab. */
@@ -758,12 +774,18 @@ function scheduleStreamRender(model, renderNow, dependencies = {}) {
 
 /** Return whether one snapshot belongs to the visible Workspace and current transient operation. */
 function isCurrentStreamSnapshot(model, snapshot) {
+  const canonicalResourceUrl = typeof model.state?.resourceUrl === "string"
+    ? model.state.resourceUrl
+    : "";
+  const awaitingInitialWorkspace = !canonicalResourceUrl
+    && model.loading
+    && model.latestLoadGeneration != null;
   if (
     !snapshot
     || snapshot.tabId !== model.tabId
     || typeof snapshot.operationId !== "string"
     || typeof snapshot.resourceUrl !== "string"
-    || snapshot.resourceUrl !== model.state?.resourceUrl
+    || (!awaitingInitialWorkspace && snapshot.resourceUrl !== canonicalResourceUrl)
     || !Number.isInteger(snapshot.sequence)
   ) {
     return false;
@@ -789,17 +811,22 @@ function pendingTurnFromSnapshot(snapshot) {
     stage: snapshot.stage || null,
     markdown: typeof snapshot.markdown === "string" ? snapshot.markdown : "",
     status: "pending",
+    inputRestorationHandled: false,
   };
 }
 
 /** Restore an owner-scoped pending GET snapshot without writing it into canonical state. */
-function restorePendingTurn(model, snapshot) {
+function restorePendingTurn(model, snapshot, loadOperation = null) {
+  const streamAdvancedDuringLoad = !!loadOperation
+    && currentStreamEpoch(model) !== loadOperation.streamEpoch;
+  const current = model.pendingTurn;
   if (!snapshot) {
+    if (streamAdvancedDuringLoad) return false;
+    if (model.pendingTurn) advanceStreamEpoch(model);
     model.pendingTurn = null;
     return false;
   }
   if (!isCurrentStreamSnapshot({ ...model, pendingTurn: null }, snapshot)) return false;
-  const current = model.pendingTurn;
   if (
     current
     && current.operationId === snapshot.operationId
@@ -809,20 +836,70 @@ function restorePendingTurn(model, snapshot) {
   ) {
     return false;
   }
-  model.pendingTurn = pendingTurnFromSnapshot(snapshot);
+  if (
+    streamAdvancedDuringLoad
+    && (
+      !current
+      || current.operationId !== snapshot.operationId
+      || current.tabId !== snapshot.tabId
+      || current.resourceUrl !== snapshot.resourceUrl
+    )
+  ) {
+    return false;
+  }
+  const next = pendingTurnFromSnapshot(snapshot);
+  if (current?.operationId === snapshot.operationId) {
+    next.userText = current.userText ?? next.userText;
+    next.inputRestorationHandled = !!current.inputRestorationHandled;
+  }
+  model.pendingTurn = next;
+  advanceStreamEpoch(model);
   return true;
 }
 
 /** Retain a failed Assistant row and restore the exact submitted composer text. */
-function failPendingTurn(elements, model, message, dependencies = {}) {
-  if (!model.pendingTurn) return false;
+function failPendingTurn(
+  elements,
+  model,
+  message,
+  dependencies = {},
+  expectedOperationId = null
+) {
+  const pendingTurn = model.pendingTurn;
+  if (
+    !pendingTurn
+    || (expectedOperationId && pendingTurn.operationId !== expectedOperationId)
+  ) {
+    return false;
+  }
   cancelStreamRender(model, dependencies);
-  model.pendingTurn.status = "failed";
+  pendingTurn.status = "failed";
   model.loading = false;
-  elements.messageInput.value = model.pendingTurn.userText || "";
+  if (!pendingTurn.inputRestorationHandled) {
+    if (!elements.messageInput.value && typeof pendingTurn.userText === "string") {
+      elements.messageInput.value = pendingTurn.userText;
+    }
+    // One failure signal owns restoration; later settlements must preserve subsequent drafts.
+    pendingTurn.inputRestorationHandled = true;
+  }
   if (message) model.error = workspaceResponseError({ error: message });
   render(elements, model, dependencies);
   return true;
+}
+
+/** Start an authoritative canonical reload after a terminal stream completion. */
+function reloadCompletedWorkspace(elements, model, snapshot, dependencies = {}) {
+  const options = { expectedResourceUrl: snapshot.resourceUrl };
+  const reload = typeof dependencies.reloadWorkspace === "function"
+    ? dependencies.reloadWorkspace
+    : (tabId, reloadOptions) => loadWorkspaceForTab(
+      elements,
+      model,
+      tabId,
+      dependencies,
+      reloadOptions
+    );
+  Promise.resolve(reload(snapshot.tabId, options)).catch(() => {});
 }
 
 /** Reduce one cumulative stream runtime message while rejecting stale identity or sequence data. */
@@ -849,11 +926,15 @@ export function handleWorkspaceStreamMessage(elements, model, message, dependenc
     }
     if (snapshot.createdAt) model.pendingTurn.createdAt = snapshot.createdAt;
   }
+  advanceStreamEpoch(model);
 
   if (message.eventType === "completed") {
     cancelStreamRender(model, dependencies);
     model.pendingTurn = null;
     render(elements, model, dependencies);
+    if (!model.pendingSendGeneration) {
+      reloadCompletedWorkspace(elements, model, snapshot, dependencies);
+    }
     return true;
   }
   if (message.eventType === "failed" || message.eventType === "interrupted") {
@@ -895,7 +976,9 @@ export async function submitMessage(elements, model, dependencies = {}) {
     stage: null,
     markdown: "",
     status: "pending",
+    inputRestorationHandled: false,
   };
+  advanceStreamEpoch(model);
   elements.messageInput.value = "";
   model.loading = true;
   model.error = null;
@@ -913,11 +996,20 @@ export async function submitMessage(elements, model, dependencies = {}) {
     });
     settledOperation = settleSendOperation(model, operation);
     if (!settledOperation) return;
-    if (response?.stale === true) return;
+    if (response?.stale === true) {
+      failPendingTurn(
+        elements,
+        model,
+        response.error || view.strings.retryFallback,
+        dependencies,
+        operation.operationId
+      );
+      return;
+    }
     model.retry = () => elements.messageForm.requestSubmit();
     if (!response?.ok) {
       model.error = workspaceResponseError(response, view.strings.retryFallback);
-      failPendingTurn(elements, model, null, dependencies);
+      failPendingTurn(elements, model, null, dependencies, operation.operationId);
       return;
     }
     cancelStreamRender(model, dependencies);
@@ -933,7 +1025,7 @@ export async function submitMessage(elements, model, dependencies = {}) {
       { error: error?.message || view.strings.retryFallback },
       view.strings.retryFallback
     );
-    failPendingTurn(elements, model, null, dependencies);
+    failPendingTurn(elements, model, null, dependencies, operation.operationId);
   } finally {
     if (isCurrentSettledOperation(model, settledOperation)) {
       model.loading = model.latestLoadGeneration != null;
@@ -953,6 +1045,10 @@ export async function loadWorkspaceForTab(
   dependencies = {},
   options = {}
 ) {
+  const expectedResourceUrl = typeof options.expectedResourceUrl === "string"
+    ? options.expectedResourceUrl
+    : "";
+  if (expectedResourceUrl && model.state?.resourceUrl !== expectedResourceUrl) return;
   const operation = beginLoadOperation(model, tabId, !!options.cancelPendingSend);
   const clearState = operation.tabChanged || !!options.clearState;
   model.tabId = tabId;
@@ -972,6 +1068,15 @@ export async function loadWorkspaceForTab(
     ) {
       return;
     }
+    if (
+      expectedResourceUrl
+      && (
+        model.state?.resourceUrl !== expectedResourceUrl
+        || (response?.ok && response.state?.resourceUrl !== expectedResourceUrl)
+      )
+    ) {
+      return;
+    }
     if (response?.ok) {
       if (isResourceSwitch(model.state, response.state)) {
         completionOperation = promoteResourceSwitchLoad(model, operation);
@@ -984,7 +1089,15 @@ export async function loadWorkspaceForTab(
       model.state = response.state;
       model.lang = response.lang || "browser";
       model.selectedActionId = response.state?.selectedActionId || null;
-      restorePendingTurn(model, response.pendingStream);
+      if (
+        model.pendingTurn
+        && model.pendingTurn.resourceUrl !== response.state?.resourceUrl
+      ) {
+        cancelStreamRender(model, dependencies);
+        model.pendingTurn = null;
+        advanceStreamEpoch(model);
+      }
+      restorePendingTurn(model, response.pendingStream, operation);
     } else {
       if (!isCurrentLoadOperation(model, operation)) return;
       completionOperation = operation;
@@ -1032,6 +1145,7 @@ async function initSidePanel() {
     pendingSendGeneration: null,
     pendingTurn: null,
     streamRenderTimer: null,
+    streamEpoch: 0,
     loading: false,
     error: null,
     retry: null,

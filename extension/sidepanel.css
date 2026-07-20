@@ -24,6 +24,7 @@
   --brand-line: #d3ccff;
   --danger: #b5483f;
   --danger-soft: #fff1ef;
+  --danger-line: color-mix(in srgb, var(--danger) 38%, var(--line));
   --body-font: "DM Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
   --mono-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
@@ -329,7 +330,12 @@ a {
 .message.pending .stream-status::after {
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(96, 75, 216, 0.14), transparent);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--ink-soft) 16%, transparent),
+    transparent
+  );
   content: "";
   transform: translateX(-100%);
   animation: stream-shimmer 1.6s ease-in-out infinite;
@@ -337,7 +343,7 @@ a {
 
 .message.failed .message-surface {
   padding-left: 10px;
-  border-left: 2px solid #d9aaa4;
+  border-left: 2px solid var(--danger-line);
 }
 
 .message.failed .stream-status {

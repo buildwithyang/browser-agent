@@ -258,6 +258,173 @@ test("cumulative stream snapshots render at most once per 50 ms and reject stale
   assert.equal(setup.dom.window.__streamXss, undefined);
 });
 
+test("reopened pending completion reloads and replaces canonical Workspace state", async () => {
+  const setup = await renderState(workspace({
+    histories: [message(0, { content: "old canonical" })],
+  }), {
+    tabId: 7,
+    pendingTurn: {
+      operationId: "00000000-0000-4000-8000-000000000001",
+      tabId: 7,
+      resourceUrl: RESOURCE_URL,
+      userText: "Recovered submission",
+      createdAt: "2026-07-20T10:10:00Z",
+      sequence: 2,
+      stage: "generating",
+      markdown: "Transient answer",
+      status: "pending",
+    },
+  });
+  const canonicalReload = deferred();
+  let reloadPromise = null;
+  let reloadOptions = null;
+  const dependencies = {
+    reloadWorkspace: (tabId, options) => {
+      reloadOptions = { tabId, ...options };
+      reloadPromise = sidepanel.loadWorkspaceForTab(
+        setup.elements,
+        setup.model,
+        tabId,
+        { sendRuntime: () => canonicalReload.promise },
+        options
+      );
+      return reloadPromise;
+    },
+  };
+
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("completed", { sequence: 3, markdown: "Transient answer" }),
+    dependencies
+  );
+
+  assert.deepEqual(reloadOptions, { tabId: 7, expectedResourceUrl: RESOURCE_URL });
+  assert.equal(setup.model.pendingTurn, null);
+  assert.equal(setup.model.loading, true);
+  canonicalReload.resolve({
+    ok: true,
+    state: workspace({ histories: [message(1, { content: "new canonical" })] }),
+    lang: "en",
+    pendingStream: null,
+  });
+  await reloadPromise;
+  assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["new canonical"]);
+});
+
+test("reopened completion reload failure preserves canonical state and surfaces retry", async () => {
+  const canonical = workspace({ histories: [message(0, { content: "canonical" })] });
+  const setup = await renderState(canonical, {
+    tabId: 7,
+    pendingTurn: {
+      ...streamSnapshot({ sequence: 2 }),
+      userText: "Recovered submission",
+      status: "pending",
+    },
+  });
+  const request = deferred();
+  let reloadPromise = null;
+  const dependencies = {
+    reloadWorkspace: (tabId, options) => {
+      reloadPromise = sidepanel.loadWorkspaceForTab(
+        setup.elements,
+        setup.model,
+        tabId,
+        { sendRuntime: () => request.promise },
+        options
+      );
+      return reloadPromise;
+    },
+  };
+
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("completed", { sequence: 3 }),
+    dependencies
+  );
+  request.resolve({ ok: false, error: "Canonical reload failed" });
+  await reloadPromise;
+
+  assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["canonical"]);
+  assert.match(setup.model.error?.message || "", /reload failed/i);
+});
+
+test("GET pending reconciliation cannot clear or replace a newer runtime operation", async () => {
+  for (const pendingStream of [
+    null,
+    streamSnapshot({
+      operationId: "00000000-0000-4000-8000-000000000002",
+      sequence: 4,
+      markdown: "Different GET operation",
+    }),
+  ]) {
+    const setup = await renderState(workspace(), { tabId: 7 });
+    const request = deferred();
+    const load = sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, {
+      sendRuntime: () => request.promise,
+    });
+
+    sidepanel.handleWorkspaceStreamMessage(
+      setup.elements,
+      setup.model,
+      streamMessage("delta", { sequence: 1, markdown: "Newest runtime operation" })
+    );
+    request.resolve({ ok: true, state: workspace(), lang: "en", pendingStream });
+    await load;
+
+    assert.equal(
+      setup.model.pendingTurn?.operationId,
+      "00000000-0000-4000-8000-000000000001"
+    );
+    assert.equal(setup.model.pendingTurn?.sequence, 1);
+    assert.equal(setup.model.pendingTurn?.markdown, "Newest runtime operation");
+  }
+});
+
+test("GET started before runtime may still advance the adopted operation with a higher sequence", async () => {
+  const setup = await renderState(workspace(), { tabId: 7 });
+  const request = deferred();
+  const load = sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, {
+    sendRuntime: () => request.promise,
+  });
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", { sequence: 1, markdown: "Runtime sequence one" })
+  );
+  request.resolve({
+    ok: true,
+    state: workspace(),
+    lang: "en",
+    pendingStream: streamSnapshot({ sequence: 2, markdown: "GET sequence two" }),
+  });
+  await load;
+
+  assert.equal(setup.model.pendingTurn?.sequence, 2);
+  assert.equal(setup.model.pendingTurn?.markdown, "GET sequence two");
+});
+
+test("runtime snapshot arriving before initial GET is adopted for its confirmed resource", async () => {
+  const setup = await renderState(null, { tabId: 7 });
+  const request = deferred();
+  const load = sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, {
+    sendRuntime: () => request.promise,
+  });
+
+  const adopted = sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("delta", { sequence: 1, markdown: "Arrived before GET" })
+  );
+  request.resolve({ ok: true, state: workspace(), lang: "en", pendingStream: null });
+  await load;
+
+  assert.equal(adopted, true);
+  assert.equal(setup.model.pendingTurn?.markdown, "Arrived before GET");
+  assert.match(setup.elements.timeline.textContent, /Arrived before GET/);
+});
+
 test("failed stream restores text without changing canonical histories", async () => {
   const canonical = workspace({ histories: [message(0, { content: "canonical" })] });
   const setup = await renderState(canonical, {
@@ -307,6 +474,80 @@ test("interrupted SEND restores the exact original input and preserves canonical
   assert.equal(setup.elements.messageInput.value, "  preserve my spacing  ");
   assert.deepEqual(setup.model.state.histories.map((item) => item.content), ["canonical"]);
   assert.match(setup.elements.timeline.querySelector(".message.failed")?.textContent || "", /failed/i);
+});
+
+test("current stale SEND settlement fails its optimistic turn and restores input", async () => {
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const request = deferred();
+  setup.elements.messageInput.value = "restore stale input";
+  const submit = sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    sendRuntime: () => request.promise,
+  });
+
+  request.resolve({ ok: false, stale: true, error: "The operation was superseded." });
+  await submit;
+
+  assert.equal(setup.elements.messageInput.value, "restore stale input");
+  assert.equal(setup.model.pendingTurn?.status, "failed");
+  assert.deepEqual(setup.model.state.histories, []);
+});
+
+test("old stale SEND settlement cannot fail a newer pending operation", async () => {
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const request = deferred();
+  setup.elements.messageInput.value = "old submission";
+  const submit = sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    sendRuntime: () => request.promise,
+  });
+  setup.model.pendingTurn = {
+    ...setup.model.pendingTurn,
+    operationId: "00000000-0000-4000-8000-000000000002",
+    userText: "new submission",
+  };
+  setup.elements.messageInput.value = "new draft";
+
+  request.resolve({ ok: false, stale: true, error: "Old operation became stale." });
+  await submit;
+
+  assert.equal(
+    setup.model.pendingTurn?.operationId,
+    "00000000-0000-4000-8000-000000000002"
+  );
+  assert.equal(setup.model.pendingTurn?.status, "pending");
+  assert.equal(setup.elements.messageInput.value, "new draft");
+});
+
+test("late SEND failure never overwrites a draft typed after the first failure signal", async () => {
+  const setup = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const request = deferred();
+  setup.elements.messageInput.value = "original submission";
+  const submit = sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    sendRuntime: () => request.promise,
+  });
+
+  sidepanel.handleWorkspaceStreamMessage(
+    setup.elements,
+    setup.model,
+    streamMessage("failed", { sequence: 1, submittedMessage: "original submission" })
+  );
+  setup.elements.messageInput.value = "new draft after failure";
+  request.resolve({ ok: false, error: "Late failed settlement" });
+  await submit;
+
+  assert.equal(setup.elements.messageInput.value, "new draft after failure");
+  assert.equal(setup.model.pendingTurn?.status, "failed");
 });
 
 test("GET restores pending transient turns and a tab boundary clears their timer", async () => {
@@ -1175,7 +1416,19 @@ test("Quiet Precision CSS contains horizontal overflow and keeps rich content lo
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
   assert.match(css, /:focus-visible/);
   assert.match(css, /\.message\.pending\s+\.stream-status/);
-  assert.match(css, /\.message\.failed\s+\.message-surface\s*\{[^}]*border-left:/s);
+  assert.match(css, /--danger-line:\s*color-mix\([^;]*var\(--danger\)[^;]*var\(--line\)/s);
+  assert.match(
+    css,
+    /\.message\.failed\s+\.message-surface\s*\{[^}]*border-left:\s*2px\s+solid\s+var\(--danger-line\)/s
+  );
+  assert.match(
+    css,
+    /\.message\.pending\s+\.stream-status::after\s*\{[^}]*var\(--ink-soft\)/s
+  );
+  assert.doesNotMatch(
+    css,
+    /\.message\.pending\s+\.stream-status::after\s*\{[^}]*rgba\(96,\s*75,\s*216/s
+  );
   assert.match(css, /@keyframes\s+stream-shimmer/);
   assert.match(
     css,
