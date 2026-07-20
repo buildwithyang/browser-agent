@@ -38,13 +38,14 @@ def upgrade_required_response(update_url: str) -> JSONResponse:
     )
 
 
-def _raw_protocol_header(scope: Scope) -> bytes | None:
-    """Return the first raw protocol Header value without consuming the request body."""
+def _raw_protocol_headers(scope: Scope) -> list[bytes]:
+    """Return every raw protocol Header value without consuming the request body."""
 
-    for name, value in scope.get("headers", []):
-        if name.lower() == _PROTOCOL_HEADER_BYTES:
-            return value
-    return None
+    return [
+        value
+        for name, value in scope.get("headers", [])
+        if name.lower() == _PROTOCOL_HEADER_BYTES
+    ]
 
 
 def _is_current_protocol(raw_value: bytes | None) -> bool:
@@ -102,7 +103,8 @@ class TaskProtocolMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if not _is_current_protocol(_raw_protocol_header(scope)):
+        protocol_values = _raw_protocol_headers(scope)
+        if len(protocol_values) != 1 or not _is_current_protocol(protocol_values[0]):
             await upgrade_required_response(self.update_url)(scope, receive, send)
             return
 

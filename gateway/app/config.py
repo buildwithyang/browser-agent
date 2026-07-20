@@ -95,7 +95,7 @@ class Settings:
     # 单用户 /tasks 限流:窗口内最大次数,0=不限流(自部署默认);窗口秒数默认 1 天。
     task_rate_limit_max: int = 0
     task_rate_limit_window_seconds: int = 86400
-    # 不兼容扩展收到 426 后跳转的官方更新地址。
+    # Official update destination returned to incompatible extensions in 426 responses.
     extension_update_url: str = DEFAULT_EXTENSION_UPDATE_URL
 
     # --- Casdoor OAuth ------------------------------------------------------

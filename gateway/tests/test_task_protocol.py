@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope
 
 from app import main
+from app.config import Settings
 from app.core import CookieSessionMiddleware
 from app.modules.task.protocol import (
     CURRENT_EXTENSION_PROTOCOL_VERSION,
@@ -32,12 +36,79 @@ from app.modules.task.service import RateLimitError, TaskExecutionError
 
 PROTOCOL_VALUE = str(CURRENT_EXTENSION_PROTOCOL_VERSION)
 PROTOCOL_HEADERS = {EXTENSION_PROTOCOL_HEADER: PROTOCOL_VALUE}
+PROTOCOL_HEADER_BYTES = EXTENSION_PROTOCOL_HEADER.lower().encode("ascii")
 UPGRADE_JSON = {
     "code": "extension_update_required",
     "message": "Extension update required",
     "required_protocol_version": CURRENT_EXTENSION_PROTOCOL_VERSION,
     "update_url": DEFAULT_EXTENSION_UPDATE_URL,
 }
+
+
+def _http_scope(
+    path: str,
+    *,
+    headers: list[tuple[bytes, bytes]] | None = None,
+) -> Scope:
+    """Build one minimal HTTP scope while preserving duplicate raw Headers."""
+
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers or [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 443),
+    }
+
+
+def _run_protocol_middleware(
+    inner: ASGIApp,
+    *,
+    path: str,
+    headers: list[tuple[bytes, bytes]] | None = None,
+    receive: Receive | None = None,
+    update_url: str = DEFAULT_EXTENSION_UPDATE_URL,
+) -> list[Message]:
+    """Run the protocol middleware directly and return copied ASGI messages."""
+
+    messages: list[Message] = []
+
+    async def empty_receive() -> Message:
+        """Return one empty terminal HTTP request event."""
+
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def collect(message: Message) -> None:
+        """Capture a stable copy of one emitted response event."""
+
+        messages.append({**message})
+
+    asyncio.run(
+        TaskProtocolMiddleware(inner, update_url=update_url)(
+            _http_scope(path, headers=headers),
+            receive or empty_receive,
+            collect,
+        )
+    )
+    return messages
+
+
+def _response_body(messages: list[Message]) -> dict[str, object]:
+    """Decode the JSON body emitted by one direct middleware response."""
+
+    payload = b"".join(
+        message.get("body", b"")
+        for message in messages
+        if message["type"] == "http.response.body"
+    )
+    return json.loads(payload)
 
 
 class RecordingService:
@@ -127,6 +198,143 @@ def test_middleware_execution_order_is_cors_protocol_session_router() -> None:
         TaskProtocolMiddleware,
         CookieSessionMiddleware,
     ]
+
+
+def test_settings_value_is_wired_through_main_middleware_to_actual_426() -> None:
+    """Propagate the configured update URL through main's installed middleware."""
+
+    assert isinstance(main.settings, Settings)
+    configured_url = main.settings.extension_update_url
+    protocol_layer = next(
+        item for item in main.app.user_middleware if item.cls is TaskProtocolMiddleware
+    )
+
+    assert protocol_layer.kwargs["update_url"] == configured_url
+    response = TestClient(main.app).post("/tasks/quick-insight", content=b"{}")
+    assert response.status_code == 426
+    assert response.json()["update_url"] == configured_url
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        pytest.param((b"2", b"2"), id="same"),
+        pytest.param((b"2", b"3"), id="conflicting"),
+    ],
+)
+def test_duplicate_protocol_headers_are_rejected(
+    values: tuple[bytes, bytes],
+) -> None:
+    """Require exactly one raw protocol Header even when duplicates agree."""
+
+    inner_calls = 0
+
+    async def inner(scope: Scope, receive: Receive, send: Any) -> None:
+        """Record any invalid pass-through to the inner application."""
+
+        nonlocal inner_calls
+        inner_calls += 1
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    messages = _run_protocol_middleware(
+        inner,
+        path="/tasks/quick-insight",
+        headers=[(PROTOCOL_HEADER_BYTES, value) for value in values],
+    )
+
+    assert messages[0]["status"] == 426
+    assert _response_body(messages) == UPGRADE_JSON
+    assert inner_calls == 0
+
+
+def test_single_matching_protocol_header_reaches_inner_app_once() -> None:
+    """Allow exactly one matching raw Header through the strict gate."""
+
+    inner_calls = 0
+
+    async def inner(scope: Scope, receive: Receive, send: Any) -> None:
+        """Emit one successful response and record the pass-through."""
+
+        nonlocal inner_calls
+        inner_calls += 1
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    messages = _run_protocol_middleware(
+        inner,
+        path="/tasks/quick-insight",
+        headers=[(PROTOCOL_HEADER_BYTES, b"2")],
+    )
+
+    assert messages[0]["status"] == 204
+    assert inner_calls == 1
+
+
+def test_exact_legacy_path_short_circuits_inner_app_and_body_receive() -> None:
+    """Return 426 without invoking the inner ASGI app or reading request bytes."""
+
+    inner_calls = 0
+    receive_calls = 0
+
+    async def inner(scope: Scope, receive: Receive, send: Any) -> None:
+        """Fail immediately if the exact legacy path reaches the inner app."""
+
+        nonlocal inner_calls
+        inner_calls += 1
+        raise AssertionError("legacy /tasks must not reach the inner ASGI app")
+
+    async def receive() -> Message:
+        """Fail immediately if the middleware attempts to read the legacy body."""
+
+        nonlocal receive_calls
+        receive_calls += 1
+        raise AssertionError("legacy /tasks must not read request body bytes")
+
+    messages = _run_protocol_middleware(
+        inner,
+        path="/tasks",
+        headers=[(b"content-length", b"500000")],
+        receive=receive,
+    )
+
+    assert messages[0]["status"] == 426
+    assert _response_body(messages) == UPGRADE_JSON
+    assert inner_calls == 0
+    assert receive_calls == 0
+
+
+def test_accepted_inner_protocol_headers_are_replaced_with_one_current_value() -> None:
+    """Deduplicate conflicting inner markers after an accepted request."""
+
+    async def inner(scope: Scope, receive: Receive, send: Any) -> None:
+        """Emit conflicting protocol response Headers for middleware normalization."""
+
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (PROTOCOL_HEADER_BYTES, b"1"),
+                    (PROTOCOL_HEADER_BYTES, b"3"),
+                    (b"content-type", b"application/json"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    messages = _run_protocol_middleware(
+        inner,
+        path="/tasks/workspace",
+        headers=[(PROTOCOL_HEADER_BYTES, b"2")],
+    )
+    response_headers = [
+        value
+        for name, value in messages[0]["headers"]
+        if name.lower() == PROTOCOL_HEADER_BYTES
+    ]
+
+    assert response_headers == [b"2"]
 
 
 @pytest.mark.parametrize("path", ["/tasks/quick-insight", "/tasks/workspace"])

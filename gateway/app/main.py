@@ -108,7 +108,8 @@ app.add_middleware(
     https_only=settings.auth_cookie_secure,
 )
 
-# 扩展协议在 session/auth/body 解析前拒绝旧客户端；Starlette 按 add 顺序反向包裹。
+# Reject incompatible extensions before session, auth, or body parsing.
+# Starlette wraps middleware in reverse registration order.
 app.add_middleware(
     TaskProtocolMiddleware,
     update_url=settings.extension_update_url,
