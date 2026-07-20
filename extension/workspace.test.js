@@ -315,6 +315,18 @@ test("v2 validator enforces CV URLs, Artifact identity, type, uniqueness, and la
   }
 });
 
+test("v2 validator rejects an Artifact version that differs from its latest Attachment", () => {
+  const state = artifactState();
+  state.histories = [state.histories[0]];
+  state.artifacts.cover_letter.attachment = state.histories[0].attachments[0];
+  state.artifacts.cover_letter.version = 2;
+
+  assert.throws(
+    () => validateWorkspaceState(state.histories, state.artifacts),
+    /Artifact version must equal its Attachment version/
+  );
+});
+
 test("message-count guards model the two request-trigger boundaries", () => {
   const state = (length) => ({
     schemaVersion: 2,

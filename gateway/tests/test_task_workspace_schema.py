@@ -187,6 +187,35 @@ def test_workspace_state_enforces_identity_type_and_latest_attachment_invariants
         )
 
 
+def test_workspace_state_rejects_artifact_version_that_differs_from_latest_attachment() -> None:
+    """Require the latest Artifact and its embedded Attachment to name one version."""
+
+    artifact_id = _artifact_id()
+    attachment = _attachment(artifact_id)
+    artifact = {
+        "id": artifact_id,
+        "type": "cover_letter",
+        "version": 2,
+        "title": "Cover Letter",
+        "draft": "Dear Hiring Manager",
+        "attachment": attachment,
+    }
+
+    with pytest.raises(ValidationError, match="Artifact version must equal its Attachment version"):
+        REQUEST_ADAPTER.validate_python(
+            _request_payload(
+                histories=[
+                    {
+                        "role": "assistant",
+                        "content": "Created it",
+                        "attachments": [attachment],
+                    }
+                ],
+                artifacts=_artifacts(cover_letter=artifact),
+            )
+        )
+
+
 def test_workspace_limits_and_extra_fields_are_rejected() -> None:
     """Preserve text, title, version and legacy-field rejection boundaries."""
 

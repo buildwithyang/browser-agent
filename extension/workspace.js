@@ -289,6 +289,10 @@ export function validateWorkspaceState(histories, artifacts) {
       artifact.attachment.artifact_id === artifact.id,
       "Artifact Attachment must reference its Artifact"
     );
+    requireSchema(
+      artifact.version === artifact.attachment.version,
+      "Artifact version must equal its Attachment version"
+    );
     const latest = latestByType.get(type);
     requireSchema(
       !!latest && attachmentsEqual(latest, artifact.attachment),

@@ -262,6 +262,8 @@ def validate_workspace_state(histories: list[HistoryMessage], artifacts: Artifac
             raise ValueError("Artifact type must match its Artifacts key")
         if artifact.attachment.artifact_id != artifact.id:
             raise ValueError("Artifact Attachment artifact_id must match its Artifact")
+        if artifact.version != artifact.attachment.version:
+            raise ValueError("Artifact version must equal its Attachment version")
         if latest_attachment_by_type.get(artifact_type) != artifact.attachment:
             raise ValueError("Artifact Attachment must equal the latest Attachment of its type")
 

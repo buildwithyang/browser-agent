@@ -334,6 +334,8 @@ def test_every_quick_command_bypasses_intent_router(action: ActionId) -> None:
         agent.handle_chat(context)
 
     assert router.calls == []
+    if action is ActionId.ASK_MORE:
+        assert all(specialist.calls == [] for specialist in specialists.values())
 
 
 @pytest.mark.parametrize(
