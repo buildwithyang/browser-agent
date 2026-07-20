@@ -98,7 +98,16 @@ function workspaceResponse(overrides = {}) {
     result_type: "update_artifact",
     histories: state.histories,
     artifacts: state.artifacts,
-    meta: { created_at: "2026-07-20T10:00:01+00:00" },
+    meta: {
+      id: "40000000-0000-4000-8000-000000000001",
+      created_at: "2026-07-20T10:00:01+00:00",
+      status: "completed",
+      input_chars: 123,
+      model: "test-model",
+      started_at: "2026-07-20T10:00:00Z",
+      finished_at: "2026-07-20T10:00:01Z",
+      duration_ms: 1000,
+    },
     protocol_version: 2,
     ...overrides,
   };
@@ -198,6 +207,12 @@ test("pure v2 validator accepts IDs, UTC timestamps, opaque Markdown, and latest
   );
 });
 
+test("v2 validator accepts canonical UUIDs without imposing version or variant bits", () => {
+  const state = artifactState();
+  state.histories[0].id = "30000000-0000-0000-0000-000000000001";
+  assert.equal(validateWorkspaceState(state.histories, state.artifacts), true);
+});
+
 test("v2 validator rejects malformed IDs, timestamps, attachments, and fixed Artifact maps", () => {
   const valid = artifactState();
   const cases = [];
@@ -271,6 +286,11 @@ test("v2 validator enforces CV URLs, Artifact identity, type, uniqueness, and la
   wrongReference.artifacts.cover_letter.attachment.artifact_id =
     "10000000-0000-4000-8000-000000000099";
   cases.push(wrongReference);
+
+  const earlierWrongReference = copy(valid);
+  earlierWrongReference.histories[0].attachments[0].artifact_id =
+    "10000000-0000-4000-8000-000000000099";
+  cases.push(earlierWrongReference);
 
   const staleLatest = copy(valid);
   staleLatest.artifacts.cover_letter.attachment = staleLatest.histories[0].attachments[0];
@@ -381,4 +401,28 @@ test("invalid complete response leaves the caller's prior object unchanged", () 
     /resource/i
   );
   assert.deepEqual(current, before);
+});
+
+test("response rejects incomplete or invalid Gateway execution metadata", () => {
+  const current = createWorkspace({ resourceUrl: RESOURCE_URL });
+  const invalidMeta = [
+    { id: "not-a-uuid" },
+    { created_at: "2026-07-20T14:00:00+04:00" },
+    { status: "failed" },
+    { input_chars: 1.5 },
+    { model: 123 },
+    { started_at: "local-time" },
+    { finished_at: "local-time" },
+    { duration_ms: 1.5 },
+  ];
+
+  for (const change of invalidMeta) {
+    const response = workspaceResponse();
+    Object.assign(response.meta, change);
+    assert.throws(() => applyWorkspaceResponse(current, response), /meta|UUID|UTC|status|model/i);
+  }
+
+  const response = workspaceResponse();
+  delete response.meta.model;
+  assert.throws(() => applyWorkspaceResponse(current, response), /meta/i);
 });

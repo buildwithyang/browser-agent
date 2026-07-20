@@ -6,6 +6,34 @@ import * as sidepanel from "./sidepanel.js";
 
 const { workspaceView } = sidepanel;
 
+/** Build one complete Attachment-free v2 message for Side Panel state tests. */
+function message(index) {
+  return {
+    id: `30000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: index % 2 === 0 ? "question" : "answer",
+    action_id: "analyze",
+    created_at: "2026-07-20T10:00:00Z",
+    attachments: [],
+  };
+}
+
+/** Build one complete local schema-v2 Workspace with the requested message count. */
+function v2Workspace(historyCount = 0, overrides = {}) {
+  return {
+    schemaVersion: 2,
+    resourceUrl: "https://example.com/jobs/1",
+    pageTitle: "Platform Engineer",
+    quickInsight: null,
+    actions: [],
+    selectedActionId: null,
+    histories: Array.from({ length: historyCount }, (_, index) => message(index)),
+    artifacts: { cv: null, cover_letter: null },
+    updatedAt: null,
+    ...overrides,
+  };
+}
+
 test("manifest declares the Side Panel entry point and release version", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("./manifest.json", import.meta.url), "utf8")
@@ -16,9 +44,7 @@ test("manifest declares the Side Panel entry point and release version", async (
 });
 
 test("job actions stay flat and the selected action survives history", () => {
-  const state = {
-    resourceUrl: "https://example.com/jobs/1",
-    pageTitle: "Platform Engineer",
+  const state = v2Workspace(2, {
     actions: [
       { id: "analyze", title: "Analyze" },
       { id: "tailor_resume", title: "Tailor resume" },
@@ -26,12 +52,8 @@ test("job actions stay flat and the selected action survives history", () => {
       { id: "ask_more", title: "Ask more" },
     ],
     selectedActionId: "tailor_resume",
-    histories: [
-      { role: "user", content: "Focus on architecture." },
-      { role: "assistant", content: "The role values distributed systems." },
-    ],
     currentDocument: { kind: "resume", title: "Tailored resume", text: "Draft" },
-  };
+  });
 
   const view = workspaceView(state, "en");
 
@@ -44,6 +66,7 @@ test("job actions stay flat and the selected action survives history", () => {
   assert.equal(view.selectedActionId, "tailor_resume");
   assert.equal(view.histories.length, 2);
   assert.equal(view.document.title, "Tailored resume");
+  assert.equal(view.canSend, true);
 });
 
 test("resume documents become a fixed website preview", () => {
@@ -84,13 +107,15 @@ test("resume preview links open safely in a new tab", async () => {
 });
 
 test("view model localizes the send limit and disables further turns", () => {
-  const histories = Array.from({ length: 10 }, (_, index) => ({
-    role: index % 2 ? "assistant" : "user",
-    content: index % 2 ? "answer" : "question",
-  }));
-  const view = workspaceView({ actions: [], histories }, "zh");
+  const view = workspaceView(v2Workspace(10), "zh");
   assert.equal(view.canSend, false);
   assert.match(view.limitText, /上限/);
+});
+
+test("view model enables a valid v2 Workspace below the user-message limit", () => {
+  const view = workspaceView(v2Workspace(9), "en");
+  assert.equal(view.canSend, true);
+  assert.equal(view.limitText, "");
 });
 
 test("Side Panel resolves auto and browser language from Chrome UI locale", () => {

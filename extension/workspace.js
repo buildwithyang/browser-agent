@@ -19,7 +19,8 @@ const ACTION_IDS = new Set([
 ]);
 const ARTIFACT_TYPES = new Set(["cv", "cover_letter"]);
 const RESULT_TYPES = new Set(["reply", "create_artifact", "update_artifact"]);
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LEGACY_WORKSPACE_STORAGE_PREFIX = "agent-bridge:workspace:v1";
 
 /** Return a stable owner id without deriving identity from a bearer token. */
 function normalizedOwnerId(ownerId) {
@@ -213,6 +214,41 @@ function attachmentsEqual(left, right) {
     && left.content === right.content;
 }
 
+/** Validate the complete ExecutionMeta emitted by a successful Workspace transition. */
+function validateExecutionMeta(meta) {
+  requireExactKeys(
+    meta,
+    [
+      "id",
+      "created_at",
+      "status",
+      "input_chars",
+      "model",
+      "started_at",
+      "finished_at",
+      "duration_ms",
+    ],
+    "Workspace response meta"
+  );
+  requireSchema(isUuid(meta.id), "Workspace response meta id must be a UUID");
+  requireSchema(isUtcTimestamp(meta.created_at), "Workspace response meta created_at must be UTC");
+  requireSchema(meta.status === "completed", "Workspace response meta status must be completed");
+  requireSchema(Number.isInteger(meta.input_chars), "Workspace response meta input_chars is invalid");
+  requireSchema(typeof meta.model === "string", "Workspace response meta model is invalid");
+  requireSchema(
+    meta.started_at === null || isUtcTimestamp(meta.started_at),
+    "Workspace response meta started_at must be UTC or null"
+  );
+  requireSchema(
+    meta.finished_at === null || isUtcTimestamp(meta.finished_at),
+    "Workspace response meta finished_at must be UTC or null"
+  );
+  requireSchema(
+    meta.duration_ms === null || Number.isInteger(meta.duration_ms),
+    "Workspace response meta duration_ms is invalid"
+  );
+}
+
 /** Validate the complete protocol-v2 histories/Artifacts graph without mutating it. */
 export function validateWorkspaceState(histories, artifacts) {
   requireSchema(Array.isArray(histories), "Workspace histories must be an array");
@@ -224,6 +260,7 @@ export function validateWorkspaceState(histories, artifacts) {
 
   const messageIds = new Set();
   const attachmentIds = new Set();
+  const attachments = [];
   const latestByType = new Map();
   for (let index = 0; index < histories.length; index += 1) {
     requireSchema(index in histories, "Workspace histories cannot be sparse");
@@ -234,6 +271,7 @@ export function validateWorkspaceState(histories, artifacts) {
     for (const item of message.attachments) {
       requireSchema(!attachmentIds.has(item.id), "Attachment IDs must be unique");
       attachmentIds.add(item.id);
+      attachments.push(item);
       latestByType.set(item.type, item);
     }
   }
@@ -258,10 +296,10 @@ export function validateWorkspaceState(histories, artifacts) {
     );
   }
 
-  for (const latest of latestByType.values()) {
-    const artifact = artifacts[latest.type];
+  for (const item of attachments) {
+    const artifact = artifacts[item.type];
     requireSchema(
-      artifact !== null && latest.artifact_id === artifact.id,
+      artifact !== null && item.artifact_id === artifact.id,
       "Attachment artifact_id must reference its current Artifact"
     );
   }
@@ -275,6 +313,18 @@ export function workspaceStorageKey(ownerId, resourceUrl) {
   }
   return [
     WORKSPACE_STORAGE_PREFIX,
+    encodeURIComponent(normalizedOwnerId(ownerId)),
+    encodeURIComponent(resourceUrl.trim()),
+  ].join(":");
+}
+
+/** Return the exact owner/resource key used by the legacy local Workspace schema. */
+export function legacyWorkspaceStorageKey(ownerId, resourceUrl) {
+  if (typeof resourceUrl !== "string" || !resourceUrl.trim()) {
+    throw new TypeError("resourceUrl must be a non-empty string");
+  }
+  return [
+    LEGACY_WORKSPACE_STORAGE_PREFIX,
     encodeURIComponent(normalizedOwnerId(ownerId)),
     encodeURIComponent(resourceUrl.trim()),
   ].join(":");
@@ -374,11 +424,7 @@ export function applyWorkspaceResponse(state, response) {
   );
   requireSchema(RESULT_TYPES.has(response.result_type), "Workspace response result type is invalid");
   requireSchema(response.protocol_version === 2, "Workspace response protocol version is invalid");
-  requireSchema(isObject(response.meta), "Workspace response meta is required");
-  requireSchema(
-    isUtcTimestamp(response.meta.created_at),
-    "Workspace response meta created_at must be UTC"
-  );
+  validateExecutionMeta(response.meta);
   validateWorkspaceState(response.histories, response.artifacts);
 
   // Construct only after every nested invariant passes so the caller's old object stays untouched.

@@ -1,7 +1,7 @@
 import {
   buildAuthHeaders,
   buildQuickInsightBody,
-  buildWorkspaceBody,
+  buildUserMessageWorkspaceBody,
   taskUrl,
   webBaseUrl,
   loginStrings,
@@ -360,11 +360,10 @@ async function sendWorkspaceTurn(tabId, message, authSnapshot) {
         const response = await fetch(taskUrl(DEFAULT_GATEWAY, "workspace"), {
           method: "POST",
           headers: buildAuthHeaders(authSnapshot.token),
-          body: JSON.stringify(buildWorkspaceBody(pageContext, {
+          body: JSON.stringify(buildUserMessageWorkspaceBody(pageContext, {
             resourceUrl: latest.mapping.resourceUrl,
             actionId: message.actionId,
-            histories: latest.state.histories,
-            currentDocument: latest.state.currentDocument,
+            state: latest.state,
             message: userMessage,
             lang: latest.lang,
           })),

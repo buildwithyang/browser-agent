@@ -112,6 +112,20 @@ export function buildWorkspaceBody(pageContext, workspace = {}) {
   return body;
 }
 
+/** Build one composer SEND from the latest complete local Workspace state. */
+export function buildUserMessageWorkspaceBody(pageContext, options = {}) {
+  const state = options.state && typeof options.state === "object" ? options.state : {};
+  return buildWorkspaceBody(pageContext, {
+    trigger: "user_message",
+    resourceUrl: options.resourceUrl,
+    actionId: options.actionId,
+    histories: state.histories,
+    artifacts: state.artifacts,
+    message: options.message,
+    lang: options.lang,
+  });
+}
+
 export function shouldClearToken(status) {
   return status === 401;
 }

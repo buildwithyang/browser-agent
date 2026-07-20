@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import * as controller from "./workspace-controller.js";
+import { workspaceStorageKey } from "./workspace.js";
 import {
   EXPIRES_KEY,
   TOKEN_KEY,
@@ -179,6 +180,56 @@ test("user B cannot load a tab mapping owned by user A", async () => {
   assert.deepEqual(workspaceStore.getCalls, []);
 });
 
+test("v1 mapping key with another encoded owner is never read or migrated", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const mappingKey = activeWorkspaceKey(10);
+  const storageKey =
+    "agent-bridge:workspace:v1:user-b:https%3A%2F%2Fx%2Fjob%2F1";
+  const mapping = {
+    ownerId: "user-a",
+    storageKey,
+    resourceUrl: "https://x/job/1",
+  };
+  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
+  const workspaceStore = fakeStorageArea({ [storageKey]: { histories: [] } });
+
+  const active = await loadOwnerScopedWorkspace(10, {
+    ownerId: "user-a",
+    sessionStore,
+    workspaceStore,
+  });
+
+  assert.equal(active, null);
+  assert.deepEqual(workspaceStore.getCalls, []);
+  assert.deepEqual(workspaceStore.removeCalls, []);
+  assert.deepEqual(sessionStore.data[mappingKey], mapping);
+});
+
+test("v1 mapping key with another encoded resource is never read or migrated", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const mappingKey = activeWorkspaceKey(11);
+  const storageKey =
+    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F2";
+  const mapping = {
+    ownerId: "user-a",
+    storageKey,
+    resourceUrl: "https://x/job/1",
+  };
+  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
+  const workspaceStore = fakeStorageArea({ [storageKey]: { histories: [] } });
+
+  const active = await loadOwnerScopedWorkspace(11, {
+    ownerId: "user-a",
+    sessionStore,
+    workspaceStore,
+  });
+
+  assert.equal(active, null);
+  assert.deepEqual(workspaceStore.getCalls, []);
+  assert.deepEqual(workspaceStore.removeCalls, []);
+  assert.deepEqual(sessionStore.data[mappingKey], mapping);
+});
+
 test("owner-scoped load migrates v1 only after v2 write, re-read, and mapping update", async () => {
   const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
   const mappingKey = activeWorkspaceKey(8);
@@ -233,7 +284,8 @@ test("owner-scoped load migrates v1 only after v2 write, re-read, and mapping up
 test("failed v2 migration write preserves v1 value and old tab mapping", async () => {
   const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
   const mappingKey = activeWorkspaceKey(9);
-  const v1Key = "agent-bridge:workspace:v1:user-a:resource";
+  const v1Key =
+    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
   const oldMapping = {
     ownerId: "user-a",
     storageKey: v1Key,
@@ -264,6 +316,131 @@ test("failed v2 migration write preserves v1 value and old tab mapping", async (
   assert.deepEqual(sessionStore.data[mappingKey], oldMapping);
   assert.deepEqual(workspaceStore.removeCalls, []);
   assert.deepEqual(sessionStore.setCalls, []);
+});
+
+test("failed v2 migration re-read preserves v1 value and old tab mapping", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const mappingKey = activeWorkspaceKey(12);
+  const resourceUrl = "https://x/job/1";
+  const v1Key =
+    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
+  const v2Key = workspaceStorageKey("user-a", resourceUrl);
+  const mapping = { ownerId: "user-a", storageKey: v1Key, resourceUrl };
+  const state = { resourceUrl, actions: [], histories: [], currentDocument: null };
+  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
+  const workspaceStore = fakeStorageArea({ [v1Key]: state });
+  const originalGet = workspaceStore.get.bind(workspaceStore);
+  workspaceStore.get = async (query) => (
+    query === v2Key ? { [v2Key]: undefined } : originalGet(query)
+  );
+
+  await assert.rejects(
+    loadOwnerScopedWorkspace(12, {
+      ownerId: "user-a",
+      sessionStore,
+      workspaceStore,
+    }),
+    /verification failed/
+  );
+
+  assert.deepEqual(workspaceStore.data[v1Key], state);
+  assert.deepEqual(sessionStore.data[mappingKey], mapping);
+  assert.deepEqual(workspaceStore.removeCalls, []);
+});
+
+test("failed tab-mapping write restores the old mapping and keeps v1", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const mappingKey = activeWorkspaceKey(13);
+  const resourceUrl = "https://x/job/1";
+  const v1Key =
+    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
+  const mapping = { ownerId: "user-a", storageKey: v1Key, resourceUrl };
+  const state = { resourceUrl, actions: [], histories: [], currentDocument: null };
+  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
+  const originalSet = sessionStore.set.bind(sessionStore);
+  let setCount = 0;
+  sessionStore.set = async (values) => {
+    setCount += 1;
+    if (setCount === 1) throw new Error("mapping write failed");
+    return originalSet(values);
+  };
+  const workspaceStore = fakeStorageArea({ [v1Key]: state });
+
+  await assert.rejects(
+    loadOwnerScopedWorkspace(13, {
+      ownerId: "user-a",
+      sessionStore,
+      workspaceStore,
+    }),
+    /mapping write failed/
+  );
+
+  assert.deepEqual(workspaceStore.data[v1Key], state);
+  assert.deepEqual(sessionStore.data[mappingKey], mapping);
+  assert.deepEqual(workspaceStore.removeCalls, []);
+});
+
+test("failed v1 removal restores the old mapping and keeps v1", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const mappingKey = activeWorkspaceKey(14);
+  const resourceUrl = "https://x/job/1";
+  const v1Key =
+    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
+  const mapping = { ownerId: "user-a", storageKey: v1Key, resourceUrl };
+  const state = { resourceUrl, actions: [], histories: [], currentDocument: null };
+  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
+  const workspaceStore = fakeStorageArea({ [v1Key]: state });
+  workspaceStore.remove = async () => {
+    throw new Error("v1 removal failed");
+  };
+
+  await assert.rejects(
+    loadOwnerScopedWorkspace(14, {
+      ownerId: "user-a",
+      sessionStore,
+      workspaceStore,
+    }),
+    /v1 removal failed/
+  );
+
+  assert.deepEqual(workspaceStore.data[v1Key], state);
+  assert.deepEqual(sessionStore.data[mappingKey], mapping);
+});
+
+test("mapping rollback failure is reported explicitly instead of being swallowed", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const mappingKey = activeWorkspaceKey(15);
+  const resourceUrl = "https://x/job/1";
+  const v1Key =
+    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
+  const mapping = { ownerId: "user-a", storageKey: v1Key, resourceUrl };
+  const state = { resourceUrl, actions: [], histories: [], currentDocument: null };
+  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
+  const originalSet = sessionStore.set.bind(sessionStore);
+  let setCount = 0;
+  sessionStore.set = async (values) => {
+    setCount += 1;
+    if (setCount === 2) throw new Error("rollback failed");
+    return originalSet(values);
+  };
+  const workspaceStore = fakeStorageArea({ [v1Key]: state });
+  workspaceStore.remove = async () => {
+    throw new Error("v1 removal failed");
+  };
+
+  await assert.rejects(
+    loadOwnerScopedWorkspace(15, {
+      ownerId: "user-a",
+      sessionStore,
+      workspaceStore,
+    }),
+    (error) =>
+      error instanceof AggregateError
+      && /rollback failed/i.test(error.message)
+      && error.errors.some((item) => item.message === "v1 removal failed")
+      && error.errors.some((item) => item.message === "rollback failed")
+  );
+  assert.deepEqual(workspaceStore.data[v1Key], state);
 });
 
 test("401 cleanup removes all Workspace session namespaces but keeps local records", async () => {

@@ -1,5 +1,5 @@
 import { quickInsightView } from "./quick-insight.js";
-import { canSend } from "./workspace.js";
+import { canSendUserMessage } from "./workspace.js";
 
 export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
@@ -101,7 +101,7 @@ export function workspaceView(state = {}, lang = "browser", uiLanguage = "en") {
     ? state.selectedActionId
     : actions[0]?.id || null;
   const histories = Array.isArray(state.histories) ? [...state.histories] : [];
-  const sendAllowed = canSend({ histories });
+  const sendAllowed = canSendUserMessage(state);
   return {
     lang: locale,
     strings,

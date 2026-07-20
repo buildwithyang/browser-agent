@@ -1,6 +1,7 @@
 import {
   WORKSPACE_SCHEMA_VERSION,
   createWorkspace,
+  legacyWorkspaceStorageKey,
   migrateWorkspaceV1,
   validateWorkspaceState,
   workspaceStorageKey,
@@ -139,10 +140,20 @@ export async function loadOwnerScopedWorkspace(
     await sessionStore.remove(mappingKey);
     return null;
   }
+  const pointsToLegacy = mapping.storageKey.startsWith(LEGACY_WORKSPACE_PREFIX);
+  if (pointsToLegacy) {
+    let expectedLegacyKey = null;
+    try {
+      expectedLegacyKey = legacyWorkspaceStorageKey(ownerId, mapping.resourceUrl);
+    } catch {
+      return null;
+    }
+    if (mapping.storageKey !== expectedLegacyKey) return null;
+  }
   const stored = await workspaceStore.get(mapping.storageKey);
   const state = stored[mapping.storageKey];
   if (!state) return null;
-  if (!mapping.storageKey.startsWith(LEGACY_WORKSPACE_PREFIX)) {
+  if (!pointsToLegacy) {
     return { mapping, state, lang: mapping.lang || "en" };
   }
   return migrateOwnerScopedWorkspace({
@@ -191,8 +202,11 @@ async function migrateOwnerScopedWorkspace({
     if (mappingWriteAttempted) {
       try {
         await sessionStore.set({ [mappingKey]: mapping });
-      } catch {
-        // Preserve the original failure; Chrome storage writes are atomic per call.
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          "Workspace migration failed and mapping rollback failed"
+        );
       }
     }
     throw error;
