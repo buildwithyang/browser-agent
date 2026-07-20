@@ -39,7 +39,7 @@ gateway/app/
 |- modules/
 |  |- auth/           # Casdoor OAuth2 + PKCE 登录，登录态存签名 session cookie
 |  |- resume/         # 简历：OSS 预签名直传 + 服务端 PDF 解析 + 按用户管理
-|  |- task/           # /tasks 请求生命周期：agent 分发 + 简历注入 + 指标落库（TaskCreate/Section 在此）
+|  |- task/           # 协议 gate、Quick Insight、Workspace reducer、指标落库
 |- agents/            # summary_page / job_match 任务执行层，被 modules/task 编排
 
 frontend/               # 独立 React (Vite) 简历管理前端
@@ -47,7 +47,7 @@ deploy/initdb/          # PostgreSQL 权威建表脚本
 ```
 
 说明：`agents/` 不是 `modules/`，是被 `modules/task` 调用的执行层；它依赖 `modules/task/schema`
-（agent 输入契约 `TaskCreate` / 输出区块 `Section`）。因此 `modules/task/__init__.py` 保持轻量，
+（`QuickInsightRequest`、`WorkspaceRequest`、`ChatResult` 等 Agent 契约）。因此 `modules/task/__init__.py` 保持轻量，
 不要在包初始化里 import `service`（会反向依赖 `agents` 造成循环）。
 
 ## Commands

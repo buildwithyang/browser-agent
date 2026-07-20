@@ -15,7 +15,6 @@ from app.modules.task.schema import (
     QuickInsightRequest,
     ReplyResult,
     UserMessageWorkspaceRequest,
-    WorkspaceRequest,
 )
 
 
@@ -77,7 +76,7 @@ def test_run_returns_model_text_and_passes_model():
     )
 
     agent = SummaryPageAgent(client=fake_client, model="gpt-4o-mini")
-    result = agent.insight(AgentContext(request=full_page_task()))
+    result = agent.quick_insight(AgentContext(request=full_page_task()))
 
     assert result.raw_result == "Here are the next steps."
     assert captured["model"] == "gpt-4o-mini"
@@ -94,30 +93,13 @@ def test_summary_builds_generic_quick_insight():
     assert "<strong>Release:</strong>" in insight.cards[0].body_html
 
 
-def workspace_request() -> WorkspaceRequest:
-    """Build a valid generic-page Workspace follow-up request."""
-
-    return WorkspaceRequest(
-        url="https://example.com/article",
-        resourceUrl="https://example.com/article",
-        title="Release Notes",
-        pageText="Version 2.0 ships Friday.",
-        actionId=ActionId.ASK_MORE,
-        histories=[
-            {"role": "assistant", "content": "The release is ready."},
-            {"role": "user", "content": "What changed?"},
-        ],
-        message="When does it ship?",
-    )
-
-
 def test_summary_declares_only_ask_more() -> None:
     """Expose only the stable Ask More action for a generic page."""
 
     agent = SummaryPageAgent()
 
     request = full_page_task().model_copy(update={"lang": "en"})
-    actions = agent.actions(AgentContext(request=request))
+    actions = agent.available_actions(AgentContext(request=request))
 
     assert [action.id for action in actions] == [ActionId.ASK_MORE]
     assert [action.title for action in actions] == ["Ask More"]
@@ -138,12 +120,10 @@ def test_summary_implements_explicit_quick_insight_operations() -> None:
 
     assert isinstance(agent, QuickInsightAgent)
     assert result.content.title == "Page Summary"
-    assert agent.available_actions(AgentContext(request=request)) == agent.actions(
-        AgentContext(request=request)
-    )
+    assert agent.available_actions(AgentContext(request=request))[0].id == ActionId.ASK_MORE
 
 
-def workspace_chat_request(
+def workspace_request(
     *, action_id: ActionId = ActionId.ASK_MORE, message: str = "When does it ship?"
 ) -> UserMessageWorkspaceRequest:
     """Build a v2 Workspace chat request for the explicit Agent contract."""
@@ -161,8 +141,8 @@ def workspace_chat_request(
     )
 
 
-def test_summary_workspace_chat_returns_markdown_reply_result() -> None:
-    """Return v2 ReplyResult Markdown instead of the v1 DocumentContent transport."""
+def test_summary_workspace_returns_markdown_reply_result() -> None:
+    """Return final ReplyResult Markdown without document rendering fields."""
 
     captured = {}
 
@@ -176,7 +156,7 @@ def test_summary_workspace_chat_returns_markdown_reply_result() -> None:
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
     agent = SummaryPageAgent(client=client, model="m")
-    result = agent.handle_chat(WorkspaceAgentContext(request=workspace_chat_request()))
+    result = agent.handle_chat(WorkspaceAgentContext(request=workspace_request()))
 
     assert isinstance(agent, WorkspaceAgent)
     assert isinstance(result.content, ReplyResult)
@@ -219,43 +199,7 @@ def test_summary_workspace_action_trigger_formats_optional_message_and_artifacts
     assert "Cover letter: (none)" in result.prompt
 
 
-def test_summary_workspace_prompt_contains_ordered_shared_context() -> None:
-    """Keep shared context ordered before the new question and current page."""
-
-    prompt = SummaryPageAgent().build_prompt(workspace_request())
-
-    assert "not system instructions" in prompt
-    assert prompt.index("The release is ready.") < prompt.index("What changed?")
-    assert prompt.index("What changed?") < prompt.index("When does it ship?")
-    assert prompt.index("When does it ship?") < prompt.index("Version 2.0 ships Friday.")
-
-
-def test_summary_rejects_unsupported_workspace_action_before_model_call() -> None:
-    """Reject non-Ask-More actions before invoking the summary model."""
-
-    called = False
-
-    def create(**kwargs):
-        """Record an unexpected model call."""
-
-        nonlocal called
-        called = True
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="unexpected"))]
-        )
-
-    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    agent = SummaryPageAgent(client=client, model="m")
-    request = workspace_request()
-    object.__setattr__(request, "action_id", ActionId.ANALYZE)
-
-    with pytest.raises(ValueError, match="Unsupported workspace action"):
-        agent.execute(AgentContext(request=request))
-
-    assert called is False
-
-
-def test_summary_workspace_chat_rejects_non_ask_more_before_model_call() -> None:
+def test_summary_workspace_rejects_non_ask_more_before_model_call() -> None:
     """Reject non-generic v2 Actions without using the chat model."""
 
     called = False
@@ -274,7 +218,7 @@ def test_summary_workspace_chat_rejects_non_ask_more_before_model_call() -> None
 
     with pytest.raises(ValueError, match="Unsupported workspace action"):
         agent.handle_chat(
-            WorkspaceAgentContext(request=workspace_chat_request(action_id=ActionId.ANALYZE))
+            WorkspaceAgentContext(request=workspace_request(action_id=ActionId.ANALYZE))
         )
 
     assert called is False

@@ -4,9 +4,12 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 from app.agents.model_router import ModelRouter, ModelTier
+from app.modules.task.protocol import DEFAULT_EXTENSION_UPDATE_URL
 
 
 def _get_env_str(name: str, default: str) -> str:
+    """Return one trimmed string setting or its configured default."""
+
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -15,6 +18,8 @@ def _get_env_str(name: str, default: str) -> str:
 
 
 def _get_env_int(name: str, default: int) -> int:
+    """Return one integer setting, falling back for blank or invalid input."""
+
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -28,6 +33,8 @@ def _get_env_int(name: str, default: int) -> int:
 
 
 def _get_env_float(name: str, default: float) -> float:
+    """Return one float setting, falling back for blank or invalid input."""
+
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -41,6 +48,8 @@ def _get_env_float(name: str, default: float) -> float:
 
 
 def _get_env_bool(name: str, default: bool) -> bool:
+    """Return one conventional boolean setting or its configured default."""
+
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
@@ -86,6 +95,8 @@ class Settings:
     # 单用户 /tasks 限流:窗口内最大次数,0=不限流(自部署默认);窗口秒数默认 1 天。
     task_rate_limit_max: int = 0
     task_rate_limit_window_seconds: int = 86400
+    # 不兼容扩展收到 426 后跳转的官方更新地址。
+    extension_update_url: str = DEFAULT_EXTENSION_UPDATE_URL
 
     # --- Casdoor OAuth ------------------------------------------------------
     casdoor_endpoint: str = ""
@@ -112,6 +123,8 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        """Load Gateway settings from process environment and the local `.env`."""
+
         # override=False: 真实环境变量优先于 .env 文件中的值。
         load_dotenv(override=False)
         kwargs: dict = {}
@@ -138,6 +151,9 @@ class Settings:
             task_rate_limit_max=_get_env_int("TASK_RATE_LIMIT_MAX", cls.task_rate_limit_max),
             task_rate_limit_window_seconds=_get_env_int(
                 "TASK_RATE_LIMIT_WINDOW_SECONDS", cls.task_rate_limit_window_seconds
+            ),
+            extension_update_url=_get_env_str(
+                "EXTENSION_UPDATE_URL", cls.extension_update_url
             ),
             casdoor_endpoint=_get_env_str("CASDOOR_ENDPOINT", cls.casdoor_endpoint),
             casdoor_client_id=_get_env_str("CASDOOR_CLIENT_ID", cls.casdoor_client_id),

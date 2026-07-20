@@ -5,7 +5,6 @@ from app.agents.base import (
     AgentExecution,
     OpenAIChatAgent,
     QuickInsightAgent,
-    TaskAgent,
     WorkspaceAgent,
     WorkspaceAgentContext,
 )
@@ -14,7 +13,6 @@ from app.modules.task.router import normalize_resource_url
 from app.modules.task.schema import (
     Action,
     ChatResult,
-    DocumentContent,
     Insight,
     QuickInsightRequest,
 )
@@ -132,17 +130,6 @@ def test_from_json_allows_empty_url_and_key():
 class DummyAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
     name = "dummy"
 
-    def actions(self, ctx: AgentContext) -> list[Action]:
-        """Declare no UI actions for model-router unit tests."""
-
-        return []
-
-    def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
-        raise NotImplementedError
-
-    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
-        raise NotImplementedError
-
     def quick_insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
         """Provide the explicit Quick Insight operation for routing tests."""
 
@@ -157,21 +144,6 @@ class DummyAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
         """Provide the explicit Workspace chat operation for routing tests."""
 
         raise NotImplementedError
-
-
-def test_task_agent_keeps_legacy_insight_and_execute_abstract_contract() -> None:
-    """Keep v1 consumers protected until their scheduled migration."""
-
-    class IncompleteLegacyAgent(TaskAgent):
-        """Intentionally omit the v1 execution methods."""
-
-        def actions(self, ctx: AgentContext) -> list[Action]:
-            """Provide the sole method needed to isolate the abstract contract."""
-
-            return []
-
-    with pytest.raises(TypeError, match="insight.*execute|execute.*insight"):
-        IncompleteLegacyAgent()
 
 
 def test_agent_pick_model_routes_by_length():

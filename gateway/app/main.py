@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.job_match import JobMatchAgent
-from app.agents.base import TaskAgent
+from app.agents.base import RegisteredAgent
 from app.agents.summary_page import SummaryPageAgent
 from app.config import settings
 from app.core import (
@@ -27,6 +27,7 @@ from app.modules.resume.api import router as resume_router
 from app.modules.task.api import router as task_router
 from app.modules.task.legacy.api import router as legacy_task_router
 from app.modules.task.repo import TaskRepository
+from app.modules.task.protocol import EXTENSION_PROTOCOL_HEADER, TaskProtocolMiddleware
 from app.modules.task.schema import AgentName
 from app.modules.task.service import TaskService
 
@@ -47,7 +48,7 @@ if not logger.handlers:
     logger.propagate = False
 
 _agent_opts: dict[str, Any] = dict(router=settings.model_router)
-agents: dict[AgentName, TaskAgent] = {
+agents: dict[AgentName, RegisteredAgent] = {
     AgentName.SUMMARY_PAGE: SummaryPageAgent(**_agent_opts),
     AgentName.JOB_MATCH: JobMatchAgent(**_agent_opts),
 }
@@ -55,6 +56,8 @@ agents: dict[AgentName, TaskAgent] = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Assemble application-scoped repositories and services for one process."""
+
     # 建库（默认 SQLite，自动建表）。无 DATABASE_URL 时各 repo 为 None，
     # 登录/简历接口会明确报错，任务摘要等无状态能力仍可用（任务指标不落库）。
     db_resources = create_database_resources(settings)
@@ -105,6 +108,12 @@ app.add_middleware(
     https_only=settings.auth_cookie_secure,
 )
 
+# 扩展协议在 session/auth/body 解析前拒绝旧客户端；Starlette 按 add 顺序反向包裹。
+app.add_middleware(
+    TaskProtocolMiddleware,
+    update_url=settings.extension_update_url,
+)
+
 # CORS:简历管理前端走带 cookie 的跨域请求(allow_credentials),所以必须回显具体
 # Origin 而非 "*"。浏览器扩展通过 host_permissions 直连 /tasks,不受 CORS 约束。
 _frontend = urlsplit(settings.auth_frontend_redirect_url)
@@ -116,6 +125,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[EXTENSION_PROTOCOL_HEADER],
 )
 
 app.include_router(auth_router)
@@ -126,4 +136,6 @@ app.include_router(legacy_task_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    """Return the process liveness marker."""
+
     return {"status": "ok"}

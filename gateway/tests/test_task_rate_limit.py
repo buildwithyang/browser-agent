@@ -12,7 +12,7 @@ from app import main
 from app.agents.base import (
     AgentContext,
     AgentExecution,
-    TaskAgent,
+    QuickInsightAgent,
     WorkspaceAgent,
     WorkspaceAgentContext,
 )
@@ -24,7 +24,6 @@ from app.modules.task.schema import (
     ActionId,
     AgentName,
     ChatResult,
-    DocumentContent,
     Insight,
     QuickInsightRequest,
     ReplyResult,
@@ -67,24 +66,23 @@ def test_count_since(tmp_path):
 def test_service_blocks_after_max(tmp_path):
     repo = _repo(tmp_path)
 
-    class Agent(TaskAgent):
+    class Agent(QuickInsightAgent):
         name = AgentName.SUMMARY_PAGE
 
-        def actions(self, ctx: AgentContext) -> list[Action]:
+        requires_resume = False
+
+        def available_actions(self, ctx: AgentContext) -> list[Action]:
             """Declare no actions for the rate-limit fake."""
 
             return []
 
-        def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        def quick_insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
             return AgentExecution(
                 content=Insight(title="Summary", cards=[]),
                 raw_result="ok",
                 prompt="P",
                 model="m",
             )
-
-        def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
-            raise NotImplementedError
 
     agent = Agent()
     svc = TaskService(
@@ -113,39 +111,29 @@ def test_api_maps_rate_limit_to_429(monkeypatch):
         AuthService(settings=main.settings, repository=None), raising=False,
     )
     client = TestClient(main.app)
-    r = client.post("/tasks/quick-insight", json={"url": "https://x"})
+    r = client.post(
+        "/tasks/quick-insight",
+        headers={"X-Agent-Bridge-Protocol-Version": "2"},
+        json={"url": "https://x"},
+    )
     assert r.status_code == 429
 
 
-def test_workspace_chat_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
+def test_workspace_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
     """Apply the shared operational quota before each v2 Agent call."""
 
     repo = _repo(tmp_path)
 
-    class Agent(TaskAgent, WorkspaceAgent):
+    class Agent(WorkspaceAgent):
         """Return one deterministic reply while counting v2 calls."""
 
         name = AgentName.SUMMARY_PAGE
+        requires_resume = False
 
         def __init__(self) -> None:
             """Start with no Workspace calls."""
 
             self.calls = 0
-
-        def actions(self, ctx: AgentContext) -> list[Action]:
-            """Declare no Quick Insight actions."""
-
-            return []
-
-        def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
-            """Keep the unrelated legacy contract concrete."""
-
-            raise NotImplementedError
-
-        def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
-            """Reject accidental legacy execution."""
-
-            raise AssertionError("workspace_chat must not call execute")
 
         def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
             """Count and return one v2 reply execution."""
@@ -177,8 +165,8 @@ def test_workspace_chat_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
         message="Question",
     )
 
-    service.workspace_chat(request, user_id=USER)
+    service.workspace(request, user_id=USER)
     with pytest.raises(RateLimitError):
-        service.workspace_chat(request, user_id=USER)
+        service.workspace(request, user_id=USER)
 
     assert agent.calls == 1

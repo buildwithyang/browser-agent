@@ -1,42 +1,22 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
+from starlette.responses import JSONResponse
 
-from app.modules.task.api import _map_error, _user_id, get_task_service
-from app.modules.task.legacy.adapter import (
-    from_quick_response,
-    from_task_response,
-    is_quick_request,
-    to_quick_request,
-    to_task_request,
+from app.modules.task.protocol import (
+    DEFAULT_EXTENSION_UPDATE_URL,
+    upgrade_required_response,
 )
-from app.modules.task.legacy.schema import LegacyTaskRequest, LegacyTaskResponse
-from app.modules.task.service import RateLimitError, TaskExecutionError
 
 router = APIRouter(tags=["tasks-legacy"])
 
 
-@router.post("/tasks", response_model=LegacyTaskResponse, deprecated=True)
-def create_legacy_task(task: LegacyTaskRequest, request: Request) -> LegacyTaskResponse:
-    """Serve the deployed `/tasks` protocol through the shared TaskService."""
+@router.post("/tasks", deprecated=True)
+def create_legacy_task(request: Request) -> JSONResponse:
+    """Return the shared upgrade response without declaring or reading a body."""
 
-    service = get_task_service(request)
-    try:
-        user_id = _user_id(request)
-        if is_quick_request(task):
-            return from_quick_response(
-                service.quick_insight(
-                    to_quick_request(task),
-                    user_id=user_id,
-                    agent_override=task.agent,
-                ),
-                legacy_request=task,
-            )
-        return from_task_response(
-            service.execute(
-                to_task_request(task),
-                user_id=user_id,
-                agent_override=task.agent,
-            ),
-            legacy_request=task,
-        )
-    except (RateLimitError, ValueError, TaskExecutionError) as exc:
-        raise _map_error(exc) from exc
+    settings = getattr(request.app.state, "settings", None)
+    update_url = getattr(
+        settings,
+        "extension_update_url",
+        DEFAULT_EXTENSION_UPDATE_URL,
+    )
+    return upgrade_required_response(update_url)

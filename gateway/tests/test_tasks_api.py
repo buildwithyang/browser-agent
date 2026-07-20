@@ -29,6 +29,7 @@ def test_quick_insight_rejects_public_agent_field(monkeypatch) -> None:
 
     response = TestClient(main.app).post(
         "/tasks/quick-insight",
+        headers={"X-Agent-Bridge-Protocol-Version": "2"},
         json={"agent": "codex", "url": "https://example.com"},
     )
 

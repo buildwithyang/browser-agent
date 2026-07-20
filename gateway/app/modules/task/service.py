@@ -12,11 +12,11 @@ from pydantic import BaseModel, TypeAdapter
 from app.agents.base import (
     AgentContext,
     AgentExecution,
-    TaskAgent,
+    QuickInsightAgent,
+    RegisteredAgent,
     WorkspaceAgent,
     WorkspaceAgentContext,
 )
-from app.render import render_markdown
 from app.modules.resume import ResumeService
 from app.modules.task.repo import TaskRepository
 from app.modules.task.router import normalize_resource_url, route_browser_task
@@ -30,7 +30,6 @@ from app.modules.task.schema import (
     Attachment,
     ChatResult,
     CreateArtifactResult,
-    DocumentContent,
     ExecutionMeta,
     HistoryMessage,
     Insight,
@@ -38,21 +37,16 @@ from app.modules.task.schema import (
     QuickInsightRequest,
     QuickInsightResponse,
     ReplyResult,
-    Section,
     TaskRecordData,
-    TaskRequest,
-    TaskResponse,
     UpdateArtifactResult,
     UserMessageWorkspaceRequest,
-    WorkspaceChatRequest,
-    WorkspaceChatResponse,
     WorkspaceDescriptor,
     WorkspaceRequest,
     WorkspaceResponse,
 )
 
 logger = logging.getLogger("agent_bridge")
-ContentT = TypeVar("ContentT", Insight, DocumentContent, ChatResult)
+ContentT = TypeVar("ContentT", Insight, ChatResult)
 CV_PREVIEW_URL = "https://browser.buildwithyang.com"
 _CHAT_RESULT_ADAPTER = TypeAdapter(ChatResult)
 
@@ -90,7 +84,7 @@ def _artifact_for_type(
 
 
 def _validate_workspace_transition(
-    request: WorkspaceChatRequest,
+    request: WorkspaceRequest,
     result: object,
 ) -> ChatResult:
     """Validate one Agent result and its create/update precondition before allocation."""
@@ -117,7 +111,7 @@ def _validate_workspace_transition(
 
 
 def _validated_workspace_execution(
-    request: WorkspaceChatRequest,
+    request: WorkspaceRequest,
     execution: AgentExecution[ChatResult],
 ) -> AgentExecution[ChatResult]:
     """Fully revalidate Agent output before checking transition preconditions."""
@@ -138,7 +132,7 @@ def _validated_workspace_execution(
 
 
 def _reduce_workspace_state(
-    request: WorkspaceChatRequest,
+    request: WorkspaceRequest,
     result: ChatResult,
     *,
     identity: _WorkspaceTransitionIdentity,
@@ -214,7 +208,7 @@ def _reduce_workspace_state(
 
 
 def _allocate_workspace_transition_identity(
-    request: WorkspaceChatRequest,
+    request: WorkspaceRequest,
     result: ChatResult,
     *,
     new_id: Callable[[], uuid.UUID],
@@ -257,7 +251,7 @@ class TaskService:
     def __init__(
         self,
         *,
-        agents: dict[AgentName, TaskAgent],
+        agents: dict[AgentName, RegisteredAgent],
         repository: TaskRepository | None,
         resume_service: ResumeService | None,
         default_model: str,
@@ -286,23 +280,22 @@ class TaskService:
         request: QuickInsightRequest,
         *,
         user_id: str | None,
-        agent_override: AgentName | None = None,
     ) -> QuickInsightResponse:
         """Execute Quick Insight and describe the page's stable Workspace."""
 
         resource_url = normalize_resource_url(request.url)
-        routed, agent = self._resolve_agent(request, agent_override=agent_override)
+        routed, agent = self._resolve_agent(request)
         execution, meta, ctx = self._execute_agent(
             request,
             agent_name=routed,
             agent=agent,
             user_id=user_id,
-            operation=lambda ctx: agent.insight(ctx),
+            operation=lambda ctx: agent.quick_insight(ctx),
         )
         return QuickInsightResponse(
             request=request,
             insight=execution.content,
-            actions=agent.actions(ctx),
+            actions=agent.available_actions(ctx),
             workspace=WorkspaceDescriptor(
                 resource_url=resource_url,
                 default_action_id=(
@@ -314,74 +307,12 @@ class TaskService:
             meta=meta,
         )
 
-    def execute(
-        self,
-        request: TaskRequest,
-        *,
-        user_id: str | None,
-        agent_override: AgentName | None = None,
-    ) -> TaskResponse:
-        """Execute the legacy task document flow with an internal Agent override."""
-
-        routed, agent = self._resolve_agent(request, agent_override=agent_override)
-        execution, meta, _ = self._execute_agent(
-            request,
-            agent_name=routed,
-            agent=agent,
-            user_id=user_id,
-            operation=lambda ctx: agent.execute(ctx),
-        )
-        return TaskResponse(request=request, document=execution.content, meta=meta)
-
     def workspace(
         self,
         request: WorkspaceRequest,
         *,
         user_id: str | None,
     ) -> WorkspaceResponse:
-        """Validate identity and perform one deterministic Workspace transition."""
-
-        resource_url = normalize_resource_url(request.url)
-        if request.resource_url != resource_url:
-            raise ValueError("resourceUrl does not match normalized url")
-
-        routed, agent = self._resolve_agent(request)
-        execution, meta, _ = self._execute_agent(
-            request,
-            agent_name=routed,
-            agent=agent,
-            user_id=user_id,
-            operation=lambda ctx: agent.execute(ctx),
-        )
-        # The gateway owns identity/timestamps for the two messages created by
-        # this transition; existing validated histories remain unchanged.
-        histories = [
-            *request.histories,
-            HistoryMessage(
-                role="user",
-                content=request.message,
-                action_id=request.action_id,
-            ),
-            HistoryMessage(
-                role="assistant",
-                content=execution.content.text,
-                action_id=request.action_id,
-            ),
-        ]
-        return WorkspaceResponse(
-            resource_url=resource_url,
-            selected_action_id=request.action_id,
-            histories=histories,
-            document=self._workspace_document(request, execution.content),
-            meta=meta,
-        )
-
-    def workspace_chat(
-        self,
-        request: WorkspaceChatRequest,
-        *,
-        user_id: str | None,
-    ) -> WorkspaceChatResponse:
         """Execute one v2 Agent call and atomically reduce its complete next state."""
 
         resource_url = normalize_resource_url(request.url)
@@ -410,7 +341,7 @@ class TaskService:
                 execution.content,
                 identity=identity,
             )
-            response = WorkspaceChatResponse(
+            response = WorkspaceResponse(
                 resource_url=resource_url,
                 selected_action_id=request.action_id,
                 result_type=execution.content.type,
@@ -424,44 +355,13 @@ class TaskService:
         self._complete_staged_agent_operation(outcome)
         return response
 
-    @staticmethod
-    def _workspace_document(
-        request: WorkspaceRequest,
-        generated: DocumentContent,
-    ) -> DocumentContent | None:
-        """Return the complete latest artifact after one Workspace transition."""
-
-        if request.action_id != ActionId.ASK_MORE:
-            return generated
-        draft = request.current_document
-        if draft is None:
-            return None
-        rendered = render_markdown(draft.text)
-        return DocumentContent(
-            kind=draft.kind,
-            title=draft.title,
-            text=draft.text,
-            html=rendered,
-            sections=(
-                [Section(id="result", title="", html=rendered)]
-                if rendered
-                else []
-            ),
-        )
-
     def _resolve_agent(
         self,
         request: PageContext,
-        *,
-        agent_override: AgentName | None = None,
-    ) -> tuple[AgentName, TaskAgent]:
+    ) -> tuple[AgentName, RegisteredAgent]:
         """Resolve a public page request to one internal stateless Agent."""
 
-        routed = (
-            route_browser_task(request)
-            if agent_override in {None, AgentName.BROWSER_AGENT}
-            else agent_override
-        )
+        routed = route_browser_task(request)
         agent = self._agents.get(routed)
         if agent is None:
             raise ValueError(f"Unsupported agent: {routed}")
@@ -472,7 +372,7 @@ class TaskService:
         request: PageContext,
         *,
         agent_name: AgentName,
-        agent: TaskAgent,
+        agent: QuickInsightAgent,
         user_id: str | None,
         operation: Callable[[AgentContext], AgentExecution[ContentT]],
     ) -> tuple[AgentExecution[ContentT], ExecutionMeta, AgentContext]:
@@ -483,9 +383,6 @@ class TaskService:
 
         resume_text = self._resolve_cv_text(user_id) if agent.requires_resume else None
         ctx = AgentContext(request=request, resume_text=resume_text)
-        # Stable contract: every agent validates explicitly; no reflection or concrete-type checks.
-        agent.validate(ctx)
-
         execution, meta = self._run_agent_operation(
             request,
             agent_name=agent_name,
@@ -496,10 +393,10 @@ class TaskService:
 
     def _execute_workspace_agent(
         self,
-        request: WorkspaceChatRequest,
+        request: WorkspaceRequest,
         *,
         agent_name: AgentName,
-        agent: TaskAgent,
+        agent: RegisteredAgent,
         user_id: str | None,
     ) -> tuple[_StagedAgentOperation[ChatResult], WorkspaceAgentContext]:
         """Prepare dependencies and stage one timed Workspace Agent outcome."""
@@ -651,11 +548,15 @@ class TaskService:
         raise TaskExecutionError(str(exc)) from exc
 
     def recent_for_user(self, *, user_id: str, limit: int = 50) -> list[TaskRecordData]:
+        """Return recent operational task records when persistence is configured."""
+
         if self._repository is None:
             return []
         return self._repository.list_recent(user_id=user_id, limit=limit)
 
     def _enforce_rate_limit(self, user_id: str | None) -> None:
+        """Reject an identified user whose configured task quota is exhausted."""
+
         # 仅对已识别用户限流;匿名(自部署)不限。0 = 关闭。
         if user_id is None or self._repository is None or self._rate_limit_max <= 0:
             return
@@ -667,6 +568,8 @@ class TaskService:
             )
 
     def _resolve_cv_text(self, user_id: str | None) -> str | None:
+        """Resolve the current user's active CV text for a request-scoped Agent context."""
+
         if user_id is None:
             return None
         if self._resume_service is None:
@@ -692,6 +595,8 @@ class TaskService:
         prompt: str = "",
         result: str = "",
     ) -> None:
+        """Persist one operational task record without failing the user response."""
+
         if self._repository is None:
             return
         detail = {

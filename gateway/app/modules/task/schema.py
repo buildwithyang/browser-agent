@@ -69,12 +69,8 @@ PAGE_TEXT_MAX_CHARS = 200_000
 SELECTED_TEXT_MAX_CHARS = 100_000
 IMAGE_TEXT_MAX_CHARS = 50_000
 USER_MESSAGE_MAX_CHARS = 10_000
-# Assistant histories are copied from DocumentContent.text, so both share one cap.
+# Assistant histories and complete Artifact drafts share one bounded text cap.
 DOCUMENT_TEXT_MAX_CHARS = 100_000
-DOCUMENT_DRAFT_KIND_MAX_CHARS = 100
-DOCUMENT_DRAFT_TITLE_MAX_CHARS = 500
-# Preserve every valid generated document across the next stateless Workspace turn.
-DOCUMENT_DRAFT_TEXT_MAX_CHARS = DOCUMENT_TEXT_MAX_CHARS
 ATTACHMENT_CV_CONTENT_MAX_CHARS = 4_096
 TITLE_MAX_CHARS = 500
 ARTIFACT_VERSION_MAX = 2_147_483_647
@@ -98,28 +94,6 @@ class PageContext(BaseModel):
 
 class QuickInsightRequest(PageContext):
     """Quick Insight 场景输入；只产生 Insight，不产生文档区块。"""
-
-
-class TaskRequest(PageContext):
-    """旧 `/tasks` 内部执行输入；不属于新的公共 wire contract。"""
-
-    action_id: str = Field(alias="actionId", min_length=1, max_length=100)
-    prior_result: str | None = Field(default=None, alias="priorResult", max_length=50_000)
-    message: str = Field(default="", max_length=USER_MESSAGE_MAX_CHARS)
-
-
-class Section(BaseModel):
-    """agent 结果中的一个可渲染区块（折叠面板 UI 用）。
-
-    是否折叠由前端按长度决定，网关只标注是否值得提供「复制」按钮。
-    """
-
-    id: str
-    title: str
-    html: str  # sanitized HTML (rendered from the section's Markdown)
-    copyable: bool = False
-    # False = 前端始终展开(如业务介绍);True = 内容超长时前端自动折叠。
-    collapsible: bool = True
 
 
 class InsightItem(BaseModel):
@@ -253,16 +227,6 @@ class HistoryMessage(BaseModel):
         return self
 
 
-class DocumentDraft(BaseModel):
-    """Transitional v1 document input kept until Task 8 migrates consumers."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: str = Field("", max_length=DOCUMENT_DRAFT_KIND_MAX_CHARS)
-    title: str = Field("", max_length=DOCUMENT_DRAFT_TITLE_MAX_CHARS)
-    text: str = Field("", max_length=DOCUMENT_DRAFT_TEXT_MAX_CHARS)
-
-
 def validate_workspace_state(histories: list[HistoryMessage], artifacts: Artifacts) -> None:
     """Validate cross-object identity, reference and latest-snapshot invariants."""
 
@@ -342,41 +306,10 @@ class QuickInsightActionWorkspaceRequest(WorkspaceRequestBase):
         return self
 
 
-WorkspaceChatRequest = Annotated[
+WorkspaceRequest = Annotated[
     UserMessageWorkspaceRequest | QuickInsightActionWorkspaceRequest,
     Field(discriminator="trigger"),
 ]
-
-
-class DocumentContent(BaseModel):
-    """Transitional v1 document output kept until Task 8 migrates consumers."""
-
-    kind: str = ""
-    title: str = ""
-    text: str = Field("", max_length=DOCUMENT_TEXT_MAX_CHARS)
-    html: str = ""
-    sections: list[Section] = Field(default_factory=list)
-
-
-class WorkspaceRequest(PageContext):
-    """Transitional v1 Workspace input kept for unmigrated runtime consumers."""
-
-    resource_url: str = Field(alias="resourceUrl")
-    action_id: ActionId = Field(alias="actionId")
-    histories: list[HistoryMessage] = Field(default_factory=list, max_length=10)
-    current_document: DocumentDraft | None = Field(
-        default=None,
-        alias="currentDocument",
-    )
-    message: str = Field(min_length=1, max_length=USER_MESSAGE_MAX_CHARS)
-
-    @model_validator(mode="after")
-    def validate_message_limit(self) -> "WorkspaceRequest":
-        """Count the current user message against the legacy ten-message input cap."""
-
-        if len(self.histories) + 1 > 10:
-            raise ValueError("histories plus current message must not exceed 10")
-        return self
 
 
 class ExecutionMeta(BaseModel):
@@ -442,7 +375,7 @@ class QuickInsightResponse(BaseModel):
     )
 
 
-class WorkspaceChatResponse(BaseModel):
+class WorkspaceResponse(BaseModel):
     """Protocol-v2 Markdown-only complete Workspace state returned to the Extension."""
 
     model_config = ConfigDict(extra="forbid")
@@ -458,31 +391,11 @@ class WorkspaceChatResponse(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_response_state(self) -> "WorkspaceChatResponse":
+    def validate_response_state(self) -> "WorkspaceResponse":
         """Apply the same state invariants used for both incoming trigger variants."""
 
         validate_workspace_state(self.histories, self.artifacts)
         return self
-
-
-class WorkspaceResponse(BaseModel):
-    """Transitional v1 Workspace document response kept for runtime compatibility."""
-
-    resource_url: str
-    selected_action_id: ActionId
-    histories: list[HistoryMessage]
-    document: DocumentContent | None
-    meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
-
-
-class TaskResponse(BaseModel):
-    """已部署 legacy `/tasks` 的内部文档响应。"""
-
-    request: TaskRequest
-    document: DocumentContent
-    meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
-
-
 class TaskRecordData(BaseModel):
     """落库的任务记录领域对象。
 

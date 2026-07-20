@@ -4,7 +4,7 @@ from app.modules.task.schema import (
     ActionId,
     Artifacts,
     HistoryMessage,
-    WorkspaceChatRequest,
+    WorkspaceRequest,
     WorkspaceTrigger,
 )
 
@@ -14,7 +14,7 @@ class JobChatContext:
     """Immutable request-scoped state for one future job Workspace transition."""
 
     trigger: WorkspaceTrigger
-    request: WorkspaceChatRequest
+    request: WorkspaceRequest
     resume_text: str | None
     histories: tuple[HistoryMessage, ...]
     artifacts: Artifacts

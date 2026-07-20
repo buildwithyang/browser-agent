@@ -19,7 +19,9 @@ def run_with_lang(lang: str) -> str:
         chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
     )
     task = QuickInsightRequest(url="https://x.com", title="t", page_text="body", lang=lang)
-    SummaryPageAgent(client=fake_client, model="m").insight(AgentContext(request=task))
+    SummaryPageAgent(client=fake_client, model="m").quick_insight(
+        AgentContext(request=task)
+    )
     return captured["messages"][0]["content"]
 
 
@@ -40,8 +42,8 @@ def test_default_lang_is_auto():
     assert task.lang == "auto"
 
 
-def test_workspace_chat_uses_language_directive() -> None:
-    """Apply output-language constraints to the explicit Workspace chat path."""
+def test_workspace_uses_language_directive() -> None:
+    """Apply output-language constraints to the explicit Workspace path."""
 
     captured = {}
 

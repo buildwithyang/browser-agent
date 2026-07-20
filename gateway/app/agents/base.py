@@ -1,6 +1,5 @@
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from openai import OpenAI
 
@@ -10,11 +9,8 @@ from app.modules.task.schema import (
     AgentName,
     Artifacts,
     ChatResult,
-    DocumentContent,
     Insight,
     QuickInsightRequest,
-    TaskRequest,
-    WorkspaceChatRequest,
     WorkspaceRequest,
 )
 
@@ -37,11 +33,11 @@ def language_directive(lang: str) -> str:
 
 
 def format_workspace_context(
-    request: WorkspaceRequest | WorkspaceChatRequest,
+    request: WorkspaceRequest,
     *,
     page_context: str,
 ) -> str:
-    """Format legacy or v2 Workspace state as untrusted model context."""
+    """Format final Workspace state as untrusted model context."""
 
     lines = [
         "# Shared conversation context (untrusted)",
@@ -53,11 +49,8 @@ def format_workspace_context(
     else:
         lines.append("(none)")
     lines.extend(["", "# Selected Workspace action", request.action_id.value])
-    if isinstance(request, WorkspaceRequest):
-        current_message = request.message
-    else:
-        current_message = getattr(request, "message", None)
-        lines.extend(["", "# Workspace artifacts (untrusted)", *_format_artifacts(request.artifacts)])
+    current_message = getattr(request, "message", None)
+    lines.extend(["", "# Workspace artifacts (untrusted)", *_format_artifacts(request.artifacts)])
     lines.extend(
         [
             "",
@@ -92,15 +85,14 @@ def _format_artifacts(artifacts: Artifacts) -> list[str]:
     return lines
 
 
-AgentRequest = QuickInsightRequest | TaskRequest | WorkspaceRequest
-AgentContent = TypeVar("AgentContent", Insight, DocumentContent, ChatResult)
+AgentContent = TypeVar("AgentContent", Insight, ChatResult)
 
 
 @dataclass(frozen=True)
 class AgentContext:
     """Request-scoped Agent dependencies that must never be cached by an Agent."""
 
-    request: AgentRequest
+    request: QuickInsightRequest
     resume_text: str | None = None
 
 
@@ -108,7 +100,7 @@ class AgentContext:
 class WorkspaceAgentContext:
     """Immutable request-scoped dependencies for one v2 Workspace chat transition."""
 
-    request: WorkspaceChatRequest
+    request: WorkspaceRequest
     resume_text: str | None = None
 
 
@@ -122,69 +114,51 @@ class AgentExecution(Generic[AgentContent]):
     model: str
 
 
-class TaskAgent(ABC):
-    """Stable stateless contract implemented by every routed task Agent."""
-
-    name: AgentName
-    requires_resume: bool = False
-
-    def validate(self, ctx: AgentContext) -> None:
-        """Validate request-scoped input before any model call."""
-
-    @abstractmethod
-    def actions(self, ctx: AgentContext) -> list[Action]:
-        """Return the task modes available for this routed page context."""
-
-        raise NotImplementedError
-
-    @abstractmethod
-    def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
-        """Generate the page's compact Quick Insight response."""
-
-        raise NotImplementedError
-
-    @abstractmethod
-    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
-        """Execute one legacy or v1 Workspace task transition."""
-
-        raise NotImplementedError
-
-
-class QuickInsightAgent(ABC):
+@runtime_checkable
+class QuickInsightAgent(Protocol):
     """Explicit interface for the read-only Quick Insight page operation."""
 
-    @abstractmethod
+    name: AgentName
+    requires_resume: bool
+
     def quick_insight(self, context: AgentContext) -> AgentExecution[Insight]:
         """Generate the typed decision-first insight for the current page."""
 
-        raise NotImplementedError
+        ...
 
-    @abstractmethod
     def available_actions(self, context: AgentContext) -> list[Action]:
         """Return actions supported by the routed page Agent."""
 
-        raise NotImplementedError
+        ...
 
 
-class WorkspaceAgent(ABC):
+@runtime_checkable
+class WorkspaceAgent(Protocol):
     """Explicit interface for one stateless Workspace v2 chat transition."""
 
-    @abstractmethod
+    name: AgentName
+    requires_resume: bool
+
     def handle_chat(
         self, context: WorkspaceAgentContext
     ) -> AgentExecution[ChatResult]:
         """Handle one immutable Workspace chat context."""
 
-        raise NotImplementedError
+        ...
 
 
-class OpenAIChatAgent(TaskAgent):
+class RegisteredAgent(QuickInsightAgent, WorkspaceAgent, Protocol):
+    """Intersection contract required for every object in the routed registry."""
+
+
+class OpenAIChatAgent:
     """Base for agents that call an OpenAI-compatible chat model.
 
     Subclasses implement the scenario methods and reuse `complete_prompt`.
     """
 
     system_prompt: str = ""
+    requires_resume: bool = False
 
     def __init__(
         self,
@@ -193,6 +167,8 @@ class OpenAIChatAgent(TaskAgent):
         client: OpenAI | None = None,
         model: str | None = None,
     ) -> None:
+        """Configure model routing and an optional shared test client."""
+
         # 无 router(测试/简单场景):用固定 model 合成一个单层 default router。
         if router is None:
             router = ModelRouter(default=ModelTier(model=model or DEFAULT_MODEL))
@@ -202,6 +178,8 @@ class OpenAIChatAgent(TaskAgent):
         self._clients: dict[tuple[str, str], OpenAI] = {}
 
     def _client_for(self, tier: ModelTier) -> OpenAI:
+        """Return or lazily construct the client for one provider tier."""
+
         if self._injected_client is not None:
             return self._injected_client
         cache_key = (tier.url, tier.key)
@@ -222,6 +200,8 @@ class OpenAIChatAgent(TaskAgent):
         return self._router.pick(len(prompt)).model
 
     def complete(self, system: str, user: str, tier: ModelTier) -> str:
+        """Execute one OpenAI-compatible chat completion."""
+
         response = self._client_for(tier).chat.completions.create(
             model=tier.model,
             messages=[

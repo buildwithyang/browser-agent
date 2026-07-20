@@ -10,7 +10,6 @@ from app.modules.task.schema import (
     PageContext,
     QuickInsightRequest,
     ScoreInsightCard,
-    TaskRequest,
     TextInsightCard,
 )
 from app.render import render_markdown
@@ -60,10 +59,8 @@ def insight_title(lang: str) -> str:
 
 
 def validate_job_request(request: PageContext) -> None:
-    """Reject sparse job evidence unless a legacy continuation already has analysis."""
+    """Reject sparse job evidence before any Quick Insight model call."""
 
-    if isinstance(request, TaskRequest) and request.prior_result and request.prior_result.strip():
-        return
     if len(request.selected_text.strip()) < MIN_JOB_CONTENT_CHARS:
         raise ValueError(
             f"选中的职位描述太少(不足 {MIN_JOB_CONTENT_CHARS} 字),JD 资料不足以可靠匹配。"

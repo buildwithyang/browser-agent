@@ -13,12 +13,10 @@ from app.agents.base import (
     WorkspaceAgentContext,
 )
 from app.agents.job_match.context import JobChatContext
-from app.agents.job_match.legacy import LegacyJobMatchExecutor, SYSTEM_PROMPT
 from app.agents.job_match.quick_insight import (
     MIN_JOB_CONTENT_CHARS,
     WORKSPACE_ACTION_TITLES,
     JobQuickInsightAgent,
-    validate_job_request,
 )
 from app.agents.job_match.router import IntentRouter, SpecialistId
 from app.agents.job_match.specialists.analysis import JobAnalysisAgent
@@ -39,12 +37,10 @@ from app.modules.task.schema import (
     ArtifactType,
     ChatResult,
     CreateArtifactResult,
-    DocumentContent,
     Insight,
     ReplyResult,
     UpdateArtifactResult,
     WorkspaceResultType,
-    WorkspaceRequest,
     WorkspaceTrigger,
 )
 
@@ -81,7 +77,6 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
 
     name = AgentName.JOB_MATCH
     requires_resume = True
-    system_prompt = SYSTEM_PROMPT
 
     def __init__(
         self,
@@ -96,10 +91,6 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
         super().__init__(*args, **kwargs)
         self.cv_path = Path(cv_path or DEFAULT_CV_PATH)
         self._quick_insight = JobQuickInsightAgent(
-            complete_prompt=self.complete_prompt,
-            resolve_resume_text=self._resolve_resume_text,
-        )
-        self._legacy = LegacyJobMatchExecutor(
             complete_prompt=self.complete_prompt,
             resolve_resume_text=self._resolve_resume_text,
         )
@@ -303,18 +294,6 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
             )
         return text
 
-    def validate(self, context: AgentContext) -> None:
-        """Validate job evidence and transitional v1 Workspace Actions."""
-
-        validate_job_request(context.request)
-        if isinstance(context.request, WorkspaceRequest):
-            self._legacy.validate_workspace_action(context.request)
-
-    def actions(self, context: AgentContext) -> list[Action]:
-        """Bridge the transitional TaskAgent Action contract."""
-
-        return self.available_actions(context)
-
     def available_actions(self, context: AgentContext) -> list[Action]:
         """Declare the ordered job Workspace Actions for the request language."""
 
@@ -325,20 +304,9 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
             for action_id in JOB_WORKSPACE_ACTION_IDS
         ]
 
-    def insight(self, context: AgentContext) -> AgentExecution[Insight]:
-        """Bridge the transitional TaskAgent insight contract."""
-
-        return self.quick_insight(context)
-
     def quick_insight(self, context: AgentContext) -> AgentExecution[Insight]:
         """Delegate a stateless decision-first Quick Insight operation."""
 
         return self._quick_insight.execute(context)
-
-    def execute(self, context: AgentContext) -> AgentExecution[DocumentContent]:
-        """Delegate the temporary v1 document flow until the Task 8 shim."""
-
-        return self._legacy.execute(context)
-
 
 __all__ = ["JobMatchAgent", "JobMatchOrchestrationError", "MIN_JOB_CONTENT_CHARS"]

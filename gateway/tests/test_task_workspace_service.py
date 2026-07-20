@@ -10,14 +10,11 @@ import pytest
 from pydantic import ValidationError
 
 from app.agents.base import (
-    AgentContext,
     AgentExecution,
-    TaskAgent,
     WorkspaceAgent,
     WorkspaceAgentContext,
 )
 from app.modules.task.schema import (
-    Action,
     ActionId,
     AgentName,
     Artifact,
@@ -26,9 +23,7 @@ from app.modules.task.schema import (
     Attachment,
     ChatResult,
     CreateArtifactResult,
-    DocumentContent,
     HistoryMessage,
-    Insight,
     QuickInsightActionWorkspaceRequest,
     ReplyResult,
     TaskRecordData,
@@ -43,7 +38,7 @@ FIXED_NOW = datetime(2026, 7, 20, 12, 30, tzinfo=timezone.utc)
 CV_PREVIEW_URL = "https://browser.buildwithyang.com"
 
 
-class FakeWorkspaceAgent(TaskAgent, WorkspaceAgent):
+class FakeWorkspaceAgent(WorkspaceAgent):
     """Return one prepared v2 execution while recording request-scoped context."""
 
     name = AgentName.SUMMARY_PAGE
@@ -61,21 +56,6 @@ class FakeWorkspaceAgent(TaskAgent, WorkspaceAgent):
         self.error = error
         self.requires_resume = requires_resume
         self.calls: list[WorkspaceAgentContext] = []
-
-    def actions(self, ctx: AgentContext) -> list[Action]:
-        """Declare no Quick Insight actions for reducer tests."""
-
-        return []
-
-    def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
-        """Keep the unrelated legacy Quick Insight contract concrete."""
-
-        raise NotImplementedError
-
-    def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
-        """Fail if the v2 Service accidentally calls the legacy document path."""
-
-        raise AssertionError("workspace_chat must not call execute")
 
     def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
         """Record the v2 context and return or raise the prepared outcome."""
@@ -299,7 +279,7 @@ def test_user_message_appends_user_then_assistant_with_gateway_identity() -> Non
     """Append exactly two server-owned messages for a user-message trigger."""
 
     agent = FakeWorkspaceAgent(_reply())
-    response = _service(agent, uuid_values=(1, 2)).workspace_chat(
+    response = _service(agent, uuid_values=(1, 2)).workspace(
         _user_request(message="What matters most?"),
         user_id=None,
     )
@@ -319,7 +299,7 @@ def test_quick_action_appends_only_one_assistant_message() -> None:
     response = _service(
         FakeWorkspaceAgent(_reply("Quick analysis.")),
         uuid_values=(1,),
-    ).workspace_chat(_quick_request(), user_id=None)
+    ).workspace(_quick_request(), user_id=None)
 
     assert [(message.role, message.content) for message in response.histories] == [
         ("assistant", "Quick analysis.")
@@ -333,7 +313,7 @@ def test_reply_returns_both_artifacts_byte_for_byte_unchanged() -> None:
     artifacts, histories = _artifact_state(ArtifactType.CV, ArtifactType.COVER_LETTER)
     before = artifacts.model_dump_json()
 
-    response = _service(FakeWorkspaceAgent(_reply()), uuid_values=(1, 2)).workspace_chat(
+    response = _service(FakeWorkspaceAgent(_reply()), uuid_values=(1, 2)).workspace(
         _user_request(histories=histories, artifacts=artifacts),
         user_id=None,
     )
@@ -350,7 +330,7 @@ def test_create_allocates_version_one_artifact_and_one_attachment(
     response = _service(
         FakeWorkspaceAgent(_create(artifact_type)),
         uuid_values=(1, 2, 3, 4),
-    ).workspace_chat(_user_request(), user_id=None)
+    ).workspace(_user_request(), user_id=None)
     artifact = (
         response.artifacts.cv
         if artifact_type is ArtifactType.CV
@@ -378,7 +358,7 @@ def test_update_reuses_artifact_id_and_appends_immutable_attachment() -> None:
     response = _service(
         FakeWorkspaceAgent(_update(ArtifactType.COVER_LETTER)),
         uuid_values=(1, 2, 3),
-    ).workspace_chat(
+    ).workspace(
         _user_request(histories=histories, artifacts=artifacts),
         user_id=None,
     )
@@ -401,7 +381,7 @@ def test_updating_cover_letter_preserves_coexisting_cv() -> None:
     response = _service(
         FakeWorkspaceAgent(_update(ArtifactType.COVER_LETTER)),
         uuid_values=(1, 2, 3),
-    ).workspace_chat(
+    ).workspace(
         _user_request(histories=histories, artifacts=artifacts),
         user_id=None,
     )
@@ -418,12 +398,12 @@ def test_attachment_content_is_gateway_owned_and_draft_remains_opaque() -> None:
     cover = _service(
         FakeWorkspaceAgent(cover_result),
         uuid_values=(1, 2, 3),
-    ).workspace_chat(_quick_request(), user_id=None).artifacts.cover_letter
+    ).workspace(_quick_request(), user_id=None).artifacts.cover_letter
     cv_result = _create(ArtifactType.CV)
     cv = _service(
         FakeWorkspaceAgent(cv_result),
         uuid_values=(4, 5, 6),
-    ).workspace_chat(_quick_request(), user_id=None).artifacts.cv
+    ).workspace(_quick_request(), user_id=None).artifacts.cv
 
     assert cover is not None and cover.attachment.content == cover_result.draft
     assert cover.draft == "# Cover Letter\n\n<script>opaque letter</script>"
@@ -446,7 +426,7 @@ def test_agent_failures_allocate_no_workspace_state(agent: FakeWorkspaceAgent) -
     service = _service(agent, uuid_values=())
 
     with pytest.raises(TaskExecutionError):
-        service.workspace_chat(request, user_id=None)
+        service.workspace(request, user_id=None)
 
     assert request.model_dump_json() == before
 
@@ -479,7 +459,7 @@ def test_invalid_cover_letter_snapshot_fails_before_metrics_or_state_allocation(
     )
 
     with pytest.raises(TaskExecutionError, match="Attachment"):
-        service.workspace_chat(_user_request(), user_id="user-1")
+        service.workspace(_user_request(), user_id="user-1")
 
     assert clock_calls == 0
     assert len(repository.records) == 1
@@ -511,7 +491,7 @@ def test_unvalidated_chat_result_fails_before_workspace_state_allocation() -> No
     )
 
     with pytest.raises(TaskExecutionError):
-        service.workspace_chat(_user_request(), user_id="user-1")
+        service.workspace(_user_request(), user_id="user-1")
 
     assert clock_calls == 0
     assert [record.status for record in repository.records] == ["failed"]
@@ -535,7 +515,7 @@ def test_workspace_clock_failure_records_only_failed_metrics() -> None:
     )
 
     with pytest.raises(TaskExecutionError, match="workspace clock unavailable"):
-        service.workspace_chat(_user_request(), user_id="user-1")
+        service.workspace(_user_request(), user_id="user-1")
 
     assert [record.status for record in repository.records] == ["failed"]
 
@@ -551,7 +531,7 @@ def test_final_response_validation_failure_records_only_failed_metrics() -> None
     )
 
     with pytest.raises(TaskExecutionError, match="message IDs"):
-        service.workspace_chat(_user_request(), user_id="user-1")
+        service.workspace(_user_request(), user_id="user-1")
 
     assert [record.status for record in repository.records] == ["failed"]
 
@@ -575,7 +555,7 @@ def test_resume_injection_metrics_url_normalization_and_full_duration() -> None:
         resource_url="https://example.com/jobs/1?a=1&b=2",
     )
 
-    response = service.workspace_chat(request, user_id="user-1")
+    response = service.workspace(request, user_id="user-1")
 
     assert response.resource_url == "https://example.com/jobs/1?a=1&b=2"
     assert agent.calls[0].resume_text == "# Canonical Resume"
@@ -595,12 +575,12 @@ def test_message_capacity_allows_last_user_and_quick_transitions() -> None:
     user_response = _service(
         FakeWorkspaceAgent(_reply()),
         uuid_values=(1, 2),
-    ).workspace_chat(_user_request(histories=nine), user_id=None)
+    ).workspace(_user_request(histories=nine), user_id=None)
     ten = [HistoryMessage(role="user", content=str(index)) for index in range(10)]
     quick_response = _service(
         FakeWorkspaceAgent(_reply()),
         uuid_values=(3,),
-    ).workspace_chat(_quick_request(histories=ten), user_id=None)
+    ).workspace(_quick_request(histories=ten), user_id=None)
 
     assert len(user_response.histories) == 11
     assert len(quick_response.histories) == 11

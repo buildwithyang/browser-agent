@@ -5,13 +5,13 @@ from sqlalchemy.orm import sessionmaker
 
 import app.modules.auth.model  # noqa: F401
 from app import main
-from app.agents.base import AgentContext, AgentExecution, TaskAgent
+from app.agents.base import AgentContext, AgentExecution, QuickInsightAgent
 from app.config import Settings
 from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.auth.repo import ExtensionTokenRepository
 from app.modules.auth.token_service import ExtensionTokenService
-from app.modules.task.schema import Action, AgentName, DocumentContent, Insight
+from app.modules.task.schema import Action, AgentName, Insight
 from app.modules.task.service import TaskService
 
 USER = uuid.uuid4().hex
@@ -36,24 +36,22 @@ def _wire(monkeypatch, *, settings, token_service):
     monkeypatch.setattr(
         main.app.state, "extension_token_service", token_service, raising=False
     )
-    class FakeAgent(TaskAgent):
+    class FakeAgent(QuickInsightAgent):
         name = AgentName.SUMMARY_PAGE
+        requires_resume = False
 
-        def actions(self, ctx: AgentContext) -> list[Action]:
+        def available_actions(self, ctx: AgentContext) -> list[Action]:
             """Declare no actions for authentication boundary tests."""
 
             return []
 
-        def insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
+        def quick_insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
             return AgentExecution(
                 content=Insight(title="Summary", cards=[]),
                 raw_result="ok",
                 prompt="P",
                 model="m",
             )
-
-        def execute(self, ctx: AgentContext) -> AgentExecution[DocumentContent]:
-            raise NotImplementedError
 
     fake_agent = FakeAgent()
     monkeypatch.setattr(
@@ -71,7 +69,11 @@ def _wire(monkeypatch, *, settings, token_service):
 def test_require_auth_blocks_anonymous(monkeypatch, tmp_path):
     _wire(monkeypatch, settings=Settings(require_auth=True), token_service=_token_service(tmp_path))
     client = TestClient(main.app)
-    r = client.post("/tasks/quick-insight", json={"url": "https://x", "pageText": "y"})
+    r = client.post(
+        "/tasks/quick-insight",
+        headers={"X-Agent-Bridge-Protocol-Version": "2"},
+        json={"url": "https://x", "pageText": "y"},
+    )
     assert r.status_code == 401
 
 
@@ -82,7 +84,10 @@ def test_require_auth_allows_valid_bearer(monkeypatch, tmp_path):
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Agent-Bridge-Protocol-Version": "2",
+        },
         json={"url": "https://x", "pageText": "y"},
     )
     assert r.status_code == 200
@@ -92,5 +97,9 @@ def test_require_auth_allows_valid_bearer(monkeypatch, tmp_path):
 def test_self_hosted_allows_anonymous(monkeypatch, tmp_path):
     _wire(monkeypatch, settings=Settings(require_auth=False), token_service=_token_service(tmp_path))
     client = TestClient(main.app)
-    r = client.post("/tasks/quick-insight", json={"url": "https://x", "pageText": "y"})
+    r = client.post(
+        "/tasks/quick-insight",
+        headers={"X-Agent-Bridge-Protocol-Version": "2"},
+        json={"url": "https://x", "pageText": "y"},
+    )
     assert r.status_code == 200

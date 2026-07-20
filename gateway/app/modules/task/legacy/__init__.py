@@ -1,2 +1,1 @@
-"""Deprecated /tasks transport compatibility layer."""
-
+"""Defensive raw-route fallback for the retired `/tasks` transport."""

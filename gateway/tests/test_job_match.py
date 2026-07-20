@@ -15,9 +15,7 @@ from app.modules.task.schema import (
     QuickInsightActionWorkspaceRequest,
     QuickInsightRequest,
     ScoreInsightCard,
-    TaskRequest,
     TextInsightCard,
-    WorkspaceRequest,
     WorkspaceTrigger,
 )
 from app.modules.task.service import TaskService
@@ -57,19 +55,6 @@ def quick_request(**updates) -> QuickInsightRequest:
     )
     values.update(updates)
     return QuickInsightRequest(**values)
-
-
-def task_request(action_id: str = "deep_analysis", **updates) -> TaskRequest:
-    """Build a valid legacy `/tasks` request with optional overrides."""
-
-    values = dict(
-        url="https://www.linkedin.com/jobs/view/1",
-        title="Senior Go Engineer",
-        selectedText=LONG_JD,
-        actionId=action_id,
-    )
-    values.update(updates)
-    return TaskRequest(**values)
 
 
 def test_package_preserves_public_import_surface() -> None:
@@ -116,7 +101,6 @@ def test_job_match_declares_workspace_actions() -> None:
     actions = agent.available_actions(ctx)
 
     assert isinstance(agent, QuickInsightAgent)
-    assert agent.actions(ctx) == actions
     assert [action.id for action in actions] == [
         ActionId.ANALYZE,
         ActionId.TAILOR_RESUME,
@@ -193,7 +177,7 @@ def test_validation_rejects_short_selection_before_model_call() -> None:
     request = quick_request(selectedText="short", pageText="x" * 5000)
 
     with pytest.raises(ValueError, match="职位描述太少"):
-        agent.validate(AgentContext(request=request, resume_text="CV"))
+        agent.quick_insight(AgentContext(request=request, resume_text="CV"))
 
 
 def test_quick_insight_service_routes_agent_and_injects_user_resume() -> None:
@@ -230,78 +214,3 @@ def test_quick_insight_service_routes_agent_and_injects_user_resume() -> None:
     assert isinstance(response.insight.cards[0], ScoreInsightCard)
     assert "INJECTED USER CV" in captured["messages"][1]["content"]
     assert not hasattr(agent, "_cv_text")
-
-
-def test_temporary_legacy_delegate_returns_old_task_response() -> None:
-    """Keep `/tasks` document execution runnable until the Task 8 protocol shim."""
-
-    captured: dict = {}
-
-    class ResumeService:
-        """Return one active resume for the authenticated legacy request."""
-
-        def active_resume_text(self, *, user_id: str) -> str:
-            """Resolve the current user's request-scoped legacy resume text."""
-
-            assert user_id == "legacy-user"
-            return "LEGACY REQUEST CV"
-
-    agent = JobMatchAgent(
-        client=fake_client("@@SECTION cover_letter\nDear Hiring Manager", captured),
-        model="m",
-    )
-    service = TaskService(
-        agents={AgentName.JOB_MATCH: agent},
-        repository=None,
-        resume_service=ResumeService(),
-        default_model="m",
-    )
-    request = task_request(
-        "write_cover_letter",
-        selectedText="",
-        priorResult="@@SECTION conclusion\nMatch 82.",
-    )
-
-    response = service.execute(
-        request,
-        user_id="legacy-user",
-        agent_override=AgentName.JOB_MATCH,
-    )
-
-    assert response.document.text.startswith("@@SECTION conclusion")
-    assert [section.id for section in response.document.sections] == [
-        "conclusion",
-        "cover_letter",
-    ]
-    assert "LEGACY REQUEST CV" in captured["messages"][1]["content"]
-    assert not hasattr(agent, "_cv_text")
-
-
-def test_temporary_legacy_delegate_returns_v1_workspace_document() -> None:
-    """Preserve the v1 Workspace document mapping through Task 7."""
-
-    captured: dict = {}
-    agent = JobMatchAgent(
-        client=fake_client("# Ready-to-send letter", captured),
-        model="m",
-    )
-    request = WorkspaceRequest(
-        url="https://www.linkedin.com/jobs/view/1",
-        resourceUrl="https://www.linkedin.com/jobs/view/1",
-        title="Senior Go Engineer",
-        selectedText=LONG_JD,
-        actionId=ActionId.WRITE_COVER_LETTER,
-        message="Generate the complete cover letter.",
-        lang="en",
-    )
-
-    execution = agent.execute(
-        AgentContext(request=request, resume_text="V1 WORKSPACE CV")
-    )
-
-    assert execution.content.kind == "cover_letter"
-    assert execution.content.title == "Cover Letter"
-    assert execution.content.text == "# Ready-to-send letter"
-    assert execution.content.sections[0].id == "result"
-    assert execution.content.sections[0].html == execution.content.html
-    assert "V1 WORKSPACE CV" in captured["messages"][1]["content"]
