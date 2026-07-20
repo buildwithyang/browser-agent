@@ -211,7 +211,10 @@ def test_settings_value_is_wired_through_main_middleware_to_actual_426() -> None
     )
 
     assert protocol_layer.kwargs["update_url"] == configured_url
-    response = TestClient(main.app).post("/tasks/quick-insight", content=b"{}")
+    response = TestClient(main.app).post(
+        "/tasks/quick-insight",
+        json={"url": "https://example.com"},
+    )
     assert response.status_code == 426
     assert response.json()["update_url"] == configured_url
 
@@ -365,7 +368,12 @@ def test_task_endpoints_reject_missing_malformed_and_unequal_protocol(
     _wire(monkeypatch, service, require_auth=True)
     headers = {} if value is None else {EXTENSION_PROTOCOL_HEADER: value}
 
-    response = TestClient(main.app).post(path, content=b"{broken", headers=headers)
+    payload = (
+        {"url": "https://example.com"}
+        if path == "/tasks/quick-insight"
+        else _workspace_payload()
+    )
+    response = TestClient(main.app).post(path, json=payload, headers=headers)
 
     _assert_upgrade_required(response)
     assert service.calls == []
