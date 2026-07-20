@@ -1,28 +1,29 @@
-"""Shared contract and structured execution for job-match Specialists."""
+"""Shared raw-Markdown streaming contract for job-match Specialists."""
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from typing import Annotated, ClassVar, Literal, TypeAlias
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
+from typing import ClassVar, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
-
-from app.agents.base import AgentExecution, language_directive
+from app.agents.base import language_directive
 from app.agents.job_match.context import JobChatContext
-from app.modules.task.schema import ArtifactType, DOCUMENT_TEXT_MAX_CHARS, TITLE_MAX_CHARS
+from app.agents.job_match.planner import OutputMode
+from app.agents.stream import ModelTextStream
 
 
-CompletePrompt: TypeAlias = Callable[..., tuple[str, str]]
+OpenPromptStream: TypeAlias = Callable[..., Awaitable[ModelTextStream]]
+"""Asynchronous boundary that opens one provider-independent model text stream."""
 
-STRUCTURED_OUTPUT_INSTRUCTION = """
-Return exactly one JSON object and no preface, code fence, or trailing text.
-For a conversational answer, use:
-{"type":"reply","markdown":"complete Markdown answer"}
-For a complete artifact draft, use:
-{"type":"artifact_draft","markdown":"brief Markdown note","artifact_type":"cv or cover_letter","title":"artifact title","draft":"complete Markdown artifact"}
-Never return create_artifact, update_artifact, a partial patch, or a diff.
-Only return artifact_draft when the concrete Specialist instructions permit it.
-""".strip()
+
+@dataclass(frozen=True)
+class SpecialistTextStream:
+    """Prompt metadata and raw Markdown chunks opened by one Specialist."""
+
+    prompt: str
+    model: str
+    chunks: AsyncIterator[str]
+
 
 BASE_SYSTEM_PROMPT = (
     "You are one stateless Specialist in Agent Bridge's senior recruiting assistant. "
@@ -33,77 +34,21 @@ BASE_SYSTEM_PROMPT = (
     "invent experience or qualifications."
 )
 
+REPLY_OUTPUT_INSTRUCTION = (
+    "Return only the complete conversational answer as raw Markdown. Do not wrap it in an "
+    "object, code fence, transport envelope, or metadata."
+)
 
-def _validate_non_empty_content(value: str, *, field_name: str) -> str:
-    """Require non-blank opaque content without classifying its markup syntax."""
-
-    if not value.strip():
-        raise ValueError(f"{field_name} must contain Markdown")
-    return value
-
-
-class SpecialistReply(BaseModel):
-    """An opaque Markdown-source answer that does not create an Artifact."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    type: Literal["reply"]
-    markdown: str = Field(min_length=1, max_length=DOCUMENT_TEXT_MAX_CHARS)
-
-    @field_validator("markdown")
-    @classmethod
-    def validate_non_empty_markdown(cls, value: str) -> str:
-        """Require a non-blank Markdown string without parsing its syntax."""
-
-        return _validate_non_empty_content(value, field_name="markdown")
+ARTIFACT_OUTPUT_INSTRUCTION = (
+    "Return only the complete Artifact draft as raw Markdown. Do not add commentary, a "
+    "completion note, a title outside the draft, a code fence, or transport metadata."
+)
 
 
-class ArtifactDraftResult(BaseModel):
-    """One complete opaque Markdown-source draft before result normalization."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    type: Literal["artifact_draft"]
-    markdown: str = Field(min_length=1, max_length=DOCUMENT_TEXT_MAX_CHARS)
-    artifact_type: ArtifactType
-    title: str = Field(min_length=1, max_length=TITLE_MAX_CHARS)
-    draft: str = Field(min_length=1, max_length=DOCUMENT_TEXT_MAX_CHARS)
-
-    @field_validator("markdown")
-    @classmethod
-    def validate_non_empty_markdown(cls, value: str) -> str:
-        """Require a non-blank Artifact note without parsing its syntax."""
-
-        return _validate_non_empty_content(value, field_name="markdown")
-
-    @field_validator("title")
-    @classmethod
-    def validate_title(cls, value: str) -> str:
-        """Reject a whitespace-only Artifact title."""
-
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("title must not be blank")
-        return stripped
-
-    @field_validator("draft")
-    @classmethod
-    def validate_non_empty_draft(cls, value: str) -> str:
-        """Require a non-blank draft string without parsing its syntax."""
-
-        return _validate_non_empty_content(value, field_name="draft")
-
-
-SpecialistResult: TypeAlias = Annotated[
-    SpecialistReply | ArtifactDraftResult,
-    Field(discriminator="type"),
-]
-"""Discriminated candidate result returned by one job-match Specialist."""
-
-_SPECIALIST_RESULT_ADAPTER = TypeAdapter(SpecialistResult)
-
-
-def format_specialist_context(context: JobChatContext) -> str:
+def format_specialist_context(
+    context: JobChatContext,
+    output_mode: OutputMode,
+) -> str:
     """Separate the current instruction from complete untrusted reference data."""
 
     request = context.request
@@ -130,6 +75,7 @@ def format_specialist_context(context: JobChatContext) -> str:
             "# Task control",
             f"Trigger: {context.trigger.value}",
             f"Selected Action: {context.selected_action.value}",
+            f"Required output mode: {output_mode.value}",
             "",
             "# Current user request (instruction)",
             current_request,
@@ -140,98 +86,91 @@ def format_specialist_context(context: JobChatContext) -> str:
     )
 
 
-def parse_specialist_result(raw_result: str) -> SpecialistResult:
-    """Parse one JSON object while tolerating model-emitted Markdown line breaks."""
-
-    try:
-        if any(ord(char) < 0x20 and char not in "\t\n\r" for char in raw_result):
-            raise TypeError("Specialist payload contains a forbidden control character")
-        # OpenAI-compatible models may place literal newlines inside JSON string values.
-        # The guard above limits lenient parsing to JSON whitespace; the object shape
-        # and every field remain enforced by the discriminated Pydantic union below.
-        payload = json.loads(raw_result, strict=False)
-        if not isinstance(payload, dict):
-            raise TypeError("Specialist payload must be an object")
-        return _SPECIALIST_RESULT_ADAPTER.validate_python(payload)
-    except (json.JSONDecodeError, TypeError, ValidationError) as exc:
-        raise ValueError("Specialist response is invalid") from exc
-
-
 class JobMatchSpecialist(ABC):
-    """Strategy interface for one stateless job-match conversation scenario."""
+    """Strategy interface for one stateless job-match Markdown stream."""
 
     @abstractmethod
-    def handle(self, context: JobChatContext) -> AgentExecution[SpecialistResult]:
-        """Execute one Specialist against the complete immutable request context."""
+    async def open_stream(
+        self,
+        context: JobChatContext,
+        output_mode: OutputMode,
+    ) -> SpecialistTextStream:
+        """Open one raw Markdown stream for a validated output mode."""
 
         raise NotImplementedError
 
 
-class StructuredJobMatchSpecialist(JobMatchSpecialist):
-    """Template Method for structured model execution and legal-result validation."""
+class StreamingJobMatchSpecialist(JobMatchSpecialist):
+    """Template Method for one mode-constrained raw Markdown Specialist stream."""
 
-    scenario_instruction: ClassVar[str]
-    allowed_artifact_type: ClassVar[ArtifactType | None] = None
+    allowed_modes: ClassVar[frozenset[OutputMode]]
+    reply_instruction: ClassVar[str]
+    artifact_instruction: ClassVar[str | None] = None
 
-    def __init__(self, *, complete_prompt: CompletePrompt) -> None:
-        """Inject the sole OpenAI-compatible completion boundary used by the Strategy."""
+    def __init__(self, *, open_prompt_stream: OpenPromptStream) -> None:
+        """Inject the sole asynchronous model stream boundary used by the Strategy."""
 
-        self._complete_prompt = complete_prompt
+        self._open_prompt_stream = open_prompt_stream
 
-    def build_prompt(self, context: JobChatContext) -> str:
-        """Build the user prompt from the full request-scoped Workspace state."""
+    def build_prompt(
+        self,
+        context: JobChatContext,
+        output_mode: OutputMode,
+    ) -> str:
+        """Build the user prompt from complete request-scoped Workspace state."""
 
-        return format_specialist_context(context)
+        return format_specialist_context(context, output_mode)
 
-    def build_system_prompt(self, lang: str) -> str:
-        """Combine shared safety, owned scenario rules, schema, and language control."""
+    def build_system_prompt(self, lang: str, output_mode: OutputMode) -> str:
+        """Combine shared safety, scenario, raw-output, and language instructions."""
 
+        scenario_instruction = self._scenario_instruction(output_mode)
+        output_instruction = (
+            ARTIFACT_OUTPUT_INSTRUCTION
+            if output_mode is OutputMode.ARTIFACT
+            else REPLY_OUTPUT_INSTRUCTION
+        )
         return "\n\n".join(
             [
                 BASE_SYSTEM_PROMPT,
-                self.scenario_instruction,
-                STRUCTURED_OUTPUT_INSTRUCTION,
+                scenario_instruction,
+                output_instruction,
                 language_directive(lang),
             ]
         )
 
-    def validate_legal_result(self, result: SpecialistResult) -> SpecialistResult:
-        """Enforce the concrete Strategy's row in the legal result matrix."""
+    def _scenario_instruction(self, output_mode: OutputMode) -> str:
+        """Resolve the concrete Strategy instruction for one validated mode."""
 
-        if isinstance(result, SpecialistReply):
-            return result
-        if result.artifact_type is not self.allowed_artifact_type:
-            expected = (
-                self.allowed_artifact_type.value
-                if self.allowed_artifact_type is not None
-                else "no artifact"
-            )
-            raise ValueError(
-                f"{type(self).__name__} artifact result is not allowed; expected {expected}"
-            )
-        return result
+        if output_mode is OutputMode.ARTIFACT:
+            if self.artifact_instruction is None:
+                raise ValueError("Specialist output mode is not allowed")
+            return self.artifact_instruction
+        return self.reply_instruction
 
-    def handle(self, context: JobChatContext) -> AgentExecution[SpecialistResult]:
-        """Call the injected model once and return one validated structured result."""
+    async def open_stream(
+        self,
+        context: JobChatContext,
+        output_mode: OutputMode,
+    ) -> SpecialistTextStream:
+        """Validate mode, build prompts, and open one Chat Completions stream."""
 
-        prompt = self.build_prompt(context)
-        system = self.build_system_prompt(context.request.lang)
-        raw_result, model = self._complete_prompt(system=system, prompt=prompt)
-        result = self.validate_legal_result(parse_specialist_result(raw_result))
-        return AgentExecution(
-            content=result,
-            raw_result=raw_result,
+        if output_mode not in self.allowed_modes:
+            raise ValueError("Specialist output mode is not allowed")
+        prompt = self.build_prompt(context, output_mode)
+        system = self.build_system_prompt(context.request.lang, output_mode)
+        opened = await self._open_prompt_stream(system=system, prompt=prompt)
+        return SpecialistTextStream(
             prompt=prompt,
-            model=model,
+            model=opened.model,
+            chunks=opened.chunks,
         )
 
 
 __all__ = [
-    "ArtifactDraftResult",
     "JobMatchSpecialist",
-    "SpecialistReply",
-    "SpecialistResult",
-    "StructuredJobMatchSpecialist",
+    "OpenPromptStream",
+    "SpecialistTextStream",
+    "StreamingJobMatchSpecialist",
     "format_specialist_context",
-    "parse_specialist_result",
 ]

@@ -1,5 +1,8 @@
+"""Stateless streaming Facade for Job Match Quick Insight and Workspace chat."""
+
+import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -9,26 +12,23 @@ from app.agents.base import (
     AgentExecution,
     OpenAIChatAgent,
     QuickInsightAgent,
+    StreamingWorkspaceAgent,
     WorkspaceAgent,
     WorkspaceAgentContext,
 )
 from app.agents.job_match.context import JobChatContext
+from app.agents.job_match.planner import ChatPlan, ChatPlanner, OutputMode, SpecialistId
 from app.agents.job_match.quick_insight import (
     MIN_JOB_CONTENT_CHARS,
     WORKSPACE_ACTION_TITLES,
     JobQuickInsightAgent,
 )
-from app.agents.job_match.router import IntentRouter, SpecialistId
 from app.agents.job_match.specialists.analysis import JobAnalysisAgent
-from app.agents.job_match.specialists.base import (
-    ArtifactDraftResult,
-    JobMatchSpecialist,
-    SpecialistReply,
-    SpecialistResult,
-)
+from app.agents.job_match.specialists.base import JobMatchSpecialist, SpecialistTextStream
 from app.agents.job_match.specialists.cover_letter import CoverLetterAgent
 from app.agents.job_match.specialists.general_qa import GeneralQAAgent
 from app.agents.job_match.specialists.resume import ResumeTailoringAgent
+from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
 from app.modules.task.schema import (
     Action,
     ActionId,
@@ -37,6 +37,7 @@ from app.modules.task.schema import (
     ArtifactType,
     ChatResult,
     CreateArtifactResult,
+    DOCUMENT_TEXT_MAX_CHARS,
     Insight,
     ReplyResult,
     UpdateArtifactResult,
@@ -52,27 +53,67 @@ JOB_WORKSPACE_ACTION_IDS = (
     ActionId.ASK_MORE,
 )
 
-QUICK_SPECIALIST_BY_ACTION = {
-    ActionId.ANALYZE: SpecialistId.JOB_ANALYSIS,
-    ActionId.TAILOR_RESUME: SpecialistId.RESUME,
-    ActionId.WRITE_COVER_LETTER: SpecialistId.COVER_LETTER,
+QUICK_PLAN_BY_ACTION = {
+    ActionId.ANALYZE: ChatPlan(
+        specialist=SpecialistId.JOB_ANALYSIS,
+        output_mode=OutputMode.REPLY,
+    ),
+    ActionId.TAILOR_RESUME: ChatPlan(
+        specialist=SpecialistId.RESUME,
+        output_mode=OutputMode.ARTIFACT,
+    ),
+    ActionId.WRITE_COVER_LETTER: ChatPlan(
+        specialist=SpecialistId.COVER_LETTER,
+        output_mode=OutputMode.ARTIFACT,
+    ),
 }
-"""Deterministic Quick Action to Specialist command mapping."""
+"""Deterministic Quick Action plans that bypass the conversational planner."""
 
-LEGAL_ARTIFACT_BY_SPECIALIST = {
-    SpecialistId.JOB_ANALYSIS: None,
+ARTIFACT_BY_SPECIALIST = {
     SpecialistId.RESUME: ArtifactType.CV,
     SpecialistId.COVER_LETTER: ArtifactType.COVER_LETTER,
-    SpecialistId.GENERAL_QA: None,
 }
-"""Artifact result owned by each Specialist, or ``None`` for reply-only Strategies."""
+"""Artifact type owned by each Artifact-capable Specialist."""
+
+ARTIFACT_TITLES = {
+    "en": {
+        ArtifactType.CV: "Tailored CV",
+        ArtifactType.COVER_LETTER: "Cover Letter",
+    },
+    "zh": {
+        ArtifactType.CV: "定制简历",
+        ArtifactType.COVER_LETTER: "求职信",
+    },
+}
+"""Deterministic localized titles for complete Workspace Artifacts."""
+
+ARTIFACT_NOTES = {
+    "en": {
+        (ArtifactType.CV, False): "Created the tailored CV.",
+        (ArtifactType.CV, True): "Updated the tailored CV.",
+        (ArtifactType.COVER_LETTER, False): "Created the cover letter.",
+        (ArtifactType.COVER_LETTER, True): "Updated the cover letter.",
+    },
+    "zh": {
+        (ArtifactType.CV, False): "已创建定制简历。",
+        (ArtifactType.CV, True): "已更新定制简历。",
+        (ArtifactType.COVER_LETTER, False): "已创建求职信。",
+        (ArtifactType.COVER_LETTER, True): "已更新求职信。",
+    },
+}
+"""Deterministic localized Assistant notes for create and update outcomes."""
 
 
 class JobMatchOrchestrationError(RuntimeError):
     """Raised when a Workspace command cannot produce a legal final chat result."""
 
 
-class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
+class JobMatchAgent(
+    OpenAIChatAgent,
+    QuickInsightAgent,
+    WorkspaceAgent,
+    StreamingWorkspaceAgent,
+):
     """Stateless Facade/Mediator for all job-match execution paths."""
 
     name = AgentName.JOB_MATCH
@@ -80,11 +121,11 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
 
     def __init__(
         self,
-        *args,
+        *args: object,
         cv_path: str | Path | None = None,
-        intent_router: IntentRouter | None = None,
+        planner: ChatPlanner | None = None,
         specialists: Mapping[SpecialistId, JobMatchSpecialist] | None = None,
-        **kwargs,
+        **kwargs: object,
     ) -> None:
         """Build stateless delegates around shared model and CV-loading dependencies."""
 
@@ -94,28 +135,26 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
             complete_prompt=self.complete_prompt,
             resolve_resume_text=self._resolve_resume_text,
         )
-        self._intent_router = intent_router or IntentRouter(
-            complete_prompt=self.complete_prompt
-        )
+        self._planner = planner or ChatPlanner(complete_prompt=self.acomplete_prompt)
         self._specialists = (
             dict(specialists) if specialists is not None else self._build_specialists()
         )
 
     def _build_specialists(self) -> dict[SpecialistId, JobMatchSpecialist]:
-        """Build the production Strategy registry over the shared completion boundary."""
+        """Build the production Strategy registry over the shared stream boundary."""
 
         return {
             SpecialistId.JOB_ANALYSIS: JobAnalysisAgent(
-                complete_prompt=self.complete_prompt
+                open_prompt_stream=self.open_prompt_stream
             ),
             SpecialistId.RESUME: ResumeTailoringAgent(
-                complete_prompt=self.complete_prompt
+                open_prompt_stream=self.open_prompt_stream
             ),
             SpecialistId.COVER_LETTER: CoverLetterAgent(
-                complete_prompt=self.complete_prompt
+                open_prompt_stream=self.open_prompt_stream
             ),
             SpecialistId.GENERAL_QA: GeneralQAAgent(
-                complete_prompt=self.complete_prompt
+                open_prompt_stream=self.open_prompt_stream
             ),
         }
 
@@ -133,79 +172,46 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
             current_message=getattr(request, "message", None),
         )
 
-    def _select_specialist(self, context: JobChatContext) -> SpecialistId:
-        """Route a user message or resolve a deterministic Quick command directly."""
+    async def _select_plan(self, context: JobChatContext) -> ChatPlan:
+        """Plan a user message or resolve a deterministic Quick command directly."""
 
         if context.trigger is WorkspaceTrigger.USER_MESSAGE:
-            return self._intent_router.route(context).specialist
+            return await self._planner.plan(context)
         if context.selected_action is ActionId.ASK_MORE:
             raise JobMatchOrchestrationError(
                 "ask_more is not a backend Quick Insight Action command"
             )
         try:
-            return QUICK_SPECIALIST_BY_ACTION[context.selected_action]
+            return QUICK_PLAN_BY_ACTION[context.selected_action]
         except KeyError as exc:
             raise JobMatchOrchestrationError(
                 f"unsupported Quick Insight Action: {context.selected_action.value}"
             ) from exc
 
-    def _execute_specialist(
+    async def _open_specialist_stream(
         self,
-        specialist_id: SpecialistId,
+        plan: ChatPlan,
         context: JobChatContext,
-    ) -> AgentExecution[SpecialistResult]:
-        """Execute exactly one registered Strategy for the selected Specialist id."""
+    ) -> SpecialistTextStream:
+        """Open exactly one registered Strategy stream for the validated plan."""
 
         try:
-            specialist = self._specialists[specialist_id]
+            specialist = self._specialists[plan.specialist]
         except KeyError as exc:
             raise JobMatchOrchestrationError(
-                f"no Specialist registered for {specialist_id.value}"
+                f"no Specialist registered for {plan.specialist.value}"
             ) from exc
-        return specialist.handle(context)
+        return await specialist.open_stream(context, plan.output_mode)
 
-    def _validate_specialist_result(
-        self,
-        specialist_id: SpecialistId,
-        result: object,
-    ) -> SpecialistResult:
-        """Enforce the complete Specialist-to-result legal matrix at the Facade boundary."""
+    def _artifact_type(self, plan: ChatPlan) -> ArtifactType:
+        """Resolve the deterministic Artifact type for one Artifact plan."""
 
-        if isinstance(result, SpecialistReply):
-            return result
-        expected_artifact = LEGAL_ARTIFACT_BY_SPECIALIST[specialist_id]
-        if (
-            isinstance(result, ArtifactDraftResult)
-            and expected_artifact is not None
-            and result.artifact_type is expected_artifact
-        ):
-            return result
-        raise JobMatchOrchestrationError(
-            f"illegal Specialist result for {specialist_id.value}"
-        )
-
-    def _validate_quick_result(
-        self,
-        action_id: ActionId,
-        result: object,
-    ) -> None:
-        """Apply the stricter deterministic Quick Action result matrix."""
-
-        if action_id is ActionId.ANALYZE and isinstance(result, SpecialistReply):
-            return
-        expected_artifact = {
-            ActionId.TAILOR_RESUME: ArtifactType.CV,
-            ActionId.WRITE_COVER_LETTER: ArtifactType.COVER_LETTER,
-        }.get(action_id)
-        if (
-            expected_artifact is not None
-            and isinstance(result, ArtifactDraftResult)
-            and result.artifact_type is expected_artifact
-        ):
-            return
-        raise JobMatchOrchestrationError(
-            f"illegal result for Quick Insight Action {action_id.value}"
-        )
+        try:
+            return ARTIFACT_BY_SPECIALIST[plan.specialist]
+        except KeyError as exc:
+            raise JobMatchOrchestrationError(
+                f"Specialist cannot create an Artifact: {plan.specialist.value}"
+            ) from exc
 
     def _existing_artifact(
         self,
@@ -218,58 +224,124 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
             return context.artifacts.cv
         return context.artifacts.cover_letter
 
-    def _normalize_result(
+    def _artifact_result(
         self,
         context: JobChatContext,
-        result: SpecialistResult,
+        plan: ChatPlan,
+        draft: str,
     ) -> ChatResult:
-        """Convert one validated Specialist result to the public Workspace result union."""
+        """Build deterministic create/update metadata around one complete draft."""
 
-        if isinstance(result, SpecialistReply):
-            return ReplyResult(
-                type=WorkspaceResultType.REPLY,
-                markdown=result.markdown,
-            )
+        artifact_type = self._artifact_type(plan)
+        exists = self._existing_artifact(context, artifact_type) is not None
         result_class: type[CreateArtifactResult] | type[UpdateArtifactResult]
         result_type: WorkspaceResultType
-        if self._existing_artifact(context, result.artifact_type) is None:
-            result_class = CreateArtifactResult
-            result_type = WorkspaceResultType.CREATE_ARTIFACT
-        else:
+        if exists:
             result_class = UpdateArtifactResult
             result_type = WorkspaceResultType.UPDATE_ARTIFACT
+        else:
+            result_class = CreateArtifactResult
+            result_type = WorkspaceResultType.CREATE_ARTIFACT
+        copy_lang = "en" if context.request.lang == "en" else "zh"
         return result_class(
             type=result_type,
-            markdown=result.markdown,
-            artifact_type=result.artifact_type,
-            title=result.title,
-            draft=result.draft,
+            markdown=ARTIFACT_NOTES[copy_lang][(artifact_type, exists)],
+            artifact_type=artifact_type,
+            title=ARTIFACT_TITLES[copy_lang][artifact_type],
+            draft=draft,
+        )
+
+    def _validate_complete_markdown(self, markdown: str) -> str:
+        """Require one non-blank result within the shared Workspace text cap."""
+
+        if len(markdown) > DOCUMENT_TEXT_MAX_CHARS:
+            raise JobMatchOrchestrationError(
+                f"Specialist Markdown exceeds {DOCUMENT_TEXT_MAX_CHARS} characters"
+            )
+        if not markdown.strip():
+            raise JobMatchOrchestrationError("Specialist result must contain Markdown")
+        return markdown
+
+    async def stream_chat(
+        self,
+        context: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """Yield progress, visible reply deltas, and one validated terminal result."""
+
+        job_context = self._to_job_chat_context(context)
+        yield AgentStatus(stage="routing")
+        plan = await self._select_plan(job_context)
+        artifact_type = (
+            self._artifact_type(plan)
+            if plan.output_mode is OutputMode.ARTIFACT
+            else None
+        )
+        yield AgentStatus(
+            stage=(
+                "generating_artifact"
+                if plan.output_mode is OutputMode.ARTIFACT
+                else "generating_reply"
+            ),
+            artifact_type=artifact_type,
+        )
+        opened = await self._open_specialist_stream(plan, job_context)
+
+        # Accumulate all raw chunks for atomic terminal validation. Artifact chunks never
+        # cross the Agent event boundary; reply chunks remain visible as Markdown deltas.
+        chunks: list[str] = []
+        total_chars = 0
+        async for chunk in opened.chunks:
+            if not chunk:
+                continue
+            total_chars += len(chunk)
+            if total_chars > DOCUMENT_TEXT_MAX_CHARS:
+                raise JobMatchOrchestrationError(
+                    f"Specialist Markdown exceeds {DOCUMENT_TEXT_MAX_CHARS} characters"
+                )
+            chunks.append(chunk)
+            if plan.output_mode is OutputMode.REPLY:
+                yield AgentDelta(text=chunk)
+
+        raw_result = self._validate_complete_markdown("".join(chunks))
+        result = (
+            ReplyResult(type=WorkspaceResultType.REPLY, markdown=raw_result)
+            if plan.output_mode is OutputMode.REPLY
+            else self._artifact_result(job_context, plan, raw_result)
+        )
+        yield AgentStatus(stage="finalizing")
+        yield AgentCompleted(
+            execution=AgentExecution(
+                content=result,
+                raw_result=raw_result,
+                prompt=opened.prompt,
+                model=opened.model,
+            )
         )
 
     def handle_chat(
         self,
         context: WorkspaceAgentContext,
     ) -> AgentExecution[ChatResult]:
-        """Coordinate Router and one Specialist without allocating persistent state."""
+        """Collect the stream for the synchronous TaskService compatibility boundary."""
 
-        job_context = self._to_job_chat_context(context)
-        specialist_id = self._select_specialist(job_context)
-        specialist_execution = self._execute_specialist(specialist_id, job_context)
-        if job_context.trigger is WorkspaceTrigger.QUICK_INSIGHT_ACTION:
-            self._validate_quick_result(
-                job_context.selected_action,
-                specialist_execution.content,
-            )
-        result = self._validate_specialist_result(
-            specialist_id,
-            specialist_execution.content,
-        )
-        return AgentExecution(
-            content=self._normalize_result(job_context, result),
-            raw_result=specialist_execution.raw_result,
-            prompt=specialist_execution.prompt,
-            model=specialist_execution.model,
-        )
+        async def collect_terminal() -> AgentExecution[ChatResult]:
+            """Consume exactly one stream and return its sole terminal execution."""
+
+            terminal: AgentExecution[ChatResult] | None = None
+            async for event in self.stream_chat(context):
+                if isinstance(event, AgentCompleted):
+                    if terminal is not None:
+                        raise JobMatchOrchestrationError(
+                            "Agent stream emitted multiple terminal results"
+                        )
+                    terminal = event.execution
+            if terminal is None:
+                raise JobMatchOrchestrationError(
+                    "Agent stream did not emit a terminal result"
+                )
+            return terminal
+
+        return asyncio.run(collect_terminal())
 
     def _resolve_resume_text(self, injected_text: str | None) -> str:
         """Use injected user text or reload the anonymous local CV without caching it."""
@@ -308,5 +380,6 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
         """Delegate a stateless decision-first Quick Insight operation."""
 
         return self._quick_insight.execute(context)
+
 
 __all__ = ["JobMatchAgent", "JobMatchOrchestrationError", "MIN_JOB_CONTENT_CHARS"]

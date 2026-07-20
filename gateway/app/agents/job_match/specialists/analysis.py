@@ -1,13 +1,15 @@
 """Job analysis Specialist Strategy."""
 
-from app.agents.job_match.specialists.base import StructuredJobMatchSpecialist
+from app.agents.job_match.planner import OutputMode
+from app.agents.job_match.specialists.base import StreamingJobMatchSpecialist
 
 
-class JobAnalysisAgent(StructuredJobMatchSpecialist):
+class JobAnalysisAgent(StreamingJobMatchSpecialist):
     """Answer with candid, evidence-based job and candidate analysis only."""
 
-    scenario_instruction = (
-        "Own the job analysis scenario. Always return a reply, never an artifact draft. "
+    allowed_modes = frozenset({OutputMode.REPLY})
+    reply_instruction = (
+        "Own the job analysis scenario. Return a conversational analysis reply. "
         "Analyze the role, hard requirements, strengths, gaps, realistic fit, application "
         "risks, and concrete next steps from the supplied evidence."
     )

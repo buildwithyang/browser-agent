@@ -163,7 +163,12 @@ class StreamingWorkspaceAgent(Protocol):
         ...
 
 
-class RegisteredAgent(QuickInsightAgent, WorkspaceAgent, Protocol):
+class RegisteredAgent(
+    QuickInsightAgent,
+    WorkspaceAgent,
+    StreamingWorkspaceAgent,
+    Protocol,
+):
     """Intersection contract required for every object in the routed registry."""
 
 

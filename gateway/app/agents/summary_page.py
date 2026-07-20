@@ -1,18 +1,23 @@
+from collections.abc import AsyncIterator
+
 from app.agents.base import (
     AgentContext,
     AgentExecution,
     OpenAIChatAgent,
     QuickInsightAgent,
+    StreamingWorkspaceAgent,
     WorkspaceAgent,
     WorkspaceAgentContext,
     format_workspace_context,
     language_directive,
 )
+from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
 from app.modules.task.schema import (
     Action,
     ActionId,
     AgentName,
     ChatResult,
+    DOCUMENT_TEXT_MAX_CHARS,
     Insight,
     PageContext,
     QuickInsightRequest,
@@ -41,7 +46,12 @@ WORKSPACE_SYSTEM_PROMPT = (
 )
 
 
-class SummaryPageAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
+class SummaryPageAgent(
+    OpenAIChatAgent,
+    QuickInsightAgent,
+    WorkspaceAgent,
+    StreamingWorkspaceAgent,
+):
     """Stateless Agent for generic page summaries and open follow-up questions."""
 
     name = AgentName.SUMMARY_PAGE
@@ -163,7 +173,7 @@ class SummaryPageAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
         )
 
     def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
-        """Answer one v2 Workspace turn with a Markdown-only ReplyResult."""
+        """Answer one synchronous compatibility turn with a Markdown-only reply."""
 
         request = ctx.request
         prompt = self._build_workspace_prompt(request)
@@ -174,4 +184,42 @@ class SummaryPageAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
             raw_result=result,
             prompt=prompt,
             model=model,
+        )
+
+    async def stream_chat(
+        self,
+        context: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """Stream one raw Markdown reply and emit one validated terminal execution."""
+
+        request = context.request
+        prompt = self._build_workspace_prompt(request)
+        system = WORKSPACE_SYSTEM_PROMPT + "\n\n" + language_directive(request.lang)
+        opened = await self.open_prompt_stream(system=system, prompt=prompt)
+        yield AgentStatus(stage="generating_reply")
+
+        chunks: list[str] = []
+        total_chars = 0
+        async for chunk in opened.chunks:
+            if not chunk:
+                continue
+            total_chars += len(chunk)
+            if total_chars > DOCUMENT_TEXT_MAX_CHARS:
+                raise ValueError(
+                    f"Summary Markdown exceeds {DOCUMENT_TEXT_MAX_CHARS} characters"
+                )
+            chunks.append(chunk)
+            yield AgentDelta(text=chunk)
+
+        raw_result = "".join(chunks)
+        if not raw_result.strip():
+            raise ValueError("Summary result must contain Markdown")
+        yield AgentStatus(stage="finalizing")
+        yield AgentCompleted(
+            execution=AgentExecution(
+                content=ReplyResult(type="reply", markdown=raw_result),
+                raw_result=raw_result,
+                prompt=prompt,
+                model=opened.model,
+            )
         )
