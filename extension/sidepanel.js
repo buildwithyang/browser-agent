@@ -658,6 +658,7 @@ export async function loadWorkspaceForTab(
   const clearState = operation.tabChanged || !!options.clearState;
   model.tabId = tabId;
   if (clearState) {
+    elements.messageInput.value = "";
     model.state = null;
     model.selectedActionId = null;
     model.renderedHistoryCount = -1;

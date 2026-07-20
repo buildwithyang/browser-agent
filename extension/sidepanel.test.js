@@ -540,6 +540,76 @@ test("tab switch and reset generations invalidate earlier loads", async () => {
   assert.equal(model.loading, false);
 });
 
+test("workspace boundaries clear drafts while same-tab reload preserves them", async () => {
+  const { elements, model } = await renderState(workspace({ pageTitle: "Tab A" }), {
+    tabId: 7,
+  });
+  const tabBRequest = deferred();
+  const sameTabRequest = deferred();
+  const resetRequest = deferred();
+  const requests = [tabBRequest, sameTabRequest, resetRequest];
+  const dependencies = { sendRuntime: () => requests.shift().promise };
+
+  elements.messageInput.value = "private draft from tab A";
+  const tabBLoad = sidepanel.loadWorkspaceForTab(elements, model, 8, dependencies);
+  assert.equal(elements.messageInput.value, "", "tab/resource change clears the old draft");
+  tabBRequest.resolve({ ok: true, state: workspace({ pageTitle: "Tab B" }), lang: "en" });
+  await tabBLoad;
+
+  elements.messageInput.value = "draft still being written on tab B";
+  const sameTabLoad = sidepanel.loadWorkspaceForTab(elements, model, 8, dependencies);
+  assert.equal(
+    elements.messageInput.value,
+    "draft still being written on tab B",
+    "ordinary same-tab Workspace update preserves the draft"
+  );
+  sameTabRequest.resolve({ ok: true, state: workspace({ pageTitle: "Tab B refreshed" }), lang: "en" });
+  await sameTabLoad;
+  assert.equal(elements.messageInput.value, "draft still being written on tab B");
+
+  const resetLoad = sidepanel.loadWorkspaceForTab(elements, model, 8, dependencies, {
+    cancelPendingSend: true,
+    clearState: true,
+  });
+  assert.equal(elements.messageInput.value, "", "owner/reset boundary clears the draft");
+  resetRequest.resolve({ ok: false, error: "Workspace reset" });
+  await resetLoad;
+  assert.equal(elements.messageInput.value, "");
+});
+
+test("reset-cleared draft stays empty after an invalidated SEND resolves", async () => {
+  const { elements, model } = await renderState(workspace(), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const sendRequest = deferred();
+  const resetRequest = deferred();
+  const dependencies = {
+    sendRuntime: (request) => (
+      request.type === sidepanel.WORKSPACE_SEND ? sendRequest.promise : resetRequest.promise
+    ),
+  };
+  elements.messageInput.value = "owner A private instruction";
+
+  const send = sidepanel.submitMessage(elements, model, dependencies);
+  const reset = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies, {
+    cancelPendingSend: true,
+    clearState: true,
+  });
+  assert.equal(elements.messageInput.value, "");
+  resetRequest.resolve({ ok: true, state: workspace({ pageTitle: "Owner B" }), lang: "en" });
+  await reset;
+  sendRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Late owner A SEND" }),
+    lang: "en",
+  });
+  await send;
+
+  assert.equal(model.state?.pageTitle, "Owner B");
+  assert.equal(elements.messageInput.value, "");
+});
+
 test("light responsive CSS contains horizontal overflow and keeps rich content local", async () => {
   const [html, css] = await Promise.all([
     readFile(new URL("./sidepanel.html", import.meta.url), "utf8"),
