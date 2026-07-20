@@ -21,6 +21,7 @@
 - The update URL is Gateway Settings with the Chrome Web Store URL as default. The protocol integer is not environment-configurable.
 - The Extension carries the same store URL as a fallback when an old Gateway returns no upgrade payload.
 - `POST /tasks` always returns the same 426 upgrade payload. It does not parse the old document request or call a Service, Agent, Resume Service, Repository, or LLM.
+- During Tasks 1–7, new chat wire types use the temporary names `WorkspaceChatRequest` / `WorkspaceChatResponse`, while the existing `WorkspaceRequest` / `WorkspaceResponse` remain runnable. Task 8 atomically switches the API and renames chat types to the final names before deleting the old types.
 - Delete the old `TaskRequest`, `TaskResponse`, `DocumentContent`, `DocumentDraft`, `Section`, legacy adapter, and legacy generation paths. Keep `Insight`, typed Insight cards, `render_markdown`, Python `markdown`, and `nh3` because Quick Insight still uses them.
 - Workspace output is Markdown only. Do not add `content_html`, `html`, `sections`, or `document` to the new response.
 - Action is a strong hint for ordinary user messages; Quick Insight Analyze/Tailor/Cover actions are deterministic commands and skip `IntentRouter`. Quick Insight Ask More only opens/focuses the panel.
@@ -91,7 +92,7 @@ Cover all of these cases:
 - `artifacts` contains exactly nullable `cv` and `cover_letter` keys.
 - IDs are unique within their category; Artifact type matches the key; latest Artifact Attachment equals the last history Attachment of the same type.
 - CV Attachment content is an absolute HTTP(S) URL; Cover Letter content is Markdown text.
-- Response requires `result_type`, full histories, full artifacts, and `protocol_version`; its JSON has no `document`, `html`, or `sections`.
+- `WorkspaceChatResponse` requires `result_type`, full histories, full artifacts, and `protocol_version`; its JSON has no `document`, `html`, or `sections`.
 - Existing character, title, version, and message-count limits from the approved spec are enforced.
 
 Run:
@@ -129,10 +130,10 @@ In `schema.py`, add StrEnums/Literals and Pydantic models for:
 - discriminated `ChatResult`
 - `UserMessageWorkspaceRequest`
 - `QuickInsightActionWorkspaceRequest`
-- discriminated `WorkspaceRequest`
-- Markdown-only `WorkspaceResponse`
+- discriminated `WorkspaceChatRequest`
+- Markdown-only `WorkspaceChatResponse`
 
-Put the cross-object invariants in one documented validation helper reused by both request variants and the response. Reject extra fields so an old `currentDocument` or `document` cannot pass silently.
+Put the cross-object invariants in one documented validation helper reused by both request variants and the response. Reject extra fields so an old `currentDocument` or `document` cannot pass silently. Keep the existing runtime `WorkspaceRequest` and `WorkspaceResponse` names unchanged in this task; they are deleted and the chat types receive the final names in Task 8.
 
 Delete old document-only schemas only after all references are migrated in Task 8; during Task 1, mark them as transitional if needed to keep the repository importable.
 
@@ -433,7 +434,7 @@ Expected: FAIL because Service still calls `execute()` and returns `document`.
 
 ### Step 2: Implement one pure transition helper and Service orchestration
 
-Create a documented private reducer that accepts validated prior state plus `ChatResult` and returns new histories/artifacts in memory. Allocate IDs and time only after Agent success. Make `TaskService.workspace()` call `WorkspaceAgent.handle_chat()` and return the full `WorkspaceResponse`.
+Create a documented private reducer that accepts validated prior state plus `ChatResult` and returns new histories/artifacts in memory. Allocate IDs and time only after Agent success. During this staged task, add `TaskService.workspace_chat()` accepting `WorkspaceChatRequest` and returning `WorkspaceChatResponse`; keep the existing `workspace()` method runnable until Task 8 switches the API.
 
 Keep Service free of HTTP status/version-header handling. Keep Repository usage limited to existing operational metrics. Remove `TaskService.execute()` once Task 8 has changed `/tasks` to the 426 shim.
 
@@ -511,7 +512,7 @@ Intercept exact `POST /tasks` in the middleware and return 426 without reading t
 
 ### Step 3: Delete the unused document execution graph
 
-Remove legacy adapter/schema imports, `TaskService.execute()`, old document schemas, old `TaskAgent.execute()`, document prompt/parser code, and obsolete tests. Update `main.py` Agent registry typing/assembly for the two explicit interfaces. Do not remove Quick Insight HTML rendering dependencies.
+Switch `/tasks/workspace` from the old `workspace()` method to `workspace_chat()`, then delete the old method and rename `workspace_chat()` to the final `workspace()` name. Rename `WorkspaceChatRequest` / `WorkspaceChatResponse` to the final `WorkspaceRequest` / `WorkspaceResponse` names at the same boundary. Remove legacy adapter/schema imports, `TaskService.execute()`, old document schemas, old `TaskAgent.execute()`, document prompt/parser code, and obsolete tests. Update `main.py` Agent registry typing/assembly for the two explicit interfaces. Do not remove Quick Insight HTML rendering dependencies.
 
 ### Step 4: Run Gateway tests and commit
 
