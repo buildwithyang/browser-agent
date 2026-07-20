@@ -3,6 +3,7 @@ import {
   buildQuickInsightBody,
   buildWorkspaceBody,
   buildUserMessageWorkspaceBody,
+  buildWorkspaceHeaders,
   taskUrl,
   webBaseUrl,
   loginStrings,
@@ -29,24 +30,35 @@ import {
 } from "./workspace.js";
 import {
   AuthSnapshotChangedError,
+  abortWorkspaceStreams,
+  acceptWorkspaceStreamEvent,
   activeWorkspaceKey,
   applyForCurrentOwner,
   clearAuthWorkspaceStateIfCurrent,
   clearWorkspaceSessionNamespace,
+  createActiveWorkspaceStream,
   createAuthSnapshot,
   createKeyedQueue,
   initialSelectionKey,
+  finishActiveWorkspaceStream,
+  isActiveWorkspaceStream,
   loadAfterPendingSeed,
   loadOwnerScopedWorkspace,
   mergeWorkspaceSeed,
+  pendingWorkspaceStream,
   readGatewayResponse,
+  replaceActiveWorkspaceStream,
   restoreInitialSelection,
+  workspaceStreamSnapshot,
 } from "./workspace-controller.js";
 import {
   createUserMessageOperation,
+  identifyWorkspaceOperation,
   runWorkspaceOperation,
+  WorkspaceOperationStaleError,
   workspaceOperationErrorEvent,
 } from "./workspace-operation.js";
+import { readWorkspaceEventStream } from "./workspace-stream.js";
 
 const MENU_ID = "browser-agent";
 const OPEN_WORKSPACE = "AGENT_BRIDGE_OPEN_WORKSPACE";
@@ -54,6 +66,7 @@ const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
 const workspaceSeedQueue = createKeyedQueue();
 const workspaceOperationQueue = createKeyedQueue();
+const activeWorkspaceStreams = new Map();
 
 // 菜单文字跟随语言偏好:zh/en 强制;"browser"/"auto" 按浏览器界面语言。
 const MENU_TITLES = {
@@ -202,6 +215,11 @@ function notifyWorkspaceReset(tabId) {
   });
 }
 
+/** Abort every transient stream after its authentication namespace becomes invalid. */
+function abortAllWorkspaceStreams(reason) {
+  return abortWorkspaceStreams(activeWorkspaceStreams, () => true, reason);
+}
+
 /** Clear auth only when a 401 still belongs to the current credential generation. */
 async function clearAuthNamespace(authSnapshot) {
   return clearAuthWorkspaceStateIfCurrent({
@@ -210,7 +228,10 @@ async function clearAuthNamespace(authSnapshot) {
     localStore: chrome.storage.local,
     sessionStore: chrome.storage.session,
     authKeys: [TOKEN_KEY, EXPIRES_KEY, WORKSPACE_OWNER_KEY],
-    onCleared: () => notifyWorkspaceReset(),
+    onCleared: () => {
+      abortAllWorkspaceStreams("auth_cleared");
+      notifyWorkspaceReset();
+    },
   });
 }
 
@@ -368,6 +389,7 @@ function buildOperationRequest(pageContext, active, operation) {
       state: active.state,
       message: operation.message,
       lang: active.lang,
+      operationId: operation.operationId,
     });
   }
   return buildWorkspaceBody(pageContext, {
@@ -377,6 +399,18 @@ function buildOperationRequest(pageContext, active, operation) {
     histories: active.state.histories,
     artifacts: active.state.artifacts,
     lang: active.lang,
+    operationId: operation.operationId,
+  });
+}
+
+/** Broadcast one cumulative transient stream snapshot without exposing raw wire events. */
+function notifyWorkspaceStream(eventType, active) {
+  chrome.runtime.sendMessage({
+    type: "AGENT_BRIDGE_WORKSPACE_STREAM",
+    eventType,
+    snapshot: workspaceStreamSnapshot(active),
+  }, () => {
+    void chrome.runtime.lastError;
   });
 }
 
@@ -384,51 +418,109 @@ function buildOperationRequest(pageContext, active, operation) {
 async function executeWorkspaceOperation(tabId, operation, authSnapshot) {
   const active = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
   if (!active) throw new Error("Open a Quick Insight Action before sending");
-  return runWorkspaceOperation(operation, {
-    queue: workspaceOperationQueue,
-    key: active.mapping.storageKey,
-    loadLatest: async () => {
-      const latest = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
-      if (!latest || latest.mapping.storageKey !== active.mapping.storageKey) {
-        throw new Error("The active Workspace changed before this operation was sent");
-      }
-      const allowed = operation.trigger === "user_message"
-        ? canSendUserMessage(latest.state)
-        : canRunQuickInsightAction(latest.state);
-      if (!allowed) throw new Error("Workspace message limit reached");
-      return latest;
-    },
-    collectPageContext: () => collectPageContext(tabId),
-    buildRequest: buildOperationRequest,
-    executeRequest: async (body) => {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 120000);
-      const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
-      try {
-        const response = await fetch(taskUrl(DEFAULT_GATEWAY, "workspace"), {
-          method: "POST",
-          headers: buildAuthHeaders(authSnapshot.token),
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-        return readGatewayResponse(response);
-      } finally {
-        clearTimeout(timeout);
-        clearInterval(keepAlive);
-      }
-    },
-    applyResponse: (latest, workspaceResponse) => applyForCurrentOwner({
-      snapshot: authSnapshot,
-      readCurrentSnapshot: readAuthSnapshot,
-      onOwnerMismatch: () => notifyWorkspaceReset(tabId),
-      apply: async () => {
-        // Full response replacement is the only success write; no optimistic User Message exists.
-        const state = applyWorkspaceResponse(latest.state, workspaceResponse);
-        await chrome.storage.local.set({ [latest.mapping.storageKey]: state });
-        return { state, lang: latest.lang };
-      },
-    }),
+  const key = active.mapping.storageKey;
+  const identifiedOperation = identifyWorkspaceOperation(
+    operation,
+    operation.operationId || crypto.randomUUID()
+  );
+  const stream = createActiveWorkspaceStream({
+    operationId: identifiedOperation.operationId,
+    tabId,
+    resourceUrl: active.mapping.resourceUrl,
+    submittedMessage: identifiedOperation.submittedMessage,
+    controller: new AbortController(),
   });
+  // Replacement happens before queue entry so a newer same-resource command cancels old I/O now.
+  replaceActiveWorkspaceStream(activeWorkspaceStreams, key, stream);
+
+  try {
+    return await runWorkspaceOperation(identifiedOperation, {
+      queue: workspaceOperationQueue,
+      key,
+      loadLatest: async () => {
+        if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)) {
+          throw new WorkspaceOperationStaleError();
+        }
+        const latest = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
+        if (
+          !latest
+          || latest.mapping.storageKey !== key
+          || !isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)
+        ) {
+          throw new WorkspaceOperationStaleError();
+        }
+        const allowed = identifiedOperation.trigger === "user_message"
+          ? canSendUserMessage(latest.state)
+          : canRunQuickInsightAction(latest.state);
+        if (!allowed) throw new Error("Workspace message limit reached");
+        return latest;
+      },
+      collectPageContext: () => collectPageContext(tabId),
+      buildRequest: buildOperationRequest,
+      executeRequest: async function* (body) {
+        const timeout = setTimeout(() => {
+          abortWorkspaceStreams(
+            activeWorkspaceStreams,
+            (candidate) => candidate === stream,
+            "timeout"
+          );
+        }, 120000);
+        const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+        try {
+          const response = await fetch(taskUrl(DEFAULT_GATEWAY, "workspace"), {
+            method: "POST",
+            headers: buildWorkspaceHeaders(authSnapshot.token),
+            body: JSON.stringify(body),
+            signal: stream.controller.signal,
+          });
+          for await (const event of readWorkspaceEventStream(response)) yield event;
+        } finally {
+          clearTimeout(timeout);
+          clearInterval(keepAlive);
+        }
+      },
+      onEvent: (event) => {
+        if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)) return false;
+        if (!acceptWorkspaceStreamEvent(stream, event)) return false;
+        notifyWorkspaceStream(event.type, stream);
+        return true;
+      },
+      applyResponse: (latest, workspaceResponse) => {
+        if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)) {
+          throw new WorkspaceOperationStaleError();
+        }
+        return applyForCurrentOwner({
+          snapshot: authSnapshot,
+          readCurrentSnapshot: readAuthSnapshot,
+          onOwnerMismatch: () => notifyWorkspaceReset(tabId),
+          apply: async () => {
+            if (!isActiveWorkspaceStream(activeWorkspaceStreams, key, stream.operationId)) {
+              throw new WorkspaceOperationStaleError();
+            }
+            // Only the validated completed.response replaces the canonical persisted Workspace.
+            const state = applyWorkspaceResponse(latest.state, workspaceResponse);
+            await chrome.storage.local.set({ [latest.mapping.storageKey]: state });
+            return { state, lang: latest.lang };
+          },
+        });
+      },
+    });
+  } catch (error) {
+    if (
+      stream.cancelReason
+      && stream.cancelReason !== "timeout"
+    ) {
+      throw new WorkspaceOperationStaleError();
+    }
+    throw error;
+  } finally {
+    finishActiveWorkspaceStream(
+      activeWorkspaceStreams,
+      key,
+      stream.operationId,
+      stream.cancelReason || "terminal"
+    );
+  }
 }
 
 /** Notify every Side Panel that one tab now owns a freshly seeded Workspace. */
@@ -447,6 +539,7 @@ function notifyWorkspaceOperationEvent(event) {
 
 /** Apply snapshot-conditional 401 recovery and broadcast a stable operation error. */
 async function handleWorkspaceOperationError(tabId, error, authSnapshot) {
+  if (error?.suppressBroadcast) return workspaceOperationErrorEvent(error, tabId);
   let event = null;
   if (error instanceof AuthSnapshotChangedError) {
     event = workspaceOperationErrorEvent(error, tabId);
@@ -530,7 +623,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: false, error: "Open a Quick Insight Action to start this Workspace." });
         return;
       }
-      sendResponse({ ok: true, state: active.state, lang: active.lang });
+      sendResponse({
+        ok: true,
+        state: active.state,
+        lang: active.lang,
+        pendingStream: pendingWorkspaceStream(
+          activeWorkspaceStreams,
+          active.mapping.storageKey,
+          message.tabId
+        ),
+      });
     })
     .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
@@ -540,7 +642,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function dispatchWorkspaceSend(tabId, message, sendResponse) {
   const authSnapshot = await readAuthSnapshot();
   try {
-    const operation = createUserMessageOperation(message.actionId, message.message);
+    const operation = createUserMessageOperation(
+      message.actionId,
+      message.message,
+      message.operationId || null
+    );
     const { state, lang } = await executeWorkspaceOperation(tabId, operation, authSnapshot);
     sendResponse({ ok: true, state, lang });
   } catch (error) {
@@ -560,6 +666,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 /** Remove privacy-sensitive session mappings when their owning tab closes. */
 chrome.tabs.onRemoved.addListener((tabId) => {
+  abortWorkspaceStreams(
+    activeWorkspaceStreams,
+    (active) => active.tabId === tabId,
+    "tab_closed"
+  );
   chrome.storage.session.remove([
     activeWorkspaceKey(tabId),
     initialSelectionKey(tabId),
@@ -1163,6 +1274,7 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     store,
     now: Date.now(),
     onOwnerChange: async () => {
+      abortAllWorkspaceStreams("owner_changed");
       await clearWorkspaceSessionNamespace(chrome.storage.session);
       notifyWorkspaceReset();
     },

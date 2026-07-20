@@ -5,6 +5,28 @@ const QUICK_INSIGHT_ACTION_IDS = new Map([
   // Accept the product-label alias while emitting the Gateway's stable Action ID.
   ["generate_cover_letter", "write_cover_letter"],
 ]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Error raised when a validated stream terminates without a canonical response. */
+export class WorkspaceStreamFailedError extends Error {
+  /** Retain only bounded routing metadata, never the Gateway's provider-facing message. */
+  constructor(code = "stream_interrupted", recoverable = true) {
+    super("Workspace generation failed. Please retry.");
+    this.name = "WorkspaceStreamFailedError";
+    this.code = code;
+    this.recoverable = recoverable;
+  }
+}
+
+/** Error raised when an operation loses ownership before its stream can be applied. */
+export class WorkspaceOperationStaleError extends Error {
+  /** Mark stale work so Background can answer its caller without broadcasting it to newer UI. */
+  constructor() {
+    super("The Workspace operation was superseded.");
+    this.name = "WorkspaceOperationStaleError";
+    this.suppressBroadcast = true;
+  }
+}
 
 /** Return a non-empty Action ID or throw one stable command-validation error. */
 function requiredActionId(actionId) {
@@ -36,18 +58,46 @@ export function createQuickInsightOperation(actionId) {
 }
 
 /** Describe one validated composer Workspace operation without performing side effects. */
-export function createUserMessageOperation(actionId, message) {
-  const userMessage = typeof message === "string" ? message.trim() : "";
+export function createUserMessageOperation(actionId, message, operationId = null) {
+  const submittedMessage = typeof message === "string" ? message : "";
+  const userMessage = submittedMessage.trim();
   if (!userMessage) throw new TypeError("Message cannot be empty");
-  return Object.freeze({
+  const operation = {
     kind: "request",
     trigger: "user_message",
     actionId: requiredActionId(actionId),
     message: userMessage,
+    submittedMessage,
+  };
+  if (operationId !== null) operation.operationId = operationId;
+  return Object.freeze(operation);
+}
+
+/** Bind one request Command to the exact Extension-generated UUID used on the wire. */
+export function identifyWorkspaceOperation(operation, operationId) {
+  if (!operation || operation.kind !== "request") {
+    throw new TypeError("Only request operations can be identified");
+  }
+  if (typeof operationId !== "string" || !UUID_PATTERN.test(operationId)) {
+    throw new TypeError("Workspace operationId must be a UUID");
+  }
+  return Object.freeze({ ...operation, operationId });
+}
+
+/** Return one immutable cumulative snapshot after applying a validated stream event. */
+function advanceStreamSnapshot(snapshot, event) {
+  return Object.freeze({
+    operationId: snapshot.operationId,
+    sequence: event.sequence,
+    stage: event.type === "status" ? event.stage : snapshot.stage,
+    markdown: event.type === "delta"
+      ? snapshot.markdown + event.text
+      : snapshot.markdown,
+    createdAt: event.type === "started" ? event.created_at : snapshot.createdAt,
   });
 }
 
-/** Run one request Command after reloading canonical state inside its keyed queue. */
+/** Run one request Command as a strict event stream inside its keyed queue. */
 export async function runWorkspaceOperation(operation, dependencies) {
   if (!operation || operation.kind === "open_only") return null;
   if (operation.kind !== "request") throw new TypeError("Unknown Workspace operation kind");
@@ -58,18 +108,76 @@ export async function runWorkspaceOperation(operation, dependencies) {
     collectPageContext,
     buildRequest,
     executeRequest,
+    onEvent,
     applyResponse,
   } = dependencies || {};
   if (!queue?.run || !key) throw new TypeError("Workspace operation queue and key are required");
+  if (typeof operation.operationId !== "string" || !UUID_PATTERN.test(operation.operationId)) {
+    throw new TypeError("Workspace operationId must be a UUID");
+  }
 
   return queue.run(key, async () => {
     // The click-time object is intentionally ignored; queue ordering makes only this reload current.
     const latest = await loadLatest();
     const pageContext = await collectPageContext();
     const body = buildRequest(pageContext, latest, operation);
-    const response = await executeRequest(body, latest, operation);
-    return applyResponse(latest, response, operation);
+    if (body?.operationId !== operation.operationId) {
+      throw new TypeError("Workspace request operationId does not match its operation");
+    }
+    const stream = await executeRequest(body, latest, operation);
+    if (!stream || typeof stream[Symbol.asyncIterator] !== "function") {
+      throw new TypeError("Workspace request must return an async event stream");
+    }
+
+    let snapshot = Object.freeze({
+      operationId: operation.operationId,
+      sequence: -1,
+      stage: null,
+      markdown: "",
+      createdAt: null,
+    });
+    let terminalEvent = null;
+    for await (const event of stream) {
+      if (!event || event.operation_id !== operation.operationId) {
+        throw new TypeError("Workspace stream operation identity does not match the request");
+      }
+      if (!Number.isInteger(event.sequence) || event.sequence <= snapshot.sequence) {
+        throw new TypeError("Workspace stream sequence is stale");
+      }
+      if (snapshot.sequence === -1 && (event.type !== "started" || event.sequence !== 0)) {
+        throw new TypeError("Workspace stream must start at sequence zero");
+      }
+      if (snapshot.sequence >= 0 && event.type === "started") {
+        throw new TypeError("Workspace stream may start only once");
+      }
+      if (terminalEvent) {
+        throw new TypeError("Workspace stream emitted data after its terminal event");
+      }
+
+      snapshot = advanceStreamSnapshot(snapshot, event);
+      if (typeof onEvent === "function" && await onEvent(event, snapshot) === false) {
+        throw new WorkspaceOperationStaleError();
+      }
+      if (event.type === "completed" || event.type === "failed") terminalEvent = event;
+    }
+
+    if (!terminalEvent) throw new WorkspaceStreamFailedError();
+    if (terminalEvent.type === "failed") {
+      throw new WorkspaceStreamFailedError(terminalEvent.code, terminalEvent.recoverable);
+    }
+    return applyResponse(latest, terminalEvent.response, operation);
   });
+}
+
+/** Map internal failures to bounded UI-safe copy without provider, prompt, or token content. */
+function safeWorkspaceErrorMessage(error) {
+  if (error?.name === "WorkspaceStreamFailedError") return error.message;
+  if (error?.name === "AbortError") return "Workspace request was canceled. Please retry.";
+  if (error instanceof TypeError) return "Workspace response was invalid. Please retry.";
+  if (Number.isInteger(error?.status)) {
+    return `Workspace request failed (${error.status}). Please retry.`;
+  }
+  return "Workspace request failed. Please retry.";
 }
 
 /** Describe the structured UI event emitted for one Workspace operation error. */
@@ -82,10 +190,12 @@ export function workspaceOperationErrorEvent(error, tabId) {
       requiredVersion: error.requiredVersion,
     };
   }
-  return {
+  const event = {
     type: "AGENT_BRIDGE_WORKSPACE_ERROR",
     tabId,
-    error: error?.message || "Workspace request failed",
-    recoverable: true,
+    error: safeWorkspaceErrorMessage(error),
+    recoverable: error?.recoverable !== false,
   };
+  if (error?.suppressBroadcast) event.stale = true;
+  return event;
 }

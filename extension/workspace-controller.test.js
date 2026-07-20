@@ -98,6 +98,98 @@ test("Workspace GET waits for asynchronous seed before loading session state", a
   assert.equal(result, "workspace");
 });
 
+test("active stream accepts only current identity and increasing sequence", () => {
+  const createActiveWorkspaceStream = requiredExport("createActiveWorkspaceStream");
+  const acceptWorkspaceStreamEvent = requiredExport("acceptWorkspaceStreamEvent");
+  const workspaceStreamSnapshot = requiredExport("workspaceStreamSnapshot");
+  const controller = new AbortController();
+  const active = createActiveWorkspaceStream({
+    operationId: "50000000-0000-4000-8000-000000000001",
+    tabId: 7,
+    resourceUrl: "https://x/job/1",
+    submittedMessage: "original composer input",
+    createdAt: "2026-07-20T12:00:00Z",
+    controller,
+  });
+
+  assert.equal(acceptWorkspaceStreamEvent(active, {
+    type: "started",
+    operation_id: active.operationId,
+    sequence: 0,
+    created_at: active.createdAt,
+  }), true);
+  assert.equal(acceptWorkspaceStreamEvent(active, {
+    type: "delta",
+    operation_id: active.operationId,
+    sequence: 1,
+    text: "first",
+  }), true);
+  assert.equal(acceptWorkspaceStreamEvent(active, {
+    type: "delta",
+    operation_id: active.operationId,
+    sequence: 1,
+    text: "duplicate",
+  }), false);
+  assert.equal(acceptWorkspaceStreamEvent(active, {
+    type: "delta",
+    operation_id: "50000000-0000-4000-8000-000000000002",
+    sequence: 2,
+    text: "wrong operation",
+  }), false);
+
+  assert.deepEqual(workspaceStreamSnapshot(active), {
+    operationId: active.operationId,
+    tabId: 7,
+    resourceUrl: "https://x/job/1",
+    sequence: 1,
+    stage: null,
+    markdown: "first",
+    submittedMessage: "original composer input",
+    createdAt: "2026-07-20T12:00:00Z",
+  });
+});
+
+test("replacing or closing an active stream aborts it without deleting a newer owner", () => {
+  const createActiveWorkspaceStream = requiredExport("createActiveWorkspaceStream");
+  const replaceActiveWorkspaceStream = requiredExport("replaceActiveWorkspaceStream");
+  const finishActiveWorkspaceStream = requiredExport("finishActiveWorkspaceStream");
+  const abortWorkspaceStreams = requiredExport("abortWorkspaceStreams");
+  const streams = new Map();
+  const first = createActiveWorkspaceStream({
+    operationId: "50000000-0000-4000-8000-000000000001",
+    tabId: 7,
+    resourceUrl: "https://x/job/1",
+    controller: new AbortController(),
+  });
+  const second = createActiveWorkspaceStream({
+    operationId: "50000000-0000-4000-8000-000000000002",
+    tabId: 7,
+    resourceUrl: "https://x/job/1",
+    controller: new AbortController(),
+  });
+
+  replaceActiveWorkspaceStream(streams, "owner/resource", first);
+  replaceActiveWorkspaceStream(streams, "owner/resource", second);
+  assert.equal(first.controller.signal.aborted, true);
+  assert.equal(first.cancelReason, "superseded");
+  assert.equal(streams.get("owner/resource"), second);
+
+  assert.equal(
+    finishActiveWorkspaceStream(streams, "owner/resource", first.operationId),
+    false
+  );
+  assert.equal(streams.get("owner/resource"), second);
+
+  assert.equal(abortWorkspaceStreams(
+    streams,
+    (active) => active.tabId === 7,
+    "tab_closed"
+  ), 1);
+  assert.equal(second.controller.signal.aborted, true);
+  assert.equal(second.cancelReason, "tab_closed");
+  assert.equal(streams.size, 0);
+});
+
 test("Workspace seed refreshes page metadata while preserving canonical conversation", () => {
   const existing = {
     resourceUrl: "https://x/job/1",

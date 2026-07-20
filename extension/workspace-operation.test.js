@@ -5,7 +5,9 @@ import { readFile } from "node:fs/promises";
 import {
   createQuickInsightOperation,
   createUserMessageOperation,
+  identifyWorkspaceOperation,
   runWorkspaceOperation,
+  WorkspaceOperationStaleError,
   workspaceOperationErrorEvent,
 } from "./workspace-operation.js";
 
@@ -19,6 +21,124 @@ function immediateQueue() {
     },
   };
 }
+
+const OPERATION_ID = "50000000-0000-4000-8000-000000000001";
+
+/** Identify one request operation with the UUID sent to the Gateway. */
+function identifiedOperation(overrides = {}) {
+  return {
+    kind: "request",
+    trigger: "user_message",
+    actionId: "analyze",
+    message: "这个岗位怎么样？",
+    submittedMessage: "  这个岗位怎么样？  ",
+    operationId: OPERATION_ID,
+    ...overrides,
+  };
+}
+
+/** Build one valid stream event with the test operation identity. */
+function streamEvent(type, sequence, fields = {}) {
+  return { type, operation_id: OPERATION_ID, sequence, ...fields };
+}
+
+test("stream operation broadcasts cumulative snapshots and applies only completed", async () => {
+  const snapshots = [];
+  const applied = [];
+  const completedResponse = { histories: [{ id: "assistant" }] };
+
+  const result = await runWorkspaceOperation(identifiedOperation(), {
+    queue: immediateQueue(),
+    key: "workspace-a",
+    loadLatest: async () => ({ histories: [] }),
+    collectPageContext: async () => ({ url: "https://x/job/1" }),
+    buildRequest: (_context, _latest, operation) => ({
+      operationId: operation.operationId,
+    }),
+    executeRequest: async function* () {
+      yield streamEvent("started", 0, { created_at: "2026-07-20T12:00:00Z" });
+      yield streamEvent("delta", 1, { text: "这个岗" });
+      yield streamEvent("delta", 2, { text: "位" });
+      yield streamEvent("completed", 3, { response: completedResponse });
+    },
+    onEvent: (event, snapshot) => snapshots.push({ event, snapshot }),
+    applyResponse: async (_latest, response) => {
+      applied.push(response);
+      return response;
+    },
+  });
+
+  assert.deepEqual(
+    snapshots.map((item) => item.snapshot.markdown),
+    ["", "这个岗", "这个岗位", "这个岗位"]
+  );
+  assert.deepEqual(
+    snapshots.map((item) => item.snapshot.sequence),
+    [0, 1, 2, 3]
+  );
+  assert.equal(applied.length, 1);
+  assert.equal(result, completedResponse);
+});
+
+test("failed stream preserves submitted input and never applies partial output", async () => {
+  const snapshots = [];
+  let applyCalls = 0;
+
+  await assert.rejects(
+    runWorkspaceOperation(identifiedOperation(), {
+      queue: immediateQueue(),
+      key: "workspace-a",
+      loadLatest: async () => ({ histories: [] }),
+      collectPageContext: async () => ({ url: "https://x/job/1" }),
+      buildRequest: (_context, _latest, operation) => ({
+        operationId: operation.operationId,
+      }),
+      executeRequest: async function* () {
+        yield streamEvent("started", 0, { created_at: "2026-07-20T12:00:00Z" });
+        yield streamEvent("delta", 1, { text: "partial private model output" });
+        yield streamEvent("failed", 2, {
+          code: "model_error",
+          message: "provider payload must not escape",
+          recoverable: true,
+        });
+      },
+      onEvent: (_event, snapshot) => snapshots.push(snapshot),
+      applyResponse: async () => {
+        applyCalls += 1;
+      },
+    }),
+    (error) => error.name === "WorkspaceStreamFailedError"
+      && error.message !== "provider payload must not escape"
+  );
+
+  assert.equal(applyCalls, 0);
+  assert.equal(snapshots.at(-1).markdown, "partial private model output");
+  assert.equal(identifiedOperation().submittedMessage, "  这个岗位怎么样？  ");
+});
+
+test("operation rejects a stream identity mismatch before applying completion", async () => {
+  let applyCalls = 0;
+  await assert.rejects(
+    runWorkspaceOperation(identifiedOperation(), {
+      queue: immediateQueue(),
+      key: "workspace-a",
+      loadLatest: async () => ({}),
+      collectPageContext: async () => ({}),
+      buildRequest: (_context, _latest, operation) => ({ operationId: operation.operationId }),
+      executeRequest: async function* () {
+        yield streamEvent("started", 0, {
+          operation_id: "50000000-0000-4000-8000-000000000002",
+          created_at: "2026-07-20T12:00:00Z",
+        });
+      },
+      applyResponse: async () => {
+        applyCalls += 1;
+      },
+    }),
+    /operation/i
+  );
+  assert.equal(applyCalls, 0);
+});
 
 test("executable Quick Insight Actions map to one quick_insight_action request", () => {
   const mappings = [
@@ -72,7 +192,10 @@ test("Ask More describes an open-only operation", async () => {
 });
 
 test("operation reloads complete latest state inside the resource queue", async () => {
-  const operation = createQuickInsightOperation("tailor_resume");
+  const operation = identifyWorkspaceOperation(
+    createQuickInsightOperation("tailor_resume"),
+    OPERATION_ID
+  );
   const queue = immediateQueue();
   const stale = { histories: [], artifacts: { cv: null, cover_letter: null } };
   const latest = {
@@ -97,15 +220,19 @@ test("operation reloads complete latest state inside the resource queue", async 
       assert.equal(state, latest);
       assert.notEqual(state, stale);
       return {
+        operationId: command.operationId,
         trigger: command.trigger,
         histories: state.histories,
         artifacts: state.artifacts,
         selectedText: pageContext.selectedText,
       };
     },
-    executeRequest: async (body) => {
+    executeRequest: async function* (body) {
       events.push("request");
-      return { histories: [{ id: "server-assistant" }], artifacts: latest.artifacts, body };
+      yield streamEvent("started", 0, { created_at: "2026-07-20T12:00:00Z" });
+      yield streamEvent("completed", 1, {
+        response: { histories: [{ id: "server-assistant" }], artifacts: latest.artifacts, body },
+      });
     },
     applyResponse: async (state, response) => {
       events.push("apply-response");
@@ -129,7 +256,10 @@ test("operation reloads complete latest state inside the resource queue", async 
 });
 
 test("composer operation uses user_message through the same executor", async () => {
-  const operation = createUserMessageOperation("analyze", "What should I improve?");
+  const operation = identifyWorkspaceOperation(
+    createUserMessageOperation("analyze", "What should I improve?"),
+    OPERATION_ID
+  );
   const queue = immediateQueue();
   let requestBody = null;
 
@@ -139,13 +269,15 @@ test("composer operation uses user_message through the same executor", async () 
     loadLatest: async () => ({ histories: [], artifacts: { cv: null, cover_letter: null } }),
     collectPageContext: async () => ({ url: "https://x/job/1" }),
     buildRequest: (_pageContext, _state, command) => ({
+      operationId: command.operationId,
       trigger: command.trigger,
       actionId: command.actionId,
       message: command.message,
     }),
-    executeRequest: async (body) => {
+    executeRequest: async function* (body) {
       requestBody = body;
-      return { histories: [] };
+      yield streamEvent("started", 0, { created_at: "2026-07-20T12:00:00Z" });
+      yield streamEvent("completed", 1, { response: { histories: [] } });
     },
     applyResponse: (_state, response) => response,
   });
@@ -155,8 +287,11 @@ test("composer operation uses user_message through the same executor", async () 
     trigger: "user_message",
     actionId: "analyze",
     message: "What should I improve?",
+    submittedMessage: "What should I improve?",
+    operationId: OPERATION_ID,
   });
   assert.deepEqual(requestBody, {
+    operationId: OPERATION_ID,
     trigger: "user_message",
     actionId: "analyze",
     message: "What should I improve?",
@@ -177,12 +312,15 @@ test("Workspace errors produce stable update-required or retryable events", () =
     requiredVersion: 3,
   });
 
-  assert.deepEqual(workspaceOperationErrorEvent(new Error("Gateway unavailable"), 7), {
+  assert.deepEqual(workspaceOperationErrorEvent(new Error("Bearer secret private prompt"), 7), {
     type: "AGENT_BRIDGE_WORKSPACE_ERROR",
     tabId: 7,
-    error: "Gateway unavailable",
+    error: "Workspace request failed. Please retry.",
     recoverable: true,
   });
+  const stale = workspaceOperationErrorEvent(new WorkspaceOperationStaleError(), 7);
+  assert.equal(stale.stale, true);
+  assert.doesNotMatch(stale.error, /superseded/i);
 });
 
 test("background contains one shared operation request pipeline", async () => {

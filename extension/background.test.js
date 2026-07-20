@@ -3,11 +3,108 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import * as auth from "./auth.js";
-import { applyWorkspaceResponse, createWorkspace } from "./workspace.js";
+import {
+  applyWorkspaceResponse,
+  createWorkspace,
+  workspaceStorageKey,
+} from "./workspace.js";
+import { activeWorkspaceKey } from "./workspace-controller.js";
 
 const RESOURCE_URL = "https://example.com/jobs/1";
 const ARTIFACT_ID = "10000000-0000-4000-8000-000000000001";
 const ATTACHMENT_ID = "20000000-0000-4000-8000-000000000001";
+const encoder = new TextEncoder();
+
+/** Create one Chrome-event-shaped listener registry. */
+function fakeEvent() {
+  const listeners = [];
+  return {
+    listeners,
+    addListener(listener) {
+      listeners.push(listener);
+    },
+  };
+}
+
+/** Create one mutable Chrome storage area with observable canonical writes. */
+function fakeStorageArea(initial = {}) {
+  const data = { ...initial };
+  const setCalls = [];
+  return {
+    data,
+    setCalls,
+    async get(query) {
+      if (query === null) return { ...data };
+      if (typeof query === "string") return { [query]: data[query] };
+      if (Array.isArray(query)) {
+        return Object.fromEntries(query.map((key) => [key, data[key]]));
+      }
+      return Object.assign({}, query, data);
+    },
+    async set(values) {
+      setCalls.push(values);
+      Object.assign(data, values);
+    },
+    async remove(keys) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) delete data[key];
+    },
+  };
+}
+
+/** Create one manually driven NDJSON response and bind network abort to its body. */
+function controlledStreamResponse(signal) {
+  let streamController = null;
+  let closed = false;
+  const body = new ReadableStream({
+    start(controller) {
+      streamController = controller;
+    },
+  });
+  signal.addEventListener("abort", () => {
+    if (closed) return;
+    closed = true;
+    streamController.error(new DOMException("Aborted", "AbortError"));
+  }, { once: true });
+  return {
+    response: new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/x-ndjson",
+        "X-Agent-Bridge-Protocol-Version": "3",
+      },
+    }),
+    /** Push one complete wire event into the controlled response. */
+    emit(event) {
+      streamController.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+    },
+    /** Close the response after its terminal event. */
+    close() {
+      if (closed) return;
+      closed = true;
+      streamController.close();
+    },
+  };
+}
+
+/** Wait for one asynchronous Background effect without using a fixed sleep. */
+async function waitFor(predicate, message) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail(message);
+}
+
+/** Dispatch one fake runtime request to the first Background listener that claims it. */
+function dispatchRuntime(runtimeEvent, message, sender = {}) {
+  return new Promise((resolve, reject) => {
+    for (const listener of runtimeEvent.listeners) {
+      const claimed = listener(message, sender, resolve);
+      if (claimed === true) return;
+    }
+    reject(new Error(`No runtime listener handled ${message.type}`));
+  });
+}
 
 /** Build a complete successful first Artifact response from the Gateway. */
 function firstArtifactResponse() {
@@ -101,4 +198,356 @@ test("next SEND carries the complete Artifact state returned by the prior respon
   assert.match(operationPipeline, /buildWorkspaceBody/);
   assert.match(operationPipeline, /runWorkspaceOperation/);
   assert.doesNotMatch(operationPipeline, /currentDocument/);
+});
+
+test("Background coordinates one abortable Workspace NDJSON pipeline", async () => {
+  const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
+  const operationPipeline = source.slice(
+    source.indexOf("function buildOperationRequest"),
+    source.indexOf("function notifyWorkspaceUpdated")
+  );
+
+  assert.match(source, /const activeWorkspaceStreams = new Map\(\)/);
+  assert.match(operationPipeline, /crypto\.randomUUID\(\)/);
+  assert.match(operationPipeline, /operationId/);
+  assert.match(operationPipeline, /buildWorkspaceHeaders/);
+  assert.match(operationPipeline, /readWorkspaceEventStream/);
+  assert.match(operationPipeline, /AGENT_BRIDGE_WORKSPACE_STREAM/);
+  assert.doesNotMatch(operationPipeline, /readGatewayResponse\(response\)/);
+});
+
+test("Background exposes active snapshots and aborts tab- or owner-stale streams", async () => {
+  const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
+  const workspaceGet = source.slice(
+    source.indexOf("/** Serve Side Panel reads"),
+    source.indexOf("/** Execute one Side Panel SEND")
+  );
+  const tabRemoved = source.slice(
+    source.indexOf("chrome.tabs.onRemoved.addListener"),
+    source.indexOf("// Render the agent result")
+  );
+  const ownerChange = source.slice(source.indexOf("onOwnerChange: async"));
+
+  assert.match(workspaceGet, /pendingStream/);
+  assert.match(tabRemoved, /abortWorkspaceStreams/);
+  assert.match(ownerChange, /abortAllWorkspaceStreams/);
+});
+
+test("MV3 Background coordinates completion, failure, replacement, timeout, tab, and owner lifecycles", async () => {
+  const storageKey = workspaceStorageKey("user-a", RESOURCE_URL);
+  const initialState = createWorkspace({
+    resourceUrl: RESOURCE_URL,
+    actions: [{ id: "write_cover_letter", title: "Write cover letter" }],
+    selectedActionId: "write_cover_letter",
+  });
+  const local = fakeStorageArea({
+    authToken: "token-a",
+    workspaceOwnerId: "user-a",
+    [storageKey]: initialState,
+  });
+  const session = fakeStorageArea({
+    [activeWorkspaceKey(7)]: {
+      ownerId: "user-a",
+      storageKey,
+      resourceUrl: RESOURCE_URL,
+      lang: "en",
+    },
+  });
+  const runtimeOnMessage = fakeEvent();
+  const runtimeOnMessageExternal = fakeEvent();
+  const tabsOnRemoved = fakeEvent();
+  const runtimeMessages = [];
+  const fetchCalls = [];
+  const streams = [];
+
+  globalThis.chrome = {
+    contextMenus: {
+      onClicked: fakeEvent(),
+      removeAll(callback) { callback(); },
+      create() {},
+      update() {},
+    },
+    i18n: { getUILanguage: () => "en" },
+    runtime: {
+      onMessage: runtimeOnMessage,
+      onMessageExternal: runtimeOnMessageExternal,
+      onInstalled: fakeEvent(),
+      onStartup: fakeEvent(),
+      sendMessage(message, callback) {
+        runtimeMessages.push(message);
+        callback?.();
+      },
+      getPlatformInfo(callback) { callback?.({}); },
+      lastError: null,
+    },
+    scripting: { executeScript: async () => undefined },
+    sidePanel: {
+      setOptions: async () => undefined,
+      open: async () => undefined,
+    },
+    storage: {
+      local,
+      session,
+      sync: fakeStorageArea({ langPref: "en" }),
+      onChanged: fakeEvent(),
+    },
+    tabs: {
+      onRemoved: tabsOnRemoved,
+      create() {},
+      sendMessage: async () => ({
+        url: RESOURCE_URL,
+        title: "Job",
+        selectedText: "JD",
+        pageText: "Job description",
+        imageText: "",
+      }),
+    },
+  };
+  globalThis.fetch = async (_url, options) => {
+    const stream = controlledStreamResponse(options.signal);
+    streams.push(stream);
+    fetchCalls.push({ options, stream });
+    return stream.response;
+  };
+  await import(`./background.js?mv3-behavior=${Date.now()}`);
+
+  const send = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "  Keep my original input  ",
+  });
+  await waitFor(() => fetchCalls.length === 1, "Workspace fetch did not start");
+  const request = JSON.parse(fetchCalls[0].options.body);
+  assert.match(request.operationId, /^[0-9a-f-]{36}$/i);
+  assert.equal(fetchCalls[0].options.headers.Accept, "application/x-ndjson");
+  streams[0].emit({
+    type: "started",
+    operation_id: request.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:00:00Z",
+  });
+  streams[0].emit({
+    type: "delta",
+    operation_id: request.operationId,
+    sequence: 1,
+    text: "Draft",
+  });
+  await waitFor(
+    () => runtimeMessages.filter((message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM").length === 2,
+    "Stream snapshots were not broadcast"
+  );
+
+  const pending = await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_GET",
+    tabId: 7,
+  });
+  assert.equal(pending.pendingStream.operationId, request.operationId);
+  assert.equal(pending.pendingStream.markdown, "Draft");
+  assert.equal(pending.pendingStream.submittedMessage, "  Keep my original input  ");
+  assert.equal(local.setCalls.length, 0, "delta must remain memory-only");
+
+  streams[0].emit({
+    type: "completed",
+    operation_id: request.operationId,
+    sequence: 2,
+    response: firstArtifactResponse(),
+  });
+  streams[0].close();
+  const completed = await send;
+  assert.equal(completed.ok, true);
+  assert.equal(local.setCalls.length, 1);
+  assert.equal(local.data[storageKey].histories[0].content, "Created the first draft.");
+  const snapshots = runtimeMessages
+    .filter((message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM")
+    .map((message) => message.snapshot);
+  assert.deepEqual(snapshots.map((snapshot) => snapshot.markdown), ["", "Draft", "Draft"]);
+
+  const writesAfterCompletion = local.setCalls.length;
+  const failedSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Failure must restore this input",
+  });
+  await waitFor(() => fetchCalls.length === 2, "Failed Workspace fetch did not start");
+  const failedRequest = JSON.parse(fetchCalls[1].options.body);
+  streams[1].emit({
+    type: "started",
+    operation_id: failedRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:01:00Z",
+  });
+  streams[1].emit({
+    type: "delta",
+    operation_id: failedRequest.operationId,
+    sequence: 1,
+    text: "untrusted provider response",
+  });
+  streams[1].emit({
+    type: "failed",
+    operation_id: failedRequest.operationId,
+    sequence: 2,
+    code: "model_error",
+    message: "secret provider response and prompt",
+    recoverable: true,
+  });
+  streams[1].close();
+  const failed = await failedSend;
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error, "Workspace generation failed. Please retry.");
+  assert.doesNotMatch(failed.error, /secret|provider|prompt/i);
+  assert.equal(local.setCalls.length, writesAfterCompletion);
+
+  const supersededSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Old same-resource operation",
+  });
+  await waitFor(() => fetchCalls.length === 3, "Superseded Workspace fetch did not start");
+  const supersededRequest = JSON.parse(fetchCalls[2].options.body);
+  streams[2].emit({
+    type: "started",
+    operation_id: supersededRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:02:00Z",
+  });
+  const replacementSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "New same-resource operation",
+  });
+  await waitFor(
+    () => fetchCalls[2].options.signal.aborted,
+    "New operation did not abort the old same-resource request"
+  );
+  const superseded = await supersededSend;
+  assert.equal(superseded.stale, true);
+  await waitFor(() => fetchCalls.length === 4, "Replacement Workspace fetch did not start");
+  const replacementRequest = JSON.parse(fetchCalls[3].options.body);
+  streams[3].emit({
+    type: "started",
+    operation_id: replacementRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:02:01Z",
+  });
+  streams[3].emit({
+    type: "completed",
+    operation_id: replacementRequest.operationId,
+    sequence: 1,
+    response: firstArtifactResponse(),
+  });
+  streams[3].close();
+  const replacement = await replacementSend;
+  assert.equal(replacement.ok, true);
+
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const timeoutHandle = {};
+  let workspaceTimeout = null;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay === 120000) {
+      workspaceTimeout = callback;
+      return timeoutHandle;
+    }
+    return realSetTimeout(callback, delay, ...args);
+  };
+  globalThis.clearTimeout = (handle) => (
+    handle === timeoutHandle ? undefined : realClearTimeout(handle)
+  );
+  const writesBeforeTimeout = local.setCalls.length;
+  try {
+    const timedOutSend = dispatchRuntime(runtimeOnMessage, {
+      type: "AGENT_BRIDGE_WORKSPACE_SEND",
+      tabId: 7,
+      actionId: "write_cover_letter",
+      message: "Timeout must not persist",
+    });
+    await waitFor(() => fetchCalls.length === 5, "Timed Workspace fetch did not start");
+    assert.equal(typeof workspaceTimeout, "function");
+    workspaceTimeout();
+    const timedOut = await timedOutSend;
+    assert.equal(fetchCalls[4].options.signal.aborted, true);
+    assert.equal(timedOut.ok, false);
+    assert.equal(local.setCalls.length, writesBeforeTimeout);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+
+  const writesBeforeTabAbort = local.setCalls.length;
+  const abortedSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Do not persist this",
+  });
+  await waitFor(() => fetchCalls.length === 6, "Tab-aborted Workspace fetch did not start");
+  const abortedRequest = JSON.parse(fetchCalls[5].options.body);
+  streams[5].emit({
+    type: "started",
+    operation_id: abortedRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:01:00Z",
+  });
+  streams[5].emit({
+    type: "delta",
+    operation_id: abortedRequest.operationId,
+    sequence: 1,
+    text: "private partial",
+  });
+  await waitFor(
+    () => runtimeMessages.some(
+      (message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM"
+        && message.snapshot.operationId === abortedRequest.operationId
+        && message.snapshot.markdown === "private partial"
+    ),
+    "Second stream did not become active"
+  );
+  for (const listener of tabsOnRemoved.listeners) listener(7);
+  const aborted = await abortedSend;
+  assert.equal(fetchCalls[5].options.signal.aborted, true);
+  assert.equal(aborted.ok, false);
+  assert.equal(local.setCalls.length, writesBeforeTabAbort);
+  assert.equal(
+    runtimeMessages.some(
+      (message) => message.type === "AGENT_BRIDGE_WORKSPACE_ERROR"
+        && message.error?.includes("private partial")
+    ),
+    false
+  );
+
+  session.data[activeWorkspaceKey(7)] = {
+    ownerId: "user-a",
+    storageKey,
+    resourceUrl: RESOURCE_URL,
+    lang: "en",
+  };
+  const ownerStaleSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Old owner operation",
+  });
+  await waitFor(() => fetchCalls.length === 7, "Owner-stale Workspace fetch did not start");
+  const canonicalWritesBeforeOwnerChange = local.setCalls.filter(
+    (values) => Object.prototype.hasOwnProperty.call(values, storageKey)
+  ).length;
+  const authChanged = await dispatchRuntime(runtimeOnMessageExternal, {
+    type: "AUTH_TOKEN",
+    token: "token-b",
+    userId: "user-b",
+    expiresAt: "2026-07-21T10:00:00Z",
+  });
+  const ownerStale = await ownerStaleSend;
+  assert.equal(authChanged.ok, true);
+  assert.equal(fetchCalls[6].options.signal.aborted, true);
+  assert.equal(ownerStale.stale, true);
+  assert.equal(session.data[activeWorkspaceKey(7)], undefined);
+  assert.equal(local.data.workspaceOwnerId, "user-b");
+  assert.equal(local.setCalls.filter(
+    (values) => Object.prototype.hasOwnProperty.call(values, storageKey)
+  ).length, canonicalWritesBeforeOwnerChange);
 });

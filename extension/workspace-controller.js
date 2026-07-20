@@ -15,6 +15,7 @@ import {
 const ACTIVE_WORKSPACE_PREFIX = "agent-bridge:active-workspace:v1";
 const INITIAL_SELECTION_PREFIX = "agent-bridge:initial-selection:v1";
 const LEGACY_WORKSPACE_PREFIX = "agent-bridge:workspace:v1:";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Error raised when the gateway returns a syntactically valid non-success response. */
 export class GatewayHttpError extends Error {
@@ -67,6 +68,125 @@ export function authSnapshotsEqual(left, right) {
     && !!right
     && left.token === right.token
     && left.ownerId === right.ownerId;
+}
+
+/** Create one mutable in-memory record for an active Workspace stream. */
+export function createActiveWorkspaceStream({
+  operationId,
+  tabId,
+  resourceUrl,
+  submittedMessage = null,
+  createdAt = new Date().toISOString(),
+  controller,
+}) {
+  if (typeof operationId !== "string" || !UUID_PATTERN.test(operationId)) {
+    throw new TypeError("Active Workspace operationId must be a UUID");
+  }
+  if (!Number.isInteger(tabId) || tabId <= 0) {
+    throw new TypeError("Active Workspace tabId must be a positive integer");
+  }
+  if (typeof resourceUrl !== "string" || !resourceUrl) {
+    throw new TypeError("Active Workspace resourceUrl is required");
+  }
+  if (!controller || typeof controller.abort !== "function") {
+    throw new TypeError("Active Workspace AbortController is required");
+  }
+  return {
+    operationId,
+    tabId,
+    resourceUrl,
+    sequence: -1,
+    stage: null,
+    markdown: "",
+    submittedMessage: typeof submittedMessage === "string" ? submittedMessage : null,
+    createdAt,
+    controller,
+    cancelReason: null,
+  };
+}
+
+/** Accept one event only while its operation identity and sequence still own the record. */
+export function acceptWorkspaceStreamEvent(active, event) {
+  if (
+    !active
+    || !event
+    || event.operation_id !== active.operationId
+    || !Number.isInteger(event.sequence)
+    || event.sequence <= active.sequence
+  ) {
+    return false;
+  }
+  active.sequence = event.sequence;
+  if (typeof event.stage === "string" && event.stage) active.stage = event.stage;
+  if (event.type === "delta") active.markdown += event.text;
+  return true;
+}
+
+/** Project an active record to the public, privacy-bounded Side Panel stream contract. */
+export function workspaceStreamSnapshot(active) {
+  if (!active) return null;
+  return {
+    operationId: active.operationId,
+    tabId: active.tabId,
+    resourceUrl: active.resourceUrl,
+    sequence: active.sequence,
+    stage: active.stage,
+    markdown: active.markdown,
+    submittedMessage: active.submittedMessage,
+    createdAt: active.createdAt,
+  };
+}
+
+/** Abort one record once and retain a local lifecycle reason for stale-work suppression. */
+function cancelWorkspaceStream(active, reason) {
+  if (!active.cancelReason) active.cancelReason = reason;
+  if (!active.controller.signal?.aborted) active.controller.abort(active.cancelReason);
+}
+
+/** Replace the stream for one owner/resource key, aborting its former operation. */
+export function replaceActiveWorkspaceStream(activeStreams, key, active) {
+  const previous = activeStreams.get(key);
+  if (previous && previous !== active) cancelWorkspaceStream(previous, "superseded");
+  activeStreams.set(key, active);
+  return active;
+}
+
+/** Return whether one operation still owns its exact owner/resource registry slot. */
+export function isActiveWorkspaceStream(activeStreams, key, operationId) {
+  return activeStreams.get(key)?.operationId === operationId;
+}
+
+/** Finish only the matching registry generation so stale cleanup cannot delete its successor. */
+export function finishActiveWorkspaceStream(
+  activeStreams,
+  key,
+  operationId,
+  reason = "terminal"
+) {
+  const active = activeStreams.get(key);
+  if (!active || active.operationId !== operationId) return false;
+  cancelWorkspaceStream(active, reason);
+  activeStreams.delete(key);
+  return true;
+}
+
+/** Abort and remove every active stream selected by one tab or identity predicate. */
+export function abortWorkspaceStreams(activeStreams, predicate, reason) {
+  let aborted = 0;
+  for (const [key, active] of activeStreams) {
+    if (!predicate(active, key)) continue;
+    cancelWorkspaceStream(active, reason);
+    activeStreams.delete(key);
+    aborted += 1;
+  }
+  return aborted;
+}
+
+/** Return one active stream snapshot only for its exact resource mapping and originating tab. */
+export function pendingWorkspaceStream(activeStreams, key, tabId) {
+  const active = activeStreams.get(key);
+  if (!active || active.tabId !== tabId) return null;
+  return workspaceStreamSnapshot(active);
 }
 
 /** Apply a completed response only while its request owner is still current. */
