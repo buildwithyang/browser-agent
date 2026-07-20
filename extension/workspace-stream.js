@@ -1,5 +1,6 @@
 import { applyWorkspaceResponse } from "./workspace.js";
 import {
+  assertGatewayBodyProtocol,
   assertGatewayProtocolResponse,
   readGatewayResponse,
 } from "./workspace-controller.js";
@@ -139,6 +140,7 @@ export function validateWorkspaceStreamEvent(value) {
         "Workspace completed event"
       );
       requireStreamSchema(isObject(value.response), "Workspace completed response is invalid");
+      assertGatewayBodyProtocol(value.response);
       // Reuse the canonical deep response validator without mutating or persisting local state.
       applyWorkspaceResponse({ resourceUrl: value.response.resource_url }, value.response);
       break;

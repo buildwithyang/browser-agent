@@ -6,6 +6,7 @@ import {
   validateWorkspaceStreamEvent,
 } from "./workspace-stream.js";
 import { ExtensionUpdateRequiredError, GatewayHttpError } from "./workspace-controller.js";
+import { DEFAULT_EXTENSION_UPDATE_URL } from "./config.js";
 
 const OPERATION_ID = "00000000-0000-0000-0000-000000000001";
 const encoder = new TextEncoder();
@@ -56,9 +57,9 @@ function failed(sequence, operationId = OPERATION_ID) {
 }
 
 /** Encode event objects as one complete NDJSON byte sequence. */
-function encodeEvents(events, { finalNewline = true } = {}) {
-  const text = events.map((event) => JSON.stringify(event)).join("\n");
-  return encoder.encode(finalNewline ? `${text}\n` : text);
+function encodeEvents(events, { finalNewline = true, lineEnding = "\n" } = {}) {
+  const text = events.map((event) => JSON.stringify(event)).join(lineEnding);
+  return encoder.encode(finalNewline ? `${text}${lineEnding}` : text);
 }
 
 /** Build a Fetch Response whose body exposes the supplied byte chunks in order. */
@@ -145,8 +146,20 @@ test("NDJSON parser validates a completed response through the canonical Workspa
         response: workspaceResponse({ protocol_version: 2 }),
       },
     ])])),
-    /protocol version/i
+    (error) => error instanceof ExtensionUpdateRequiredError
+      && error.status === 426
+      && error.requiredVersion === 3
+      && error.updateUrl === DEFAULT_EXTENSION_UPDATE_URL
   );
+});
+
+test("NDJSON parser accepts legal CRLF framing", async () => {
+  const events = await collect(streamResponse([encodeEvents(
+    [started(), failed(1)],
+    { lineEnding: "\r\n" }
+  )]));
+
+  assert.deepEqual(events.map((event) => event.type), ["started", "failed"]);
 });
 
 test("stream events reject unknown keys and invalid discriminator-specific fields", () => {
@@ -164,6 +177,13 @@ test("stream events reject unknown keys and invalid discriminator-specific field
     }),
     /artifact/i
   );
+  assert.equal(validateWorkspaceStreamEvent({
+    type: "status",
+    operation_id: OPERATION_ID,
+    sequence: 1,
+    stage: "routing",
+    artifact_type: null,
+  }).artifact_type, null);
   assert.throws(
     () => validateWorkspaceStreamEvent({
       type: "status",
@@ -184,6 +204,28 @@ test("stream events reject unknown keys and invalid discriminator-specific field
     () => validateWorkspaceStreamEvent({ ...failed(1), code: "secret_provider_error" }),
     /code/i
   );
+});
+
+test("Workspace stream requires a Fetch ReadableStream body before yielding events", async () => {
+  for (const body of [null, {}]) {
+    const seen = [];
+    const response = {
+      ok: true,
+      headers: {
+        get(name) {
+          return name.toLowerCase() === "content-type"
+            ? "application/x-ndjson; charset=utf-8"
+            : "3";
+        },
+      },
+      body,
+    };
+
+    await assert.rejects(async () => {
+      for await (const event of readWorkspaceEventStream(response)) seen.push(event.type);
+    }, (error) => error instanceof TypeError && /ReadableStream/i.test(error.message));
+    assert.deepEqual(seen, []);
+  }
 });
 
 test("stream events require canonical UUIDs and non-negative integer sequences", () => {

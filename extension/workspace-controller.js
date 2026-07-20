@@ -318,6 +318,16 @@ export function assertGatewayProtocolResponse(response) {
   return protocolHeader;
 }
 
+/** Validate one successful body protocol using the existing Extension update semantics. */
+export function assertGatewayBodyProtocol(
+  body,
+  protocolHeader = String(EXTENSION_PROTOCOL_VERSION)
+) {
+  if (body?.protocol_version !== EXTENSION_PROTOCOL_VERSION) {
+    throw extensionUpdateError(body, protocolHeader);
+  }
+}
+
 /** Validate protocol compatibility before converting HTTP status or JSON failures. */
 export async function readGatewayResponse(response) {
   // Header inspection is deliberately first so a version mismatch can never become a 401 clear.
@@ -348,8 +358,6 @@ export async function readGatewayResponse(response) {
   ) {
     throw new TypeError("Gateway returned no valid JSON object");
   }
-  if (body.protocol_version !== EXTENSION_PROTOCOL_VERSION) {
-    throw extensionUpdateError(body, protocolHeader);
-  }
+  assertGatewayBodyProtocol(body, protocolHeader);
   return body;
 }
