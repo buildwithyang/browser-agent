@@ -92,10 +92,12 @@ test("next SEND carries the complete Artifact state returned by the prior respon
   assert.equal("currentDocument" in body, false);
 
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
-  const sendFunction = source.slice(
-    source.indexOf("async function sendWorkspaceTurn"),
+  const operationPipeline = source.slice(
+    source.indexOf("function buildOperationRequest"),
     source.indexOf("function notifyWorkspaceUpdated")
   );
-  assert.match(sendFunction, /buildUserMessageWorkspaceBody/);
-  assert.doesNotMatch(sendFunction, /currentDocument/);
+  assert.match(operationPipeline, /buildUserMessageWorkspaceBody/);
+  assert.match(operationPipeline, /buildWorkspaceBody/);
+  assert.match(operationPipeline, /runWorkspaceOperation/);
+  assert.doesNotMatch(operationPipeline, /currentDocument/);
 });

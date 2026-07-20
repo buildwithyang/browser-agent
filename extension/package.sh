@@ -21,6 +21,7 @@ FILES=(
   manifest.json
   background.js
   quick-insight.js
+  workspace-operation.js
   workspace.js
   workspace-controller.js
   content.js

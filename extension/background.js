@@ -1,6 +1,7 @@
 import {
   buildAuthHeaders,
   buildQuickInsightBody,
+  buildWorkspaceBody,
   buildUserMessageWorkspaceBody,
   taskUrl,
   webBaseUrl,
@@ -12,11 +13,16 @@ import {
   WORKSPACE_OWNER_KEY,
   DEFAULT_GATEWAY,
 } from "./auth.js";
-import { quickInsightView } from "./quick-insight.js";
+import {
+  quickInsightActionErrorView,
+  quickInsightView,
+  runQuickInsightAction,
+} from "./quick-insight.js";
 import {
   ANONYMOUS_WORKSPACE_OWNER,
   applyWorkspaceResponse,
-  canSend,
+  canRunQuickInsightAction,
+  canSendUserMessage,
   workspaceStorageKey,
 } from "./workspace.js";
 import {
@@ -27,7 +33,6 @@ import {
   clearWorkspaceSessionNamespace,
   createAuthSnapshot,
   createKeyedQueue,
-  enqueueLatestByKey,
   initialSelectionKey,
   loadAfterPendingSeed,
   loadOwnerScopedWorkspace,
@@ -35,13 +40,18 @@ import {
   readGatewayResponse,
   restoreInitialSelection,
 } from "./workspace-controller.js";
+import {
+  createUserMessageOperation,
+  runWorkspaceOperation,
+  workspaceOperationErrorEvent,
+} from "./workspace-operation.js";
 
 const MENU_ID = "browser-agent";
 const OPEN_WORKSPACE = "AGENT_BRIDGE_OPEN_WORKSPACE";
 const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
 const workspaceSeedQueue = createKeyedQueue();
-const workspaceSendQueue = createKeyedQueue();
+const workspaceOperationQueue = createKeyedQueue();
 
 // 菜单文字跟随语言偏好:zh/en 强制;"browser"/"auto" 按浏览器界面语言。
 const MENU_TITLES = {
@@ -238,6 +248,12 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
         insightView: task.insight
           ? quickInsightView(task.insight, task.actions || [])
           : null,
+        quickInsightActionErrors: {
+          retry: quickInsightActionErrorView(null, lang),
+          update: quickInsightActionErrorView({
+            type: "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED",
+          }, lang),
+        },
         lang,
         pageTitle: task.request?.title || payload.title || "",
         text: task.insight?.title || "(no result)",
@@ -337,22 +353,48 @@ async function collectPageContext(tabId) {
   return restoreInitialSelection(fresh, selectionData[selectionKey]);
 }
 
-/** Execute one stateless Workspace transition under one immutable auth snapshot. */
-async function sendWorkspaceTurn(tabId, message, authSnapshot) {
-  const userMessage = typeof message.message === "string" ? message.message.trim() : "";
+/** Build one trigger-specific request from the latest complete Workspace state. */
+function buildOperationRequest(pageContext, active, operation) {
+  if (operation.trigger === "user_message") {
+    return buildUserMessageWorkspaceBody(pageContext, {
+      resourceUrl: active.mapping.resourceUrl,
+      actionId: operation.actionId,
+      state: active.state,
+      message: operation.message,
+      lang: active.lang,
+    });
+  }
+  return buildWorkspaceBody(pageContext, {
+    trigger: "quick_insight_action",
+    resourceUrl: active.mapping.resourceUrl,
+    actionId: operation.actionId,
+    histories: active.state.histories,
+    artifacts: active.state.artifacts,
+    lang: active.lang,
+  });
+}
+
+/** Execute one Command through the shared per-resource Workspace request pipeline. */
+async function executeWorkspaceOperation(tabId, operation, authSnapshot) {
   const active = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
   if (!active) throw new Error("Open a Quick Insight Action before sending");
-  if (!userMessage) throw new Error("Message cannot be empty");
-  return enqueueLatestByKey(
-    workspaceSendQueue,
-    active.mapping.storageKey,
-    () => loadActiveWorkspace(tabId, authSnapshot.ownerId),
-    async (latest) => {
+  return runWorkspaceOperation(operation, {
+    queue: workspaceOperationQueue,
+    key: active.mapping.storageKey,
+    loadLatest: async () => {
+      const latest = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
       if (!latest || latest.mapping.storageKey !== active.mapping.storageKey) {
-        throw new Error("The active Workspace changed before this message was sent");
+        throw new Error("The active Workspace changed before this operation was sent");
       }
-      if (!canSend(latest.state)) throw new Error("Workspace message limit reached");
-      const pageContext = await collectPageContext(tabId);
+      const allowed = operation.trigger === "user_message"
+        ? canSendUserMessage(latest.state)
+        : canRunQuickInsightAction(latest.state);
+      if (!allowed) throw new Error("Workspace message limit reached");
+      return latest;
+    },
+    collectPageContext: () => collectPageContext(tabId),
+    buildRequest: buildOperationRequest,
+    executeRequest: async (body) => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000);
       const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
@@ -360,32 +402,27 @@ async function sendWorkspaceTurn(tabId, message, authSnapshot) {
         const response = await fetch(taskUrl(DEFAULT_GATEWAY, "workspace"), {
           method: "POST",
           headers: buildAuthHeaders(authSnapshot.token),
-          body: JSON.stringify(buildUserMessageWorkspaceBody(pageContext, {
-            resourceUrl: latest.mapping.resourceUrl,
-            actionId: message.actionId,
-            state: latest.state,
-            message: userMessage,
-            lang: latest.lang,
-          })),
+          body: JSON.stringify(body),
           signal: controller.signal,
         });
-        const workspaceResponse = await readGatewayResponse(response);
-        return applyForCurrentOwner({
-          snapshot: authSnapshot,
-          readCurrentSnapshot: readAuthSnapshot,
-          onOwnerMismatch: () => notifyWorkspaceReset(tabId),
-          apply: async () => {
-            const state = applyWorkspaceResponse(latest.state, workspaceResponse);
-            await chrome.storage.local.set({ [latest.mapping.storageKey]: state });
-            return { state, lang: latest.lang };
-          },
-        });
+        return readGatewayResponse(response);
       } finally {
         clearTimeout(timeout);
         clearInterval(keepAlive);
       }
-    }
-  );
+    },
+    applyResponse: (latest, workspaceResponse) => applyForCurrentOwner({
+      snapshot: authSnapshot,
+      readCurrentSnapshot: readAuthSnapshot,
+      onOwnerMismatch: () => notifyWorkspaceReset(tabId),
+      apply: async () => {
+        // Full response replacement is the only success write; no optimistic User Message exists.
+        const state = applyWorkspaceResponse(latest.state, workspaceResponse);
+        await chrome.storage.local.set({ [latest.mapping.storageKey]: state });
+        return { state, lang: latest.lang };
+      },
+    }),
+  });
 }
 
 /** Notify every Side Panel that one tab now owns a freshly seeded Workspace. */
@@ -395,36 +432,83 @@ function notifyWorkspaceUpdated(tabId) {
   });
 }
 
-/** Open Side Panel inside the user gesture, then seed its Workspace asynchronously. */
+/** Broadcast one structured Workspace operation event without requiring a listener. */
+function notifyWorkspaceOperationEvent(event) {
+  chrome.runtime.sendMessage(event, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
+/** Apply snapshot-conditional 401 recovery and broadcast a stable operation error. */
+async function handleWorkspaceOperationError(tabId, error, authSnapshot) {
+  let event = null;
+  if (error instanceof AuthSnapshotChangedError) {
+    event = workspaceOperationErrorEvent(error, tabId);
+  } else if (shouldClearToken(error.status)) {
+    const cleared = authSnapshot && await clearAuthNamespace(authSnapshot);
+    if (!cleared) {
+      event = workspaceOperationErrorEvent(
+        new Error("Authentication changed; the stale response was discarded."),
+        tabId
+      );
+    } else {
+      const strings = loginStrings(errLang(await resolveLang()));
+      event = workspaceOperationErrorEvent(
+        new Error(`${strings.hint} ${webBaseUrl(DEFAULT_GATEWAY)}`),
+        tabId
+      );
+    }
+  } else {
+    event = workspaceOperationErrorEvent(error, tabId);
+  }
+  notifyWorkspaceOperationEvent(event);
+  return event;
+}
+
+/** Open and seed inside the user gesture before optionally queueing the selected Command. */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== OPEN_WORKSPACE || !sender.tab?.id) return undefined;
   const tabId = sender.tab.id;
+  // Chrome requires open() to be called synchronously from this user-gesture listener.
   const optionsPromise = chrome.sidePanel.setOptions({
     tabId,
     path: "sidepanel.html",
     enabled: true,
   });
   const openPromise = chrome.sidePanel.open({ tabId });
-  const seedPromise = workspaceSeedQueue.run(tabId, async () => {
-    const workspace = await seedWorkspace(tabId, {
-      actionId: message.actionId,
-      workspace: message.workspace,
-      insight: message.insight,
-      actions: message.actions,
-      pageTitle: message.pageTitle,
-      source: message.source,
-      lang: message.lang,
+  let requestAuthSnapshot = null;
+
+  runQuickInsightAction(message.actionId, {
+    openWorkspace: async (operation) => {
+      const seedPromise = workspaceSeedQueue.run(tabId, async () => seedWorkspace(tabId, {
+        actionId: operation.actionId,
+        workspace: message.workspace,
+        insight: message.insight,
+        actions: message.actions,
+        pageTitle: message.pageTitle,
+        source: message.source,
+        lang: message.lang,
+      }));
+      const [, , workspace] = await Promise.all([
+        optionsPromise,
+        openPromise,
+        seedPromise,
+      ]);
+      notifyWorkspaceUpdated(tabId);
+      return workspace;
+    },
+    executeOperation: async (operation) => {
+      requestAuthSnapshot = await readAuthSnapshot();
+      const workspace = await executeWorkspaceOperation(tabId, operation, requestAuthSnapshot);
+      notifyWorkspaceUpdated(tabId);
+      return workspace;
+    },
+  })
+    .then((workspace) => sendResponse({ ok: true, ...workspace }))
+    .catch(async (error) => {
+      const event = await handleWorkspaceOperationError(tabId, error, requestAuthSnapshot);
+      sendResponse({ ok: false, ...event });
     });
-    notifyWorkspaceUpdated(tabId);
-    return workspace;
-  });
-  Promise.all([
-    optionsPromise,
-    openPromise,
-    seedPromise,
-  ])
-    .then(([, , workspace]) => sendResponse({ ok: true, ...workspace }))
-    .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
 });
 
@@ -450,36 +534,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function dispatchWorkspaceSend(tabId, message, sendResponse) {
   const authSnapshot = await readAuthSnapshot();
   try {
-    const { state, lang } = await sendWorkspaceTurn(tabId, message, authSnapshot);
+    const operation = createUserMessageOperation(message.actionId, message.message);
+    const { state, lang } = await executeWorkspaceOperation(tabId, operation, authSnapshot);
     sendResponse({ ok: true, state, lang });
   } catch (error) {
-    if (error instanceof AuthSnapshotChangedError) {
-      sendResponse({
-        ok: false,
-        error: error.message,
-        recoverable: true,
-      });
-      return;
-    }
-    if (shouldClearToken(error.status)) {
-      const cleared = await clearAuthNamespace(authSnapshot);
-      if (!cleared) {
-        sendResponse({
-          ok: false,
-          error: "Authentication changed; the stale response was discarded.",
-          recoverable: true,
-        });
-        return;
-      }
-      const strings = loginStrings(errLang(await resolveLang()));
-      sendResponse({
-        ok: false,
-        error: `${strings.hint} ${webBaseUrl(DEFAULT_GATEWAY)}`,
-        recoverable: true,
-      });
-      return;
-    }
-    sendResponse({ ok: false, error: error.message, recoverable: true });
+    const event = await handleWorkspaceOperationError(tabId, error, authSnapshot);
+    sendResponse({ ok: false, ...event });
   }
 }
 
@@ -692,12 +752,27 @@ function renderPanel(payload) {
             lang: payload.lang,
           },
           (resp) => {
-            // The Side Panel opened inside the user gesture; show feedback only if seeding fails.
             if (!resp || !resp.ok) {
-              err.textContent =
-                payload.lang === "en"
+              const updateRequired =
+                resp?.type === "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED" && resp.updateUrl;
+              const errorView = updateRequired
+                ? payload.quickInsightActionErrors?.update
+                : payload.quickInsightActionErrors?.retry;
+              err.replaceChildren();
+              err.append(document.createTextNode(
+                errorView?.message
+                || (payload.lang === "en"
                   ? "Workspace failed to open. Please retry."
-                  : "Workspace 打开失败，请重试。";
+                  : "Workspace 打开失败，请重试。")
+              ));
+              if (updateRequired) {
+                const updateLink = el("a", "ab-action-update");
+                updateLink.href = resp.updateUrl;
+                updateLink.target = "_blank";
+                updateLink.rel = "noopener noreferrer";
+                updateLink.textContent = errorView?.updateLabel || "Update extension";
+                err.append(document.createTextNode(" "), updateLink);
+              }
               err.style.display = "block";
             }
           }

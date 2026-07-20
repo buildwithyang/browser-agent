@@ -540,6 +540,33 @@ test("stale user A 401 cannot clear current user B credentials or sessions", asy
   assert.equal(resetNotifications, 0);
 });
 
+test("stale rotated token cannot clear credentials for the same owner", async () => {
+  const clearAuthWorkspaceStateIfCurrent = requiredExport("clearAuthWorkspaceStateIfCurrent");
+  const createAuthSnapshot = requiredExport("createAuthSnapshot");
+  const stale = createAuthSnapshot("token-old", "user-a");
+  const current = createAuthSnapshot("token-new", "user-a");
+  const localStore = fakeStorageArea({
+    [TOKEN_KEY]: "token-new",
+    [EXPIRES_KEY]: "2999-01-01T00:00:00Z",
+    [WORKSPACE_OWNER_KEY]: "user-a",
+  });
+  const sessionStore = fakeStorageArea({
+    [activeWorkspaceKey(2)]: { ownerId: "user-a", storageKey: "workspace-a" },
+  });
+
+  const cleared = await clearAuthWorkspaceStateIfCurrent({
+    snapshot: stale,
+    readCurrentSnapshot: async () => current,
+    localStore,
+    sessionStore,
+    authKeys: [TOKEN_KEY, EXPIRES_KEY, WORKSPACE_OWNER_KEY],
+  });
+
+  assert.equal(cleared, false);
+  assert.equal(localStore.data[TOKEN_KEY], "token-new");
+  assert.equal(sessionStore.data[activeWorkspaceKey(2)].storageKey, "workspace-a");
+});
+
 test("double OPEN for one tab is ordered and older cleanup keeps the newer pending seed", async () => {
   const createKeyedQueue = requiredExport("createKeyedQueue");
   const queue = createKeyedQueue();

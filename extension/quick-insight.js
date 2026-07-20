@@ -1,3 +1,6 @@
+import { createQuickInsightOperation } from "./workspace-operation.js";
+
+/** Normalize a typed Quick Insight response for the existing overlay renderer. */
 export function quickInsightView(insight = {}, actions = []) {
   const cards = Array.isArray(insight.cards) ? insight.cards : [];
   const decision = cards.find((card) => card.type === "score") || {};
@@ -23,5 +26,37 @@ export function quickInsightView(insight = {}, actions = []) {
     topStrength: plainText(textCard("top_strength").body_html),
     topGap: plainText(textCard("top_gap").body_html),
     actions,
+  };
+}
+
+/** Seed/open first, then execute only Quick Insight Commands that require a request. */
+export async function runQuickInsightAction(actionId, dependencies) {
+  const operation = createQuickInsightOperation(actionId);
+  const opened = await dependencies.openWorkspace(operation);
+  if (operation.kind === "open_only") return opened;
+  return dependencies.executeOperation(operation, opened);
+}
+
+/** Build Action error presentation data for the Quick Insight overlay. */
+export function quickInsightActionErrorView(errorEvent, lang) {
+  if (
+    errorEvent?.type === "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED"
+  ) {
+    return {
+      message: lang === "en"
+        ? "Update Agent Bridge to continue."
+        : "请更新 Agent Bridge 后继续。",
+      updateUrl: typeof errorEvent.updateUrl === "string" && errorEvent.updateUrl
+        ? errorEvent.updateUrl
+        : null,
+      updateLabel: lang === "en" ? "Update extension" : "更新扩展",
+    };
+  }
+  return {
+    message: lang === "en"
+      ? "Workspace failed to open. Please retry."
+      : "Workspace 打开失败，请重试。",
+    updateUrl: null,
+    updateLabel: "",
   };
 }

@@ -6,6 +6,6 @@
   "scripts": {
     "test": "node --test",
     "package": "bash package.sh",
-    "test:package": "npm run package && unzip -p dist/agent-bridge-extension.zip config.js | grep -q 'BUILD_ENV = \"production\"' && for file in quick-insight.js workspace.js workspace-controller.js sidepanel.html sidepanel.css sidepanel.js; do unzip -Z1 dist/agent-bridge-extension.zip | grep -qx \"$file\" || exit 1; done"
+    "test:package": "npm run package && unzip -p dist/agent-bridge-extension.zip config.js | grep -q 'BUILD_ENV = \"production\"' && for file in quick-insight.js workspace-operation.js workspace.js workspace-controller.js sidepanel.html sidepanel.css sidepanel.js; do unzip -Z1 dist/agent-bridge-extension.zip | grep -qx \"$file\" || exit 1; done"
   }
 }

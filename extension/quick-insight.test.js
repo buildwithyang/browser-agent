@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { quickInsightView } from "./quick-insight.js";
+import {
+  quickInsightActionErrorView,
+  quickInsightView,
+  runQuickInsightAction,
+} from "./quick-insight.js";
 
 test("job insight normalizes generic cards for the existing renderer", () => {
   const view = quickInsightView({
@@ -36,6 +40,53 @@ test("summary card becomes summary HTML", () => {
   assert.equal(view.actions[0].title, "Ask more");
 });
 
+test("Quick Insight opens and seeds before its asynchronous Action request", async () => {
+  const events = [];
+  const result = await runQuickInsightAction("analyze", {
+    openWorkspace: async () => {
+      events.push("open-and-seed");
+      return { state: { histories: [] }, lang: "en" };
+    },
+    executeOperation: async () => {
+      events.push("request");
+      return { state: { histories: [{ role: "assistant" }] }, lang: "en" };
+    },
+  });
+
+  assert.deepEqual(events, ["open-and-seed", "request"]);
+  assert.deepEqual(result.state.histories, [{ role: "assistant" }]);
+});
+
+test("Ask More only opens and focuses the shared Workspace", async () => {
+  const events = [];
+  await runQuickInsightAction("ask_more", {
+    openWorkspace: async () => events.push("open-and-seed"),
+    executeOperation: async () => events.push("request"),
+  });
+  assert.deepEqual(events, ["open-and-seed"]);
+});
+
+test("upgrade-required Action errors present the Extension store link", () => {
+  const updateUrl = "https://chromewebstore.google.com/detail/agent-bridge/id";
+  assert.deepEqual(
+    quickInsightActionErrorView({
+      type: "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED",
+      updateUrl,
+      requiredVersion: 3,
+    }, "en"),
+    {
+      message: "Update Agent Bridge to continue.",
+      updateUrl,
+      updateLabel: "Update extension",
+    }
+  );
+  assert.deepEqual(quickInsightActionErrorView({}, "zh"), {
+    message: "Workspace 打开失败，请重试。",
+    updateUrl: null,
+    updateLabel: "",
+  });
+});
+
 test("background renders normalized insight actions", async () => {
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
   assert.match(source, /renderActions\(body, payload\.insightView\.actions\)/);
@@ -52,7 +103,7 @@ test("Quick Insight actions open the shared Workspace", async () => {
   );
   assert.match(source, /type:\s*"AGENT_BRIDGE_WORKSPACE_UPDATED",\s*tabId/s);
   assert.match(source, /workspaceSeedQueue\.run\(tabId/);
-  assert.match(source, /workspaceSendQueue/);
+  assert.match(source, /workspaceOperationQueue/);
   assert.match(source, /AGENT_BRIDGE_WORKSPACE_RESET/);
   assert.equal(source.includes(["AGENT_BRIDGE", "CONTINUE"].join("_")), false);
   assert.equal(source.includes(["current", "task"].join("-")), false);
