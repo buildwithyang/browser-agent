@@ -170,6 +170,7 @@ def _context(
     trigger: WorkspaceTrigger = WorkspaceTrigger.USER_MESSAGE,
     message: str = "What should I emphasize?",
     existing_types: tuple[ArtifactType, ...] = (),
+    resume_text: str | None = "# Canonical Resume",
 ) -> WorkspaceAgentContext:
     """Build one valid immutable v2 Workspace Agent context."""
 
@@ -190,7 +191,7 @@ def _context(
         request = UserMessageWorkspaceRequest(**common, message=message)
     else:
         request = QuickInsightActionWorkspaceRequest(**common)
-    return WorkspaceAgentContext(request=request, resume_text="# Canonical Resume")
+    return WorkspaceAgentContext(request=request, resume_text=resume_text)
 
 
 def _specialists(
@@ -233,6 +234,25 @@ def test_normal_message_invokes_router_then_exactly_one_specialist() -> None:
     assert len(router.calls) == 1
     assert sum(len(specialist.calls) for specialist in specialists.values()) == 1
     assert isinstance(execution.content, ReplyResult)
+
+
+def test_anonymous_workspace_resolves_the_configured_local_cv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep anonymous Workspace specialists aligned with Quick Insight CV fallback."""
+
+    specialists = _specialists()
+    agent = JobMatchAgent(
+        intent_router=SpyRouter(SpecialistId.GENERAL_QA),
+        specialists=specialists,
+    )
+    monkeypatch.setattr(agent, "_read_cv", lambda: "# Anonymous Local CV")
+
+    agent.handle_chat(_context(resume_text=None))
+
+    assert specialists[SpecialistId.GENERAL_QA].calls[0].resume_text == (
+        "# Anonymous Local CV"
+    )
 
 
 def test_selected_action_is_a_hint_and_does_not_force_an_artifact() -> None:

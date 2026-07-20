@@ -126,7 +126,7 @@ class JobMatchAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
         return JobChatContext(
             trigger=request.trigger,
             request=request,
-            resume_text=context.resume_text,
+            resume_text=self._resolve_resume_text(context.resume_text),
             histories=tuple(request.histories),
             artifacts=request.artifacts,
             selected_action=request.action_id,

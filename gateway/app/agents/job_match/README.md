@@ -110,6 +110,10 @@ Agent 返回完整 Markdown 草稿，但不负责：
 规范化资源保存在本地。本期 CV Attachment 由 Gateway 暂时指向固定测试预览地址，
 不代表真实 CV 已托管或版本化。
 
+认证用户的生效 CV 由 `TaskService` 按请求注入；匿名自部署没有用户级 Resume Service，
+`JobMatchAgent` 会在每次 Quick Insight 或 Workspace 请求中重新读取
+`AGENT_BRIDGE_CV_PATH`，不在 Agent 实例上缓存文本。
+
 ## 扩展新能力
 
 新增 Specialist 时：
