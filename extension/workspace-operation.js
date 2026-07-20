@@ -198,6 +198,7 @@ export async function runWorkspaceOperation(operation, dependencies) {
       createdAt: null,
     });
     let terminalEvent = null;
+    let terminalSnapshot = null;
     for await (const event of abortableWorkspaceStream(stream, signal)) {
       if (!event || event.operation_id !== operation.operationId) {
         throw new TypeError("Workspace stream operation identity does not match the request");
@@ -216,20 +217,32 @@ export async function runWorkspaceOperation(operation, dependencies) {
       }
 
       snapshot = advanceStreamSnapshot(snapshot, event);
+      if (event.type === "completed") {
+        // Defer completed publication until its canonical commit has settled in queue order.
+        terminalEvent = event;
+        terminalSnapshot = snapshot;
+        continue;
+      }
       if (typeof onEvent === "function" && await onEvent(event, snapshot) === false) {
         throw new WorkspaceOperationStaleError();
       }
-      if (event.type === "completed" || event.type === "failed") terminalEvent = event;
+      if (event.type === "failed") terminalEvent = event;
     }
 
     if (!terminalEvent) throw new WorkspaceStreamFailedError();
     if (terminalEvent.type === "failed") {
       throw new WorkspaceStreamFailedError(terminalEvent.code, terminalEvent.recoverable);
     }
-    return awaitWorkspaceBoundary(
-      () => applyResponse(latest, terminalEvent.response, operation),
-      signal
-    );
+    if (signal?.aborted) throw workspaceAbortError();
+    // Canonical persistence is a commit section: retain queue ownership until it settles.
+    const applied = await applyResponse(latest, terminalEvent.response, operation);
+    if (
+      typeof onEvent === "function"
+      && await onEvent(terminalEvent, terminalSnapshot) === false
+    ) {
+      throw new WorkspaceOperationStaleError();
+    }
+    return applied;
   });
 }
 

@@ -30,10 +30,13 @@ function fakeEvent() {
 function fakeStorageArea(initial = {}) {
   const data = { ...initial };
   const setCalls = [];
+  const setStartedCalls = [];
   return {
     data,
     setCalls,
+    setStartedCalls,
     nextSetError: null,
+    nextSetGate: null,
     async get(query) {
       if (query === null) return { ...data };
       if (typeof query === "string") return { [query]: data[query] };
@@ -43,10 +46,16 @@ function fakeStorageArea(initial = {}) {
       return Object.assign({}, query, data);
     },
     async set(values) {
+      setStartedCalls.push(values);
       if (this.nextSetError) {
         const error = this.nextSetError;
         this.nextSetError = null;
         throw error;
+      }
+      if (this.nextSetGate) {
+        const gate = this.nextSetGate;
+        this.nextSetGate = null;
+        await gate;
       }
       setCalls.push(values);
       Object.assign(data, values);
@@ -777,5 +786,108 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   assert.equal(local.setCalls.filter(
     (values) => Object.prototype.hasOwnProperty.call(values, storageKey)
   ).length, canonicalWritesBeforeOwnerChange);
+
+  local.data.authToken = "token-a";
+  local.data.workspaceOwnerId = "user-a";
+  session.data[activeWorkspaceKey(7)] = {
+    ownerId: "user-a",
+    storageKey,
+    resourceUrl: RESOURCE_URL,
+    lang: "en",
+  };
+  const persistGate = deferred();
+  const startedWritesBeforeCommit = local.setStartedCalls.length;
+  const fetchesBeforeCommit = fetchCalls.length;
+  const completedBroadcastsBeforeCommit = runtimeMessages.filter(
+    (message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM"
+      && message.eventType === "completed"
+  ).length;
+  local.nextSetGate = persistGate.promise;
+  const orderedOldResponse = firstArtifactResponse();
+  orderedOldResponse.histories[0].content = "Ordered old commit";
+  const committingSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Start deferred canonical commit",
+  });
+  await waitFor(() => fetchCalls.length === fetchesBeforeCommit + 1, "Commit fetch did not start");
+  const committingIndex = fetchesBeforeCommit;
+  const committingRequest = JSON.parse(fetchCalls[committingIndex].options.body);
+  streams[committingIndex].emit({
+    type: "started",
+    operation_id: committingRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:08:00Z",
+  });
+  streams[committingIndex].emit({
+    type: "completed",
+    operation_id: committingRequest.operationId,
+    sequence: 1,
+    response: orderedOldResponse,
+  });
+  streams[committingIndex].close();
+  await waitFor(
+    () => local.setStartedCalls.length === startedWritesBeforeCommit + 1,
+    "Deferred canonical commit did not start"
+  );
+
+  let oldSettled = false;
+  committingSend.then(() => {
+    oldSettled = true;
+  });
+  const orderedReplacementSend = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_SEND",
+    tabId: 7,
+    actionId: "write_cover_letter",
+    message: "Replacement must wait for commit",
+  });
+  await waitFor(
+    () => fetchCalls[committingIndex].options.signal.aborted,
+    "Replacement did not abort the committing generation"
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  const oldSettledBeforeCommit = oldSettled;
+  const replacementFetchedBeforeCommit = fetchCalls.length > fetchesBeforeCommit + 1;
+  const oldCompletedBroadcasted = runtimeMessages.filter(
+    (message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM"
+      && message.eventType === "completed"
+  ).length > completedBroadcastsBeforeCommit;
+
+  persistGate.resolve();
+  const committedOldResult = await committingSend;
+  assert.equal(committedOldResult.stale, true);
+  await waitFor(
+    () => fetchCalls.length === fetchesBeforeCommit + 2,
+    "Replacement did not enter after deferred commit settled"
+  );
+  const replacementIndex = fetchesBeforeCommit + 1;
+  const orderedReplacementRequest = JSON.parse(fetchCalls[replacementIndex].options.body);
+  const orderedNewResponse = firstArtifactResponse();
+  orderedNewResponse.histories[0].content = "Ordered replacement wins";
+  streams[replacementIndex].emit({
+    type: "started",
+    operation_id: orderedReplacementRequest.operationId,
+    sequence: 0,
+    created_at: "2026-07-20T10:08:01Z",
+  });
+  streams[replacementIndex].emit({
+    type: "completed",
+    operation_id: orderedReplacementRequest.operationId,
+    sequence: 1,
+    response: orderedNewResponse,
+  });
+  streams[replacementIndex].close();
+  assert.equal((await orderedReplacementSend).ok, true);
+
+  assert.equal(oldSettledBeforeCommit, false, "old operation must retain queue during commit");
+  assert.equal(replacementFetchedBeforeCommit, false, "replacement must not load before commit");
+  assert.equal(oldCompletedBroadcasted, false, "stale commit must not broadcast completed");
+  assert.equal(
+    orderedReplacementRequest.histories[0].content,
+    "Ordered old commit",
+    "replacement must load the ordered committed state"
+  );
+  assert.equal(local.data[storageKey].histories[0].content, "Ordered replacement wins");
   assert.ok(lastErrorReads > 0, "no-receiver runtime callbacks must consume chrome.runtime.lastError");
 });
