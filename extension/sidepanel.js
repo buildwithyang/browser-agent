@@ -1,61 +1,57 @@
-import { quickInsightView } from "./quick-insight.js";
+import { renderMarkdown } from "./markdown.js";
 import { canSendUserMessage } from "./workspace.js";
 
 export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
 export const WORKSPACE_UPDATED = "AGENT_BRIDGE_WORKSPACE_UPDATED";
 export const WORKSPACE_RESET = "AGENT_BRIDGE_WORKSPACE_RESET";
-/** Fixed public website used to preview tailored resumes outside the Side Panel. */
-export const CV_PREVIEW_URL = "https://browser.buildwithyang.com";
 
 const COPY = {
   en: {
     workspace: "Shared Workspace",
     noPage: "No active page",
-    ready: "Ready",
+    offline: "Open a Quick Insight Action on a page to start this conversation.",
+    noHistory: "No messages yet. Choose an Action and send the first instruction.",
     loading: "Working",
-    offline: "Workspace offline",
-    empty: "Open a Quick Insight Action on a page to establish a shared Workspace.",
-    noHistory: "No shared history yet. Choose an Action and send the first instruction.",
-    quickInsight: "Quick Insight / read-only",
-    artifact: "Latest artifact",
-    resumePreview: "CV website preview",
-    resumePreviewHint: "Open the current tailored CV in a full browser tab.",
-    openResumePreview: "Open CV preview",
-    copy: "Copy",
-    copied: "Copied",
     next: "Next instruction",
-    placeholder: "Ask a question or direct the next artifact revision…",
+    placeholder: "Ask a question or direct the next revision…",
     hint: "Enter to send · Shift + Enter for a new line",
-    send: "Transmit",
+    send: "Send",
     limit: "Message limit reached. Start a new Workspace from Quick Insight.",
-    retry: "The request failed. Your input is preserved — retry when ready.",
-    user: "You",
-    assistant: "Agent",
+    retryFallback: "The request failed. Your input is preserved.",
+    retry: "Retry",
+    attachment: "Attachment",
+    coverLetter: "Cover Letter",
+    cv: "CV",
+    copy: "Copy Markdown",
+    copied: "Copied",
+    openCv: "Open CV",
+    updateMessage: "Update Agent Bridge to continue.",
+    updateGateway: "If this still appears after updating, check the Gateway deployment.",
+    updateLink: "Open Chrome Web Store",
   },
   zh: {
-    workspace: "共享工作台",
+    workspace: "共享对话",
     noPage: "没有活动页面",
-    ready: "就绪",
+    offline: "请先在网页的 Quick Insight 中选择一个 Action，开始对话。",
+    noHistory: "暂无消息。选择 Action 并发送第一条指令。",
     loading: "处理中",
-    offline: "工作台未连接",
-    empty: "请先在网页的 Quick Insight 中选择一个 Action，建立共享 Workspace。",
-    noHistory: "暂无共享历史。选择 Action 并发送第一条指令。",
-    quickInsight: "快速洞察 / 只读",
-    artifact: "最新产物",
-    resumePreview: "CV 网页预览",
-    resumePreviewHint: "在完整浏览器标签页中查看当前定制 CV。",
-    openResumePreview: "打开 CV 预览",
-    copy: "复制",
-    copied: "已复制",
     next: "下一步指令",
-    placeholder: "继续提问，或说明下一轮产物修改要求…",
+    placeholder: "继续提问，或说明下一轮修改要求…",
     hint: "Enter 发送 · Shift + Enter 换行",
     send: "发送",
     limit: "已达到消息上限。请从 Quick Insight 开始新的 Workspace。",
-    retry: "请求失败，输入已保留，可稍后重试。",
-    user: "你",
-    assistant: "Agent",
+    retryFallback: "请求失败，输入已保留。",
+    retry: "重试",
+    attachment: "附件",
+    coverLetter: "求职信",
+    cv: "简历",
+    copy: "复制 Markdown",
+    copied: "已复制",
+    openCv: "打开简历",
+    updateMessage: "请更新 Agent Bridge 后继续。",
+    updateGateway: "更新后仍出现此提示，请检查 Gateway 部署。",
+    updateLink: "打开 Chrome 应用商店",
   },
 };
 
@@ -78,15 +74,11 @@ export function workspaceLifecycleTarget(message, currentTabId) {
   return null;
 }
 
-/** Convert a Workspace document into the presentation contract used by the Side Panel. */
-export function documentPresentation(documentState) {
-  if (!documentState || typeof documentState !== "object") return null;
-  const isResume = documentState.kind === "resume";
-  return {
-    ...documentState,
-    presentation: isResume ? "resume-preview" : "inline",
-    previewUrl: isResume ? CV_PREVIEW_URL : null,
-  };
+/** Return the optional integer match score from the compact Quick Insight header data. */
+function matchScore(quickInsight) {
+  const cards = Array.isArray(quickInsight?.cards) ? quickInsight.cards : [];
+  const scoreCard = cards.find((card) => card?.type === "score");
+  return Number.isInteger(scoreCard?.score) ? scoreCard.score : null;
 }
 
 /** Build a DOM-independent rendering model for one complete Workspace state. */
@@ -107,15 +99,55 @@ export function workspaceView(state = {}, lang = "browser", uiLanguage = "en") {
     strings,
     pageTitle: state.pageTitle || strings.workspace,
     resourceUrl: state.resourceUrl || "",
+    matchScore: matchScore(state.quickInsight),
     actions,
     selectedActionId,
     histories,
-    document: documentPresentation(state.currentDocument),
-    insight: state.quickInsight
-      ? quickInsightView(state.quickInsight, actions)
-      : null,
     canSend: sendAllowed,
     limitText: sendAllowed ? "" : strings.limit,
+  };
+}
+
+/** Convert one failed runtime response into a stable composer-error presentation. */
+export function workspaceResponseError(response, fallback = COPY.en.retryFallback) {
+  if (response?.type === "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED") {
+    return {
+      kind: "update-required",
+      updateUrl: typeof response.updateUrl === "string" ? response.updateUrl : "",
+      requiredVersion: response.requiredVersion ?? null,
+    };
+  }
+  return {
+    kind: "retryable",
+    message: typeof response?.error === "string" && response.error
+      ? response.error
+      : fallback,
+  };
+}
+
+/** Return whether one keyboard event should submit instead of inserting a newline. */
+export function shouldSubmitMessage(event) {
+  return event?.key === "Enter" && !event.shiftKey && !event.isComposing;
+}
+
+/** Format one canonical UTC message timestamp for compact and full local display. */
+export function messageTimePresentation(createdAt, lang = "en") {
+  const date = new Date(createdAt);
+  if (!Number.isFinite(date.getTime())) {
+    return { visible: "", title: "", datetime: createdAt || "" };
+  }
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
+  return {
+    visible: new Intl.DateTimeFormat(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date),
+    title: new Intl.DateTimeFormat(locale, {
+      dateStyle: "full",
+      timeStyle: "medium",
+    }).format(date),
+    datetime: createdAt,
   };
 }
 
@@ -139,15 +171,15 @@ async function activeTabId() {
   return tabs[0]?.id ?? null;
 }
 
-/** Create a text node element without interpreting gateway or page content as markup. */
-function textElement(tagName, className, text) {
-  const element = document.createElement(tagName);
+/** Create one element whose content is always treated as plain text. */
+function textElement(documentRef, tagName, className, text) {
+  const element = documentRef.createElement(tagName);
   if (className) element.className = className;
   element.textContent = text || "";
   return element;
 }
 
-/** Return a short display host for the Workspace resource link. */
+/** Return a short display host and path for the Workspace resource link. */
 function sourceLabel(url) {
   try {
     const parsed = new URL(url);
@@ -157,183 +189,333 @@ function sourceLabel(url) {
   }
 }
 
-/** Copy artifact text and briefly expose confirmation on the triggering control. */
-async function copyArtifact(button, documentState, strings) {
-  if (!navigator.clipboard?.writeText) return;
-  await navigator.clipboard.writeText(documentState.text || "");
-  button.textContent = strings.copied;
-  setTimeout(() => {
-    button.textContent = strings.copy;
-  }, 1400);
-}
-
-/** Render the read-only Quick Insight as context outside the message history. */
-function renderInsight(container, view) {
-  if (!view.insight) return;
-  const card = document.createElement("article");
-  card.className = "insight-card";
-  card.append(textElement("span", "insight-label", view.strings.quickInsight));
-  if (Number.isInteger(view.insight.score)) {
-    card.append(textElement("strong", "insight-score", String(view.insight.score)));
+/** Return one absolute HTTP(S) URL or null for an unsafe/invalid destination. */
+function safeHttpUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
   }
-  card.append(textElement("h2", "", view.insight.title));
-  container.append(card);
 }
 
-/** Render the single chronological shared history without grouping by Action. */
-function renderHistories(container, view) {
-  view.histories.forEach((history) => {
-    const message = document.createElement("article");
-    message.className = `message ${history.role === "user" ? "user" : "assistant"}`;
-    const body = document.createElement("div");
-    body.className = "message-body";
-    body.append(
-      textElement(
-        "span",
-        "message-role",
-        history.role === "user" ? view.strings.user : view.strings.assistant
-      ),
-      textElement("p", "message-content", history.content)
-    );
-    message.append(body);
-    container.append(message);
+/** Apply safe new-tab behavior to one link without inventing a fallback URL. */
+function configureNewTabLink(link, url) {
+  const safeUrl = safeHttpUrl(url);
+  if (!safeUrl) {
+    link.removeAttribute("href");
+    return false;
+  }
+  link.href = safeUrl;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  return true;
+}
+
+/** Render sanitized Markdown and harden every retained HTTP(S) link for a new tab. */
+function renderMarkdownInto(container, markdown, windowRef) {
+  container.innerHTML = renderMarkdown(markdown, windowRef);
+  container.querySelectorAll("a").forEach((link) => {
+    const href = link.getAttribute("href");
+    if (href) configureNewTabLink(link, href);
   });
 }
 
-/** Render a resume as a safe link to the current prototype website preview. */
-function renderResumePreview(container, view) {
-  const card = document.createElement("article");
-  card.className = "resume-preview-card";
-  const copy = document.createElement("div");
-  copy.className = "resume-preview-copy";
-  copy.append(
-    textElement("span", "artifact-kind", view.strings.resumePreview),
-    textElement("h2", "", view.document.title || view.strings.resumePreview),
-    textElement("p", "", view.strings.resumePreviewHint)
-  );
-  const previewLink = textElement("a", "resume-preview-link", view.strings.openResumePreview);
-  previewLink.href = view.document.previewUrl;
-  previewLink.target = "_blank";
-  previewLink.rel = "noopener noreferrer";
-  copy.append(previewLink);
-  card.append(copy);
-  container.append(card);
-}
-
-/** Render the latest document as one visually distinct artifact card. */
-function renderDocument(container, view) {
-  if (!view.document) return;
-  if (view.document.presentation === "resume-preview") {
-    renderResumePreview(container, view);
+/** Copy raw source text through an injected test seam or the browser Clipboard API. */
+async function copyTextValue(text, dependencies = {}) {
+  if (typeof dependencies.copyText === "function") {
+    await dependencies.copyText(text);
     return;
   }
-  const card = document.createElement("article");
-  card.className = "artifact-card";
-  const header = document.createElement("header");
-  header.className = "artifact-head";
-  const title = document.createElement("div");
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+  }
+}
+
+/** Render one immutable Attachment inside its originating Assistant message. */
+function renderAttachment(documentRef, attachment, view, dependencies) {
+  const isCv = attachment?.type === "cv";
+  const card = documentRef.createElement("section");
+  card.className = `attachment ${isCv ? "cv" : "cover-letter"}`;
+  card.setAttribute("aria-label", attachment?.title || view.strings.attachment);
+
+  const header = documentRef.createElement("header");
+  header.className = "attachment-header";
+  const title = documentRef.createElement("div");
+  title.className = "attachment-title";
   title.append(
-    textElement("span", "artifact-kind", view.document.kind || view.strings.artifact),
-    textElement("h2", "", view.document.title || view.strings.artifact)
+    textElement(documentRef, "span", "attachment-kicker", view.strings.attachment),
+    textElement(
+      documentRef,
+      "h2",
+      "",
+      attachment?.title || (isCv ? view.strings.cv : view.strings.coverLetter)
+    )
   );
-  const copyButton = textElement("button", "artifact-copy", view.strings.copy);
-  copyButton.type = "button";
-  copyButton.addEventListener("click", () => {
-    copyArtifact(copyButton, view.document, view.strings).catch(() => {});
-  });
-  header.append(title, copyButton);
-  const body = document.createElement("div");
-  body.className = "artifact-body";
-  if (view.document.html) {
-    // Workspace document HTML is sanitized by the gateway before persistence.
-    body.innerHTML = view.document.html;
+  header.append(title);
+
+  if (isCv) {
+    const openLink = textElement(documentRef, "a", "attachment-open", view.strings.openCv);
+    configureNewTabLink(openLink, attachment.content);
+    openLink.setAttribute("aria-label", `${view.strings.openCv}: ${attachment.title}`);
+    header.append(openLink);
   } else {
-    body.textContent = view.document.text || "";
+    const copyButton = textElement(documentRef, "button", "attachment-copy", view.strings.copy);
+    copyButton.type = "button";
+    copyButton.setAttribute("aria-label", `${view.strings.copy}: ${attachment.title}`);
+    copyButton.addEventListener("click", async () => {
+      copyButton.disabled = true;
+      try {
+        await copyTextValue(attachment.content, dependencies);
+        copyButton.textContent = view.strings.copied;
+      } catch {
+        copyButton.textContent = view.strings.copy;
+      } finally {
+        documentRef.defaultView.setTimeout(() => {
+          copyButton.disabled = false;
+          copyButton.textContent = view.strings.copy;
+        }, 1400);
+      }
+    });
+    header.append(copyButton);
   }
-  card.append(header, body);
-  container.append(card);
+  card.append(header);
+
+  if (!isCv) {
+    const body = documentRef.createElement("div");
+    body.className = "attachment-body markdown-content";
+    renderMarkdownInto(body, attachment.content || "", documentRef.defaultView);
+    card.append(body);
+  }
+  return card;
 }
 
-/** Render the timeline, including non-history context and latest artifact. */
-function renderTimeline(elements, view, connected) {
+/** Render one role-aware HistoryMessage with timestamp and inline Attachments. */
+function renderHistoryMessage(documentRef, history, view, dependencies) {
+  const role = history?.role === "user" ? "user" : "assistant";
+  const message = documentRef.createElement("article");
+  message.className = `message ${role}`;
+  const body = documentRef.createElement("div");
+  body.className = "message-body";
+  const surface = documentRef.createElement("div");
+  surface.className = "message-surface";
+  const content = documentRef.createElement("div");
+  content.className = `message-content${role === "assistant" ? " markdown-content" : ""}`;
+
+  if (role === "user") {
+    content.textContent = history.content || "";
+  } else {
+    renderMarkdownInto(content, history.content || "", documentRef.defaultView);
+  }
+  surface.append(content);
+  if (role === "assistant") {
+    for (const item of Array.isArray(history.attachments) ? history.attachments : []) {
+      surface.append(renderAttachment(documentRef, item, view, dependencies));
+    }
+  }
+
+  const timeView = messageTimePresentation(history.created_at, view.lang);
+  const meta = documentRef.createElement("div");
+  meta.className = "message-meta";
+  const time = textElement(documentRef, "time", "", timeView.visible);
+  time.dateTime = timeView.datetime;
+  time.title = timeView.title;
+  meta.append(time);
+  body.append(surface, meta);
+  message.append(body);
+  return message;
+}
+
+/** Render the canonical chronological history as the timeline's only content source. */
+function renderTimeline(elements, model, view, dependencies) {
   elements.timeline.replaceChildren();
-  if (!connected) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.append(
-      textElement("h2", "", view.strings.offline),
-      textElement("p", "", view.strings.empty)
+  elements.timeline.setAttribute("aria-busy", String(!!model.loading));
+  if (!model.state) {
+    elements.timeline.append(
+      textElement(elements.documentRef, "p", "timeline-empty-note", view.strings.offline)
     );
-    elements.timeline.append(empty);
     return;
   }
-  renderInsight(elements.timeline, view);
-  if (view.histories.length) {
-    renderHistories(elements.timeline, view);
-  } else {
-    elements.timeline.append(textElement("p", "timeline-empty-note", view.strings.noHistory));
+  if (!view.histories.length) {
+    elements.timeline.append(
+      textElement(elements.documentRef, "p", "timeline-empty-note", view.strings.noHistory)
+    );
+    return;
   }
-  renderDocument(elements.timeline, view);
+  for (const history of view.histories) {
+    elements.timeline.append(
+      renderHistoryMessage(elements.documentRef, history, view, dependencies)
+    );
+  }
 }
 
-/** Render flat Action chips and keep selection independent from shared history. */
+/** Render compact page identity metadata without exposing Workspace lifecycle chrome. */
+function renderHeader(elements, view) {
+  elements.title.textContent = view.pageTitle;
+  elements.sourceHost.textContent = sourceLabel(view.resourceUrl) || view.strings.noPage;
+  if (!configureNewTabLink(elements.sourceLink, view.resourceUrl)) {
+    elements.sourceLink.removeAttribute("target");
+    elements.sourceLink.removeAttribute("rel");
+  }
+  const hasScore = Number.isInteger(view.matchScore);
+  elements.matchScore.hidden = !hasScore;
+  elements.matchScore.textContent = hasScore ? `${view.matchScore} / 100` : "";
+}
+
+/** Return whether the current composer error requires an Extension update. */
+function isUpdateRequired(error) {
+  return error?.kind === "update-required"
+    || error?.type === "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED";
+}
+
+/** Render backend-declared Action chips while keeping shared history untouched. */
 function renderActions(elements, model, view) {
   elements.actionChips.replaceChildren();
+  const actionsDisabled = model.loading || !view.canSend || isUpdateRequired(model.error);
   view.actions.forEach((action) => {
-    const button = textElement("button", "action-chip", action.title || action.id);
+    const button = textElement(
+      elements.documentRef,
+      "button",
+      "action-chip",
+      action.title || action.id
+    );
     button.type = "button";
+    button.dataset.actionId = action.id;
     button.setAttribute("aria-pressed", String(action.id === model.selectedActionId));
-    button.disabled = model.loading || !view.canSend;
+    button.disabled = actionsDisabled;
     button.addEventListener("click", () => {
       model.selectedActionId = action.id;
-      renderActions(elements, model, { ...view, selectedActionId: action.id });
-      updateComposer(elements, model, { ...view, selectedActionId: action.id });
+      elements.actionChips.querySelectorAll(".action-chip").forEach((chip) => {
+        chip.setAttribute("aria-pressed", String(chip.dataset.actionId === action.id));
+      });
+      updateComposer(elements, model, view);
     });
     elements.actionChips.append(button);
   });
 }
 
-/** Synchronize composer labels, disabled states, limit text, and retry feedback. */
+/** Normalize legacy string errors before rendering the structured composer state. */
+function normalizedComposerError(error, strings) {
+  if (!error) return null;
+  if (typeof error === "string") {
+    return workspaceResponseError({ error }, strings.retryFallback);
+  }
+  if (error.kind) return error;
+  return workspaceResponseError(error, strings.retryFallback);
+}
+
+/** Render one update-required or ordinary retryable error near the composer. */
+function renderComposerError(elements, model, view) {
+  const error = normalizedComposerError(model.error, view.strings);
+  elements.composerError.replaceChildren();
+  elements.composerError.hidden = !error;
+  if (!error) return;
+
+  if (error.kind === "update-required") {
+    const message = textElement(
+      elements.documentRef,
+      "div",
+      "error-message",
+      `${view.strings.updateMessage} ${view.strings.updateGateway}`
+    );
+    elements.composerError.append(message);
+    const link = textElement(
+      elements.documentRef,
+      "a",
+      "error-update-link",
+      view.strings.updateLink
+    );
+    if (configureNewTabLink(link, error.updateUrl)) {
+      elements.composerError.append(" ", link);
+    }
+    return;
+  }
+
+  elements.composerError.append(
+    textElement(elements.documentRef, "div", "error-message", error.message)
+  );
+  const retry = textElement(elements.documentRef, "button", "error-retry", view.strings.retry);
+  retry.type = "button";
+  retry.addEventListener("click", () => {
+    if (typeof model.retry === "function") model.retry();
+  });
+  elements.composerError.append(retry);
+}
+
+/** Synchronize composer labels, disabled states, limits, and error feedback. */
 function updateComposer(elements, model, view) {
   const hasMessage = !!elements.messageInput.value.trim();
   const connected = !!model.state;
-  elements.messageInput.disabled = !connected || model.loading || !view.canSend;
+  const updateRequired = isUpdateRequired(normalizedComposerError(model.error, view.strings));
+  let hint = view.strings.hint;
+  if (!connected) hint = view.strings.offline;
+  else if (model.loading) hint = `${view.strings.loading}…`;
+  else if (!view.canSend) hint = view.limitText;
+  elements.messageInput.disabled = !connected || model.loading || !view.canSend || updateRequired;
   elements.sendButton.disabled =
     !connected
     || model.loading
     || !view.canSend
+    || updateRequired
     || !model.selectedActionId
     || !hasMessage;
   elements.composerLabel.textContent = view.strings.next;
   elements.messageInput.placeholder = view.strings.placeholder;
-  elements.composerHint.textContent = view.canSend ? view.strings.hint : view.limitText;
+  elements.composerHint.textContent = hint;
   elements.turnMeter.textContent = `${view.histories.length} / 10`;
   elements.sendLabel.textContent = model.loading ? `${view.strings.loading}…` : view.strings.send;
-  elements.composerError.hidden = !model.error;
-  elements.composerError.textContent = model.error || "";
+  renderComposerError(elements, model, view);
 }
 
 /** Render every Side Panel region from the latest canonical Workspace state. */
-function render(elements, model) {
+function render(elements, model, dependencies = {}) {
   const view = workspaceView(model.state || {}, model.lang, model.uiLanguage);
-  model.selectedActionId = model.selectedActionId || view.selectedActionId;
-  document.documentElement.lang = view.lang;
-  elements.title.textContent = view.pageTitle;
-  elements.sourceHost.textContent = sourceLabel(view.resourceUrl) || view.strings.noPage;
-  elements.sourceLink.href = view.resourceUrl || "#";
-  elements.connectionStatus.textContent = model.loading
-    ? view.strings.loading
-    : model.state
-      ? view.strings.ready
-      : view.strings.offline;
-  elements.connectionStatus.className = `connection-status ${model.loading ? "busy" : model.state ? "ready" : ""}`;
-  renderTimeline(elements, view, !!model.state);
+  const actionIds = new Set(view.actions.map((action) => action.id));
+  if (!actionIds.has(model.selectedActionId)) model.selectedActionId = view.selectedActionId;
+  elements.documentRef.documentElement.lang = view.lang;
+  renderHeader(elements, view);
+  renderTimeline(elements, model, view, dependencies);
   renderActions(elements, model, view);
   updateComposer(elements, model, view);
+
+  const priorCount = Number.isInteger(model.renderedHistoryCount)
+    ? model.renderedHistoryCount
+    : -1;
+  if (view.histories.length > priorCount) {
+    elements.timeline.scrollTop = elements.timeline.scrollHeight;
+  }
+  model.renderedHistoryCount = view.histories.length;
+  return elements;
+}
+
+/** Resolve all stable Side Panel elements from one document. */
+function sidePanelElements(documentRef) {
+  return {
+    documentRef,
+    title: documentRef.getElementById("workspace-title"),
+    matchScore: documentRef.getElementById("match-score"),
+    sourceLink: documentRef.getElementById("source-link"),
+    sourceHost: documentRef.getElementById("source-host"),
+    timeline: documentRef.getElementById("timeline"),
+    actionChips: documentRef.getElementById("action-chips"),
+    composerLabel: documentRef.getElementById("composer-label"),
+    messageForm: documentRef.getElementById("message-form"),
+    messageInput: documentRef.getElementById("message-input"),
+    composerError: documentRef.getElementById("composer-error"),
+    composerHint: documentRef.getElementById("composer-hint"),
+    turnMeter: documentRef.getElementById("turn-meter"),
+    sendButton: documentRef.getElementById("send-button"),
+    sendLabel: documentRef.getElementById("send-label"),
+  };
+}
+
+/** Render a supplied model into a Side Panel document for production and DOM tests. */
+export function renderSidePanel(documentRef, model, dependencies = {}) {
+  return render(sidePanelElements(documentRef), model, dependencies);
 }
 
 /** Send one Workspace turn while retaining composer input until canonical success. */
-async function submitMessage(elements, model) {
+async function submitMessage(elements, model, dependencies) {
   const message = elements.messageInput.value.trim();
   if (!message || !model.tabId || !model.selectedActionId || model.loading) return;
   const requestTabId = model.tabId;
@@ -342,8 +524,9 @@ async function submitMessage(elements, model) {
   if (!view.canSend) return;
 
   model.loading = true;
-  model.error = "";
-  render(elements, model);
+  model.error = null;
+  model.retry = () => elements.messageForm.requestSubmit();
+  render(elements, model, dependencies);
   try {
     const response = await sendRuntime({
       type: WORKSPACE_SEND,
@@ -353,7 +536,8 @@ async function submitMessage(elements, model) {
     });
     if (model.tabId !== requestTabId) return;
     if (!response?.ok) {
-      throw new Error(response?.error || view.strings.retry);
+      model.error = workspaceResponseError(response, view.strings.retryFallback);
+      return;
     }
     model.state = response.state;
     model.lang = response.lang || model.lang;
@@ -361,45 +545,29 @@ async function submitMessage(elements, model) {
     elements.messageInput.value = "";
   } catch (error) {
     if (model.tabId !== requestTabId) return;
-    model.error = error?.message || view.strings.retry;
+    model.error = workspaceResponseError(
+      { error: error?.message || view.strings.retryFallback },
+      view.strings.retryFallback
+    );
   } finally {
     if (model.tabId === requestTabId) {
       model.loading = false;
-      render(elements, model);
-      if (!model.error) elements.timeline.scrollTop = elements.timeline.scrollHeight;
-      elements.messageInput.focus();
+      render(elements, model, dependencies);
+      if (!isUpdateRequired(model.error)) elements.messageInput.focus();
     }
   }
 }
 
-/** Resolve all stable Side Panel elements once during initialization. */
-function sidePanelElements() {
-  return {
-    title: document.getElementById("workspace-title"),
-    sourceLink: document.getElementById("source-link"),
-    sourceHost: document.getElementById("source-host"),
-    connectionStatus: document.getElementById("connection-status"),
-    timeline: document.getElementById("timeline"),
-    actionChips: document.getElementById("action-chips"),
-    composerLabel: document.getElementById("composer-label"),
-    messageForm: document.getElementById("message-form"),
-    messageInput: document.getElementById("message-input"),
-    composerError: document.getElementById("composer-error"),
-    composerHint: document.getElementById("composer-hint"),
-    turnMeter: document.getElementById("turn-meter"),
-    sendButton: document.getElementById("send-button"),
-    sendLabel: document.getElementById("send-label"),
-  };
-}
-
 /** Reload one tab's Workspace while ignoring responses superseded by a newer tab switch. */
-async function loadWorkspaceForTab(elements, model, tabId) {
+async function loadWorkspaceForTab(elements, model, tabId, dependencies) {
   model.tabId = tabId;
   model.state = null;
   model.selectedActionId = null;
+  model.renderedHistoryCount = -1;
   model.loading = !!tabId;
-  model.error = "";
-  render(elements, model);
+  model.error = null;
+  model.retry = () => loadWorkspaceForTab(elements, model, tabId, dependencies).catch(() => {});
+  render(elements, model, dependencies);
   if (!tabId) return;
 
   try {
@@ -409,34 +577,42 @@ async function loadWorkspaceForTab(elements, model, tabId) {
       model.state = response.state;
       model.lang = response.lang || "browser";
       model.selectedActionId = response.state?.selectedActionId || null;
-    } else if (response?.error) {
-      model.error = response.error;
+    } else {
+      const locale = resolveUiLang(model.lang, model.uiLanguage);
+      model.error = workspaceResponseError(response, COPY[locale].retryFallback);
     }
   } catch (error) {
     if (model.tabId !== tabId) return;
     const locale = resolveUiLang(model.lang, model.uiLanguage);
-    model.error = error?.message || COPY[locale].retry;
+    model.error = workspaceResponseError(
+      { error: error?.message || COPY[locale].retryFallback },
+      COPY[locale].retryFallback
+    );
   } finally {
     if (model.tabId === tabId) {
       model.loading = false;
-      render(elements, model);
-      if (model.state) elements.messageInput.focus();
+      render(elements, model, dependencies);
+      if (model.state && !isUpdateRequired(model.error)) elements.messageInput.focus();
     }
   }
 }
 
 /** Load the active Workspace and install accessible composer interactions. */
 async function initSidePanel() {
-  const elements = sidePanelElements();
+  const elements = sidePanelElements(document);
+  const dependencies = {};
   const model = {
     tabId: await activeTabId(),
     state: null,
     lang: "browser",
     uiLanguage: chrome.i18n.getUILanguage() || "en",
     selectedActionId: null,
+    renderedHistoryCount: -1,
     loading: false,
-    error: "",
+    error: null,
+    retry: null,
   };
+  model.retry = () => elements.messageForm.requestSubmit();
   elements.messageInput.addEventListener("input", () => {
     updateComposer(
       elements,
@@ -445,41 +621,55 @@ async function initSidePanel() {
     );
   });
   elements.messageInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    if (shouldSubmitMessage(event)) {
       event.preventDefault();
       elements.messageForm.requestSubmit();
     }
   });
   elements.messageForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    submitMessage(elements, model);
+    submitMessage(elements, model, dependencies);
   });
-  render(elements, model);
+  render(elements, model, dependencies);
 
-  /** Reload and switch the panel after a successful background seed. */
-  const onWorkspaceUpdated = (message) => {
+  /** Reload lifecycle changes and surface operation errors for the active tab. */
+  const onWorkspaceMessage = (message) => {
     const targetTabId = workspaceLifecycleTarget(message, model.tabId);
     if (targetTabId !== null) {
-      loadWorkspaceForTab(elements, model, targetTabId).catch(() => {});
+      loadWorkspaceForTab(elements, model, targetTabId, dependencies).catch(() => {});
+      return;
+    }
+    const isActiveError = !message?.tabId || message.tabId === model.tabId;
+    if (
+      isActiveError
+      && (
+        message?.type === "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED"
+        || message?.type === "AGENT_BRIDGE_WORKSPACE_ERROR"
+      )
+    ) {
+      model.error = workspaceResponseError(message);
+      model.loading = false;
+      model.retry = () => elements.messageForm.requestSubmit();
+      render(elements, model, dependencies);
     }
   };
   /** Follow the active browser tab even when it has no established Workspace. */
   const onTabActivated = ({ tabId }) => {
-    loadWorkspaceForTab(elements, model, tabId).catch(() => {});
+    loadWorkspaceForTab(elements, model, tabId, dependencies).catch(() => {});
   };
   /** Release long-lived extension listeners when Chrome destroys this panel document. */
   const cleanup = () => {
-    chrome.runtime.onMessage.removeListener(onWorkspaceUpdated);
+    chrome.runtime.onMessage.removeListener(onWorkspaceMessage);
     chrome.tabs.onActivated.removeListener(onTabActivated);
   };
-  chrome.runtime.onMessage.addListener(onWorkspaceUpdated);
+  chrome.runtime.onMessage.addListener(onWorkspaceMessage);
   chrome.tabs.onActivated.addListener(onTabActivated);
   window.addEventListener("unload", cleanup, { once: true });
 
-  await loadWorkspaceForTab(elements, model, model.tabId);
+  await loadWorkspaceForTab(elements, model, model.tabId, dependencies);
 }
 
-// Node tests import workspaceView without a DOM or extension runtime.
+// Node tests import pure render boundaries without a DOM or Extension runtime.
 if (typeof document !== "undefined" && typeof chrome !== "undefined") {
   initSidePanel().catch(() => {});
 }

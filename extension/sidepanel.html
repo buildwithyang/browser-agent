@@ -11,7 +11,7 @@
       <header class="workspace-header">
         <div class="workspace-title-row">
           <h1 id="workspace-title">Shared Workspace</h1>
-          <span id="connection-status" class="connection-status">Standby</span>
+          <span id="match-score" class="match-score" hidden></span>
         </div>
         <a id="source-link" class="source-link" href="#" target="_blank" rel="noopener noreferrer">
           <span id="source-host">No active page</span>
@@ -19,12 +19,13 @@
         </a>
       </header>
 
-      <section id="timeline" class="timeline" aria-label="Shared history" aria-live="polite">
-        <div id="empty-state" class="empty-state">
-          <h2>Workspace offline</h2>
-          <p>Open a Quick Insight Action on a page to establish a shared Workspace.</p>
-        </div>
-      </section>
+      <section
+        id="timeline"
+        class="timeline"
+        aria-label="Shared history"
+        aria-live="polite"
+        aria-relevant="additions text"
+      ></section>
 
       <footer id="composer" class="composer">
         <form id="message-form" novalidate>
@@ -37,14 +38,14 @@
             id="message-input"
             rows="2"
             maxlength="10000"
-            placeholder="Ask a question or direct the next artifact revision…"
+            placeholder="Ask a question or direct the next revision…"
           ></textarea>
-          <div id="composer-error" class="composer-error" role="alert" hidden></div>
+          <div id="composer-error" class="composer-error" role="alert" aria-live="assertive" hidden></div>
           <div class="composer-footer">
             <span id="composer-hint" class="composer-hint">Enter to send · Shift + Enter for a new line</span>
             <button id="send-button" type="submit" disabled>
-              <span id="send-label">Transmit</span>
-              <span aria-hidden="true">→</span>
+              <span id="send-label">Send</span>
+              <span aria-hidden="true">↑</span>
             </button>
           </div>
         </form>
