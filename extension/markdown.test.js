@@ -73,6 +73,19 @@ test("sanitizes executable raw HTML and Markdown links", () => {
   assert.doesNotMatch(html, /javascript:|onerror|<script/i);
 });
 
+test("keeps HTML content while removing style, SVG, and MathML injection surfaces", () => {
+  const { body } = render([
+    "<p style=\"position: fixed; inset: 0\">Readable content</p>",
+    "<svg><circle cx=\"10\" cy=\"10\" r=\"5\"></circle></svg>",
+    "<math><mi>x</mi></math>",
+  ].join("\n\n"));
+
+  assert.equal(body.querySelector("p")?.textContent, "Readable content");
+  assert.equal(body.querySelector("p")?.hasAttribute("style"), false);
+  assert.equal(body.querySelector("svg"), null);
+  assert.equal(body.querySelector("math"), null);
+});
+
 test("rejects non-string Markdown input", () => {
   const dom = new JSDOM("<!doctype html>");
 

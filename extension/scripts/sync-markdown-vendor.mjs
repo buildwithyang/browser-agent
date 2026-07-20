@@ -13,6 +13,14 @@ const VENDOR_ASSETS = [
     source: path.join(EXTENSION_ROOT, "node_modules/dompurify/dist/purify.es.mjs"),
     destination: path.join(VENDOR_DIRECTORY, "purify.es.mjs"),
   },
+  {
+    source: path.join(EXTENSION_ROOT, "node_modules/marked/LICENSE"),
+    destination: path.join(VENDOR_DIRECTORY, "LICENSE.marked.txt"),
+  },
+  {
+    source: path.join(EXTENSION_ROOT, "node_modules/dompurify/LICENSE"),
+    destination: path.join(VENDOR_DIRECTORY, "LICENSE.dompurify-Apache-2.0.txt"),
+  },
 ];
 
 /** Copy the locked Markdown runtime modules into the extension's committed vendor boundary. */

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "sync:markdown-vendor": "node scripts/sync-markdown-vendor.mjs",
+    "prepare": "npm run sync:markdown-vendor",
     "test": "node --test",
     "package": "npm run sync:markdown-vendor && bash package.sh",
     "test:package": "npm run package && unzip -p dist/agent-bridge-extension.zip config.js | grep -q 'BUILD_ENV = \"production\"' && node --test scripts/verify-package.mjs"
@@ -15,5 +16,8 @@
   },
   "devDependencies": {
     "jsdom": "29.1.1"
+  },
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
   }
 }

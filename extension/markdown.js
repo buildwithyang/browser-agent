@@ -15,5 +15,8 @@ export function renderMarkdown(markdown, windowRef) {
   }
 
   const parsedHtml = marked.parse(markdown, { gfm: true });
-  return createDOMPurify(windowRef).sanitize(parsedHtml);
+  return createDOMPurify(windowRef).sanitize(parsedHtml, {
+    USE_PROFILES: { html: true },
+    FORBID_ATTR: ["style"],
+  });
 }
