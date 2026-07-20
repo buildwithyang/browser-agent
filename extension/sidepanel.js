@@ -186,13 +186,16 @@ function sendRuntimeWith(dependencies, message) {
   return sendRuntime(message);
 }
 
-/** Advance the monotonic UI operation generation and optionally cancel a pending SEND. */
+/** Advance the UI generation and optionally invalidate pending SEND/load ownership. */
 function advanceOperationGeneration(model, cancelPendingSend = false) {
   const generation = (Number.isInteger(model.operationGeneration)
     ? model.operationGeneration
     : 0) + 1;
   model.operationGeneration = generation;
-  if (cancelPendingSend) model.pendingSendGeneration = null;
+  if (cancelPendingSend) {
+    model.pendingSendGeneration = null;
+    model.latestLoadGeneration = null;
+  }
   return generation;
 }
 
@@ -203,6 +206,7 @@ function beginLoadOperation(model, tabId, cancelPendingSend = false) {
     model,
     cancelPendingSend || tabChanged
   );
+  model.latestLoadGeneration = tabId ? generation : null;
   return Object.freeze({ generation, tabId, tabChanged });
 }
 
@@ -212,15 +216,22 @@ function isLatestLoadOperation(model, operation) {
     && model.operationGeneration === operation.generation;
 }
 
+/** Return whether this is the newest load even after an older SEND has settled. */
+function isLatestTrackedLoadOperation(model, operation) {
+  return model.tabId === operation.tabId
+    && model.latestLoadGeneration === operation.generation;
+}
+
 /** Return whether one load still owns state application and its finally block. */
 function isCurrentLoadOperation(model, operation) {
   return isLatestLoadOperation(model, operation)
     && !model.pendingSendGeneration;
 }
 
-/** Start one SEND generation that takes priority over every overlapping load. */
+/** Start one SEND generation that invalidates every previously started load. */
 function beginSendOperation(model, tabId) {
   const generation = advanceOperationGeneration(model);
+  model.latestLoadGeneration = null;
   model.pendingSendGeneration = generation;
   return Object.freeze({
     generation,
@@ -231,7 +242,7 @@ function beginSendOperation(model, tabId) {
   });
 }
 
-/** Settle the current SEND into a new generation that invalidates every overlapping load. */
+/** Settle SEND state while preserving ownership of a newer lifecycle load. */
 function settleSendOperation(model, operation) {
   if (
     model.tabId !== operation.tabId
@@ -258,7 +269,12 @@ function isResourceSwitch(currentState, incomingState) {
 
 /** Promote a latest resource-switching load above pending SEND work. */
 function promoteResourceSwitchLoad(model, operation) {
-  if (!isLatestLoadOperation(model, operation)) return null;
+  if (
+    !isLatestLoadOperation(model, operation)
+    && !isLatestTrackedLoadOperation(model, operation)
+  ) {
+    return null;
+  }
   const generation = advanceOperationGeneration(model, true);
   return Object.freeze({ generation, tabId: operation.tabId });
 }
@@ -706,7 +722,12 @@ export async function loadWorkspaceForTab(
   let completionOperation = null;
   try {
     const response = await sendRuntimeWith(dependencies, { type: WORKSPACE_GET, tabId });
-    if (!isLatestLoadOperation(model, operation)) return;
+    if (
+      !isLatestLoadOperation(model, operation)
+      && !isLatestTrackedLoadOperation(model, operation)
+    ) {
+      return;
+    }
     if (response?.ok) {
       if (isResourceSwitch(model.state, response.state)) {
         completionOperation = promoteResourceSwitchLoad(model, operation);
@@ -734,6 +755,9 @@ export async function loadWorkspaceForTab(
       COPY[locale].retryFallback
     );
   } finally {
+    if (model.latestLoadGeneration === operation.generation) {
+      model.latestLoadGeneration = null;
+    }
     if (isCurrentSettledOperation(model, completionOperation)) {
       model.loading = false;
       render(elements, model, dependencies);
@@ -754,6 +778,7 @@ async function initSidePanel() {
     selectedActionId: null,
     renderedHistoryCount: -1,
     operationGeneration: 0,
+    latestLoadGeneration: null,
     pendingSendGeneration: null,
     loading: false,
     error: null,

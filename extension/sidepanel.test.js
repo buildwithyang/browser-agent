@@ -680,6 +680,43 @@ test("same-tab resource B GET supersedes pending resource A SEND", async () => {
   assert.equal(elements.messageInput.value, "");
 });
 
+test("same-tab resource B GET survives resource A SEND settling first", async () => {
+  const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
+    tabId: 7,
+    selectedActionId: "analyze",
+  });
+  const sendRequest = deferred();
+  const getRequest = deferred();
+  const dependencies = {
+    sendRuntime: (request) => (
+      request.type === sidepanel.WORKSPACE_SEND ? sendRequest.promise : getRequest.promise
+    ),
+  };
+  elements.messageInput.value = "resource A private instruction";
+
+  const send = sidepanel.submitMessage(elements, model, dependencies);
+  const load = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
+  sendRequest.resolve({
+    ok: true,
+    state: workspace({ pageTitle: "Resource A SEND result" }),
+    lang: "en",
+  });
+  await send;
+  assert.equal(model.state?.pageTitle, "Resource A SEND result");
+
+  getRequest.resolve({
+    ok: true,
+    state: workspace({ resourceUrl: OTHER_RESOURCE_URL, pageTitle: "Resource B" }),
+    lang: "en",
+  });
+  await load;
+
+  assert.equal(model.state?.resourceUrl, OTHER_RESOURCE_URL);
+  assert.equal(model.state?.pageTitle, "Resource B");
+  assert.equal(elements.messageInput.value, "");
+  assert.equal(model.loading, false);
+});
+
 test("same-resource and initial same-tab loads do not clear a draft", async () => {
   const sameResourceRequest = deferred();
   const rendered = await renderState(workspace({ pageTitle: "Resource A" }), { tabId: 7 });
