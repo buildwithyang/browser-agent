@@ -1,17 +1,33 @@
+import json
 import uuid
+from collections.abc import AsyncIterator
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.modules.auth.model  # noqa: F401
 from app import main
-from app.agents.base import AgentContext, AgentExecution, QuickInsightAgent
+from app.agents.base import (
+    AgentContext,
+    AgentExecution,
+    QuickInsightAgent,
+    StreamingWorkspaceAgent,
+    WorkspaceAgent,
+    WorkspaceAgentContext,
+)
+from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
 from app.config import Settings
 from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.auth.repo import ExtensionTokenRepository
 from app.modules.auth.token_service import ExtensionTokenService
-from app.modules.task.schema import Action, AgentName, Insight
+from app.modules.task.schema import (
+    Action,
+    AgentName,
+    ChatResult,
+    Insight,
+    ReplyResult,
+)
 from app.modules.task.service import TaskService
 
 USER = uuid.uuid4().hex
@@ -36,7 +52,7 @@ def _wire(monkeypatch, *, settings, token_service):
     monkeypatch.setattr(
         main.app.state, "extension_token_service", token_service, raising=False
     )
-    class FakeAgent(QuickInsightAgent):
+    class FakeAgent(QuickInsightAgent, WorkspaceAgent, StreamingWorkspaceAgent):
         name = AgentName.SUMMARY_PAGE
         requires_resume = False
 
@@ -52,6 +68,31 @@ def _wire(monkeypatch, *, settings, token_service):
                 prompt="P",
                 model="m",
             )
+
+        def handle_chat(
+            self,
+            ctx: WorkspaceAgentContext,
+        ) -> AgentExecution[ChatResult]:
+            """Return one complete Workspace reply for compatibility assertions."""
+
+            return AgentExecution(
+                content=ReplyResult(type="reply", markdown="ok"),
+                raw_result="ok",
+                prompt="P",
+                model="m",
+            )
+
+        async def stream_chat(
+            self,
+            ctx: WorkspaceAgentContext,
+        ) -> AsyncIterator[AgentStreamEvent]:
+            """Yield one authenticated Workspace reply stream."""
+
+            execution = self.handle_chat(ctx)
+            yield AgentStatus(stage="generating_reply")
+            yield AgentDelta(text="ok")
+            yield AgentStatus(stage="finalizing")
+            yield AgentCompleted(execution=execution)
 
     fake_agent = FakeAgent()
     monkeypatch.setattr(
@@ -103,3 +144,38 @@ def test_self_hosted_allows_anonymous(monkeypatch, tmp_path):
         json={"url": "https://x", "pageText": "y"},
     )
     assert r.status_code == 200
+
+
+def test_require_auth_allows_valid_bearer_workspace_stream(monkeypatch, tmp_path) -> None:
+    """Authenticate before starting and preserve the Workspace NDJSON representation."""
+
+    token_service = _token_service(tmp_path)
+    _wire(
+        monkeypatch,
+        settings=Settings(require_auth=True),
+        token_service=token_service,
+    )
+    token = token_service.issue(user_id=USER).token
+    with TestClient(main.app).stream(
+        "POST",
+        "/tasks/workspace",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Agent-Bridge-Protocol-Version": "3",
+        },
+        json={
+            "trigger": "user_message",
+            "url": "https://example.com/article",
+            "resourceUrl": "https://example.com/article",
+            "operationId": "00000000-0000-0000-0000-000000000001",
+            "actionId": "ask_more",
+            "histories": [],
+            "artifacts": {"cv": None, "cover_letter": None},
+            "message": "Question",
+        },
+    ) as response:
+        lines = [json.loads(line) for line in response.iter_lines() if line]
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    assert lines[-1]["type"] == "completed"

@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import AsyncIterator, cast
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from app.modules.auth.identity import resolve_user_id
 from app.modules.task.schema import (
     QuickInsightRequest,
     QuickInsightResponse,
     WorkspaceRequest,
-    WorkspaceResponse,
 )
 from app.modules.task.service import RateLimitError, TaskExecutionError, TaskService
+from app.modules.task.stream_schema import encode_stream_event
 
 router = APIRouter(tags=["tasks"])
 
@@ -58,15 +59,34 @@ def create_quick_insight(
         raise _map_error(exc) from exc
 
 
-@router.post("/tasks/workspace", response_model=WorkspaceResponse)
-def create_workspace_task(
+@router.post("/tasks/workspace", response_class=StreamingResponse)
+async def create_workspace_task(
     task: WorkspaceRequest,
     request: Request,
-) -> WorkspaceResponse:
-    """Execute one stateless Workspace state transition."""
+) -> StreamingResponse:
+    """Stream one stateless Workspace transition as NDJSON."""
 
     service = get_task_service(request)
+    user_id = _user_id(request)
     try:
-        return service.workspace(task, user_id=_user_id(request))
-    except (RateLimitError, ValueError, TaskExecutionError) as exc:
+        prepared = service.prepare_workspace_stream(task, user_id=user_id)
+    except Exception as exc:
         raise _map_error(exc) from exc
+
+    async def body() -> AsyncIterator[bytes]:
+        """Encode service events and stop work after client disconnect."""
+
+        events = service.stream_workspace(prepared)
+        try:
+            async for event in events:
+                if await request.is_disconnected():
+                    break
+                yield encode_stream_event(event)
+        finally:
+            await events.aclose()
+
+    return StreamingResponse(
+        body(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

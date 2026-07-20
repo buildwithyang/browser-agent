@@ -1,8 +1,9 @@
-"""TaskService protocol-v2 Workspace reducer tests."""
+"""TaskService protocol-v3 Workspace stream and atomic reducer tests."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+import asyncio
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from app.agents.base import (
     WorkspaceAgent,
     WorkspaceAgentContext,
 )
+from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus
 from app.modules.task.schema import (
     ActionId,
     AgentName,
@@ -32,6 +34,7 @@ from app.modules.task.schema import (
     WorkspaceResultType,
 )
 from app.modules.task.service import TaskExecutionError, TaskService
+from app.modules.task.stream_schema import WorkspaceStreamEvent
 
 
 FIXED_NOW = datetime(2026, 7, 20, 12, 30, tzinfo=timezone.utc)
@@ -70,6 +73,82 @@ class FakeWorkspaceAgent(WorkspaceAgent):
             model="specialist-model",
         )
 
+    async def stream_chat(
+        self,
+        ctx: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStatus | AgentDelta | AgentCompleted]:
+        """Stream the prepared reply with deterministic progress and terminal metadata."""
+
+        self.calls.append(ctx)
+        yield AgentStatus(stage="generating_reply")
+        if self.error is not None:
+            raise self.error
+        if isinstance(self.result, ReplyResult):
+            midpoint = max(1, len(self.result.markdown) // 2)
+            for chunk in (self.result.markdown[:midpoint], self.result.markdown[midpoint:]):
+                if chunk:
+                    yield AgentDelta(text=chunk)
+        yield AgentStatus(stage="finalizing")
+        yield AgentCompleted(
+            execution=AgentExecution(
+                content=self.result,  # type: ignore[arg-type]
+                raw_result="raw specialist output",
+                prompt="router and specialist prompt",
+                model="specialist-model",
+            )
+        )
+
+
+class CleanupFailingWorkspaceAgent(FakeWorkspaceAgent):
+    """Raise only while the service closes an otherwise complete Agent stream."""
+
+    async def stream_chat(
+        self,
+        ctx: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStatus | AgentDelta | AgentCompleted]:
+        """Yield one complete execution and then simulate cleanup failure."""
+
+        try:
+            async for event in super().stream_chat(ctx):
+                yield event
+        finally:
+            raise RuntimeError("private provider cleanup detail")
+
+
+class CloseTrackingWorkspaceAgent(FakeWorkspaceAgent):
+    """Track cancellation cleanup for a partially consumed Agent stream."""
+
+    def __init__(self, result: ChatResult) -> None:
+        """Configure the result and an initially open stream marker."""
+
+        super().__init__(result)
+        self.stream_closed = False
+
+    async def stream_chat(
+        self,
+        ctx: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStatus | AgentDelta | AgentCompleted]:
+        """Mark the Agent iterator closed when its service consumer disconnects."""
+
+        try:
+            async for event in super().stream_chat(ctx):
+                yield event
+        finally:
+            self.stream_closed = True
+
+
+class InterruptedWorkspaceAgent(FakeWorkspaceAgent):
+    """End after progress without yielding the required Agent terminal event."""
+
+    async def stream_chat(
+        self,
+        ctx: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStatus | AgentDelta | AgentCompleted]:
+        """Yield one status and then simulate an interrupted upstream stream."""
+
+        self.calls.append(ctx)
+        yield AgentStatus(stage="generating_reply")
+
 
 class RecordingRepository:
     """Minimal operational-metrics Repository fake."""
@@ -89,6 +168,15 @@ class RecordingRepository:
         """Record one metrics row for assertions."""
 
         self.records.append(record)
+
+
+class FailingRepository(RecordingRepository):
+    """Reject metrics writes with a deliberately private exception message."""
+
+    def append(self, record: TaskRecordData) -> None:
+        """Simulate a persistence error that must never enter application logs."""
+
+        raise RuntimeError("PRIVATE resume and partial delta")
 
 
 class FakeResumeService:
@@ -246,6 +334,195 @@ def _reply(markdown: str = "## Reply\n\nOpaque <answer>.") -> ReplyResult:
     """Build one opaque Markdown reply result."""
 
     return ReplyResult(type=WorkspaceResultType.REPLY, markdown=markdown)
+
+
+async def _collect_events(
+    events: AsyncIterator[WorkspaceStreamEvent],
+) -> list[WorkspaceStreamEvent]:
+    """Collect one async service stream for synchronous pytest assertions."""
+
+    return [event async for event in events]
+
+
+def test_workspace_reply_stream_reduces_only_at_completed() -> None:
+    """Map Agent progress and reduce the complete reply only at the terminal event."""
+
+    repository = RecordingRepository()
+    agent = FakeWorkspaceAgent(_reply("这个岗位很匹配"))
+    service = _service(
+        agent,
+        uuid_values=(1, 2),
+        repository=repository,
+        perf_counter=iter((10.0, 10.25)).__next__,
+    )
+
+    prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+    events = asyncio.run(_collect_events(service.stream_workspace(prepared)))
+
+    assert [event.type for event in events] == [
+        "started",
+        "status",
+        "delta",
+        "delta",
+        "status",
+        "completed",
+    ]
+    assert [event.sequence for event in events] == list(range(len(events)))
+    assert all(event.operation_id == prepared.request.operation_id for event in events)
+    terminal = events[-1]
+    assert terminal.type == "completed"
+    assert terminal.response.histories[-1].content == "这个岗位很匹配"
+    assert terminal.response.meta.duration_ms == 250
+    assert [record.status for record in repository.records] == ["completed"]
+
+
+def test_workspace_stream_failure_never_reduces_or_emits_completed() -> None:
+    """Convert a post-start Agent failure into one bounded failed terminal event."""
+
+    repository = RecordingRepository()
+    request = _user_request()
+    before = request.model_dump_json()
+    service = _service(
+        FakeWorkspaceAgent(_reply(), error=RuntimeError("provider unavailable")),
+        uuid_values=(),
+        repository=repository,
+        perf_counter=iter((10.0, 10.1)).__next__,
+    )
+
+    prepared = service.prepare_workspace_stream(request, user_id="user-1")
+    events = asyncio.run(_collect_events(service.stream_workspace(prepared)))
+
+    assert [event.type for event in events] == ["started", "status", "failed"]
+    assert events[-1].type == "failed"
+    assert events[-1].code == "model_error"
+    assert "provider unavailable" not in events[-1].message
+    assert not any(event.type == "completed" for event in events)
+    assert request.model_dump_json() == before
+    assert [record.status for record in repository.records] == ["failed"]
+
+
+def test_workspace_stream_requires_one_agent_completed_event() -> None:
+    """Emit stream_interrupted when the Agent iterator ends without a result."""
+
+    repository = RecordingRepository()
+    service = _service(
+        InterruptedWorkspaceAgent(_reply()),
+        uuid_values=(),
+        repository=repository,
+    )
+
+    prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+    events = asyncio.run(_collect_events(service.stream_workspace(prepared)))
+
+    assert [event.type for event in events] == ["started", "status", "failed"]
+    assert events[-1].type == "failed"
+    assert events[-1].code == "stream_interrupted"
+    assert [record.status for record in repository.records] == ["failed"]
+
+
+def test_workspace_stream_rejects_invalid_completed_model_output() -> None:
+    """Fail atomically when the terminal Agent execution bypassed model validation."""
+
+    repository = RecordingRepository()
+    invalid_result = ReplyResult.model_construct(
+        type=WorkspaceResultType.REPLY,
+        markdown="x" * 100_001,
+    )
+    service = _service(
+        FakeWorkspaceAgent(invalid_result),
+        uuid_values=(),
+        repository=repository,
+    )
+
+    prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+    events = asyncio.run(_collect_events(service.stream_workspace(prepared)))
+
+    assert events[-1].type == "failed"
+    assert events[-1].code == "invalid_model_output"
+    assert not any(event.type == "completed" for event in events)
+    assert [record.status for record in repository.records] == ["failed"]
+
+
+def test_workspace_stream_maps_gateway_reducer_failure_to_internal_error() -> None:
+    """Keep Gateway-owned final state failures distinct from invalid model output."""
+
+    repository = RecordingRepository()
+    service = _service(
+        FakeWorkspaceAgent(_reply()),
+        uuid_values=(1, 1),
+        repository=repository,
+    )
+
+    prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+    events = asyncio.run(_collect_events(service.stream_workspace(prepared)))
+
+    assert events[-1].type == "failed"
+    assert events[-1].code == "internal_error"
+    assert not any(event.type == "completed" for event in events)
+    assert [record.status for record in repository.records] == ["failed"]
+
+
+def test_workspace_stream_cleanup_failure_cannot_follow_completed_terminal() -> None:
+    """Ignore cleanup exceptions after one canonical completed event is committed."""
+
+    repository = RecordingRepository()
+    service = _service(
+        CleanupFailingWorkspaceAgent(_reply("complete")),
+        uuid_values=(1, 2),
+        repository=repository,
+    )
+
+    prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+    events = asyncio.run(_collect_events(service.stream_workspace(prepared)))
+
+    terminals = [event for event in events if event.type in {"completed", "failed"}]
+    assert [event.type for event in terminals] == ["completed"]
+    assert [record.status for record in repository.records] == ["completed"]
+
+
+def test_workspace_stream_disconnect_closes_agent_without_partial_persistence() -> None:
+    """Close the active Agent stream and store only bounded failure metrics."""
+
+    repository = RecordingRepository()
+    agent = CloseTrackingWorkspaceAgent(_reply("partial reply"))
+    service = _service(agent, uuid_values=(), repository=repository)
+    request = _user_request()
+    before = request.model_dump_json()
+
+    async def disconnect() -> None:
+        """Consume progress and then close the service stream like the API body."""
+
+        prepared = service.prepare_workspace_stream(request, user_id="user-1")
+        events = service.stream_workspace(prepared)
+        assert (await anext(events)).type == "started"
+        assert (await anext(events)).type == "status"
+        await events.aclose()
+
+    asyncio.run(disconnect())
+
+    assert agent.stream_closed is True
+    assert request.model_dump_json() == before
+    assert [record.status for record in repository.records] == ["failed"]
+    assert repository.records[0].prompt == ""
+    assert repository.records[0].result == ""
+
+
+def test_workspace_stream_failure_does_not_log_private_repository_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Keep raw persistence failures out of the streamed failure log path."""
+
+    service = _service(
+        FakeWorkspaceAgent(_reply(), error=RuntimeError("provider unavailable")),
+        uuid_values=(),
+        repository=FailingRepository(),
+    )
+
+    prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+    events = asyncio.run(_collect_events(service.stream_workspace(prepared)))
+
+    assert events[-1].type == "failed"
+    assert "PRIVATE resume and partial delta" not in caplog.text
 
 
 def _create(artifact_type: ArtifactType) -> CreateArtifactResult:

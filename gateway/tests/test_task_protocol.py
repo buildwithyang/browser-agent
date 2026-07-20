@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -33,6 +35,11 @@ from app.modules.task.schema import (
     WorkspaceDescriptor,
 )
 from app.modules.task.service import RateLimitError, TaskExecutionError
+from app.modules.task.stream_schema import (
+    WorkspaceCompletedEvent,
+    WorkspaceStartedEvent,
+    WorkspaceStreamEvent,
+)
 
 PROTOCOL_VALUE = str(CURRENT_EXTENSION_PROTOCOL_VERSION)
 PROTOCOL_HEADERS = {EXTENSION_PROTOCOL_HEADER: PROTOCOL_VALUE}
@@ -133,17 +140,35 @@ class RecordingService:
             meta=ExecutionMeta(model="fake"),
         )
 
-    def workspace(self, task: Any, *, user_id: str | None) -> WorkspaceResponse:
-        """Return a minimal successful complete Workspace state."""
+    def prepare_workspace_stream(self, task: Any, *, user_id: str | None) -> Any:
+        """Record one prepared Workspace request before streaming starts."""
 
         self.calls.append(("workspace", task, user_id))
-        return WorkspaceResponse(
+        return task
+
+    async def stream_workspace(
+        self,
+        task: Any,
+    ) -> AsyncIterator[WorkspaceStreamEvent]:
+        """Yield a minimal successful Workspace NDJSON event sequence."""
+
+        response = WorkspaceResponse(
             resource_url="https://example.com/",
             selected_action_id=ActionId.ASK_MORE,
             result_type=WorkspaceResultType.REPLY,
             histories=[],
             artifacts=Artifacts(cv=None, cover_letter=None),
             meta=ExecutionMeta(model="fake"),
+        )
+        yield WorkspaceStartedEvent(
+            operation_id=task.operation_id,
+            sequence=0,
+            created_at=datetime.now(timezone.utc),
+        )
+        yield WorkspaceCompletedEvent(
+            operation_id=task.operation_id,
+            sequence=1,
+            response=response,
         )
 
 
@@ -392,7 +417,7 @@ def test_matching_protocol_reaches_service_and_marks_success_response(
     payload: dict[str, object],
     operation: str,
 ) -> None:
-    """Pass version three to the router exactly once and tag successful JSON."""
+    """Pass version three to the router once and tag each success representation."""
 
     service = RecordingService()
     _wire(monkeypatch, service)
@@ -401,7 +426,13 @@ def test_matching_protocol_reaches_service_and_marks_success_response(
 
     assert response.status_code == 200
     assert response.headers[EXTENSION_PROTOCOL_HEADER] == PROTOCOL_VALUE
-    assert response.json()["protocol_version"] == CURRENT_EXTENSION_PROTOCOL_VERSION
+    if operation == "workspace":
+        lines = [json.loads(line) for line in response.iter_lines() if line]
+        assert lines[-1]["response"]["protocol_version"] == (
+            CURRENT_EXTENSION_PROTOCOL_VERSION
+        )
+    else:
+        assert response.json()["protocol_version"] == CURRENT_EXTENSION_PROTOCOL_VERSION
     assert [call[0] for call in service.calls] == [operation]
 
 

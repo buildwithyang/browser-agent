@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Generic, NoReturn, TypeVar
+from typing import AsyncIterator, Callable, Generic, NoReturn, TypeVar
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -14,8 +14,15 @@ from app.agents.base import (
     AgentExecution,
     QuickInsightAgent,
     RegisteredAgent,
+    StreamingWorkspaceAgent,
     WorkspaceAgent,
     WorkspaceAgentContext,
+)
+from app.agents.stream import (
+    AgentCompleted,
+    AgentDelta,
+    AgentStatus,
+    closing_if_supported,
 )
 from app.modules.resume import ResumeService
 from app.modules.task.repo import TaskRepository
@@ -43,6 +50,14 @@ from app.modules.task.schema import (
     WorkspaceDescriptor,
     WorkspaceRequest,
     WorkspaceResponse,
+)
+from app.modules.task.stream_schema import (
+    WorkspaceCompletedEvent,
+    WorkspaceDeltaEvent,
+    WorkspaceFailedEvent,
+    WorkspaceStartedEvent,
+    WorkspaceStatusEvent,
+    WorkspaceStreamEvent,
 )
 
 logger = logging.getLogger("agent_bridge")
@@ -72,6 +87,19 @@ class _StagedAgentOperation(Generic[ContentT]):
     record_id: uuid.UUID
     execution: AgentExecution[ContentT]
     meta: ExecutionMeta
+
+
+@dataclass(frozen=True)
+class PreparedWorkspaceStream:
+    """Validated dependencies for one stateless Workspace event stream."""
+
+    request: WorkspaceRequest
+    resource_url: str
+    agent_name: AgentName
+    agent: StreamingWorkspaceAgent
+    context: WorkspaceAgentContext
+    user_id: str | None
+    started_at: datetime
 
 
 def _artifact_for_type(
@@ -355,6 +383,219 @@ class TaskService:
         self._complete_staged_agent_operation(outcome)
         return response
 
+    def prepare_workspace_stream(
+        self,
+        request: WorkspaceRequest,
+        *,
+        user_id: str | None,
+    ) -> PreparedWorkspaceStream:
+        """Validate all ordinary HTTP failure boundaries before streaming starts."""
+
+        resource_url = normalize_resource_url(request.url)
+        if request.resource_url != resource_url:
+            raise ValueError("resourceUrl does not match normalized url")
+
+        agent_name, agent = self._resolve_agent(request)
+        if not isinstance(agent, StreamingWorkspaceAgent):
+            raise ValueError(f"Agent does not support Workspace streaming: {agent_name}")
+        self._enforce_rate_limit(user_id)
+        resume_text = self._resolve_cv_text(user_id) if agent.requires_resume else None
+        return PreparedWorkspaceStream(
+            request=request,
+            resource_url=resource_url,
+            agent_name=agent_name,
+            agent=agent,
+            context=WorkspaceAgentContext(request=request, resume_text=resume_text),
+            user_id=user_id,
+            started_at=datetime.now(timezone.utc),
+        )
+
+    async def stream_workspace(
+        self,
+        prepared: PreparedWorkspaceStream,
+    ) -> AsyncIterator[WorkspaceStreamEvent]:
+        """Map one Agent stream and atomically emit a single terminal wire event."""
+
+        request = prepared.request
+        operation_id = request.operation_id
+        record_id = uuid.uuid4()
+        sequence = 0
+        t0 = self._perf_counter()
+        terminal_recorded = False
+
+        def elapsed_ms() -> int:
+            """Return elapsed stream time in whole milliseconds."""
+
+            return int((self._perf_counter() - t0) * 1000)
+
+        def persist_failure(code: str, duration_ms: int) -> None:
+            """Persist bounded failure metrics without partial output or private errors."""
+
+            self._persist(
+                record_id.hex,
+                request,
+                prepared.agent_name,
+                prepared.user_id,
+                self._default_model,
+                "failed",
+                0,
+                0,
+                duration_ms,
+                code,
+            )
+            logger.warning(
+                "workspace task failed agent=%s code=%s duration_ms=%d",
+                prepared.agent_name,
+                code,
+                duration_ms,
+            )
+
+        yield WorkspaceStartedEvent(
+            operation_id=operation_id,
+            sequence=sequence,
+            created_at=prepared.started_at,
+        )
+        sequence += 1
+
+        try:
+            agent_events = prepared.agent.stream_chat(prepared.context)
+            async with closing_if_supported(agent_events) as owned_events:
+                # Deltas remain transient; only AgentCompleted may enter the reducer.
+                async for event in owned_events:
+                    if isinstance(event, AgentStatus):
+                        yield WorkspaceStatusEvent(
+                            operation_id=operation_id,
+                            sequence=sequence,
+                            stage=event.stage,
+                            artifact_type=event.artifact_type,
+                        )
+                        sequence += 1
+                        continue
+                    if isinstance(event, AgentDelta):
+                        yield WorkspaceDeltaEvent(
+                            operation_id=operation_id,
+                            sequence=sequence,
+                            text=event.text,
+                        )
+                        sequence += 1
+                        continue
+                    if not isinstance(event, AgentCompleted):
+                        raise TypeError("Workspace Agent yielded an unsupported event")
+
+                    # Model output validation is distinct from Gateway-owned finalization.
+                    try:
+                        execution = _validated_workspace_execution(
+                            request,
+                            event.execution,
+                        )
+                    except (ValueError, TypeError):
+                        duration_ms = elapsed_ms()
+                        persist_failure("invalid_model_output", duration_ms)
+                        terminal_recorded = True
+                        yield WorkspaceFailedEvent(
+                            operation_id=operation_id,
+                            sequence=sequence,
+                            code="invalid_model_output",
+                            message="Workspace model output was invalid.",
+                            recoverable=True,
+                        )
+                        return
+
+                    # Allocate and validate the canonical next state as one atomic step.
+                    try:
+                        identity = _allocate_workspace_transition_identity(
+                            request,
+                            execution.content,
+                            new_id=self._workspace_id_factory,
+                            clock=self._workspace_clock,
+                        )
+                        histories, artifacts = _reduce_workspace_state(
+                            request,
+                            execution.content,
+                            identity=identity,
+                        )
+                        duration_ms = elapsed_ms()
+                        finished_at = datetime.now(timezone.utc)
+                        meta = ExecutionMeta(
+                            id=record_id,
+                            created_at=prepared.started_at,
+                            status="completed",
+                            input_chars=len(execution.prompt),
+                            model=execution.model,
+                            started_at=prepared.started_at,
+                            finished_at=finished_at,
+                            duration_ms=duration_ms,
+                        )
+                        response = WorkspaceResponse(
+                            resource_url=prepared.resource_url,
+                            selected_action_id=request.action_id,
+                            result_type=execution.content.type,
+                            histories=histories,
+                            artifacts=artifacts,
+                            meta=meta,
+                        )
+                    except Exception:
+                        duration_ms = elapsed_ms()
+                        persist_failure("internal_error", duration_ms)
+                        terminal_recorded = True
+                        yield WorkspaceFailedEvent(
+                            operation_id=operation_id,
+                            sequence=sequence,
+                            code="internal_error",
+                            message="Workspace finalization failed.",
+                            recoverable=True,
+                        )
+                        return
+
+                    outcome = _StagedAgentOperation(
+                        request=request,
+                        agent_name=prepared.agent_name,
+                        user_id=prepared.user_id,
+                        record_id=record_id,
+                        execution=execution,
+                        meta=meta,
+                    )
+                    self._complete_staged_agent_operation(outcome)
+                    terminal_recorded = True
+                    yield WorkspaceCompletedEvent(
+                        operation_id=operation_id,
+                        sequence=sequence,
+                        response=response,
+                    )
+                    return
+
+            duration_ms = elapsed_ms()
+            persist_failure("stream_interrupted", duration_ms)
+            terminal_recorded = True
+            yield WorkspaceFailedEvent(
+                operation_id=operation_id,
+                sequence=sequence,
+                code="stream_interrupted",
+                message="Workspace stream ended before completion.",
+                recoverable=True,
+            )
+        except Exception:
+            if terminal_recorded:
+                logger.warning(
+                    "workspace stream cleanup failed agent=%s",
+                    prepared.agent_name,
+                )
+                return
+            duration_ms = elapsed_ms()
+            persist_failure("model_error", duration_ms)
+            terminal_recorded = True
+            yield WorkspaceFailedEvent(
+                operation_id=operation_id,
+                sequence=sequence,
+                code="model_error",
+                message="Workspace model generation failed.",
+                recoverable=True,
+            )
+        finally:
+            # Client disconnect closes this generator; record no partial text or Artifact.
+            if not terminal_recorded:
+                persist_failure("stream_interrupted", elapsed_ms())
+
     def _resolve_agent(
         self,
         request: PageContext,
@@ -623,6 +864,6 @@ class TaskService:
                     **detail,
                 )
             )
-        except Exception as exc:
-            # 指标落库失败不该影响用户拿到结果,记日志即可。
-            logger.warning("task metrics persist failed id=%s err=%s", record_id, exc)
+        except Exception:
+            # 指标落库失败不影响响应；异常正文可能携带隐私，只记录关联 ID。
+            logger.warning("task metrics persist failed id=%s", record_id)

@@ -1,4 +1,6 @@
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -16,6 +18,7 @@ from app.agents.base import (
     WorkspaceAgent,
     WorkspaceAgentContext,
 )
+from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
 from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.task.repo import TaskRepository
@@ -146,6 +149,18 @@ def test_workspace_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
                 model="m",
             )
 
+        async def stream_chat(
+            self,
+            ctx: WorkspaceAgentContext,
+        ) -> AsyncIterator[AgentStreamEvent]:
+            """Count one streamed call and return a complete reply execution."""
+
+            execution = self.handle_chat(ctx)
+            yield AgentStatus(stage="generating_reply")
+            yield AgentDelta(text="ok")
+            yield AgentStatus(stage="finalizing")
+            yield AgentCompleted(execution=execution)
+
     agent = Agent()
     service = TaskService(
         agents={AgentName.SUMMARY_PAGE: agent},
@@ -166,8 +181,16 @@ def test_workspace_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
         message="Question",
     )
 
-    service.workspace(request, user_id=USER)
+    prepared = service.prepare_workspace_stream(request, user_id=USER)
+    asyncio.run(_consume(service.stream_workspace(prepared)))
     with pytest.raises(RateLimitError):
-        service.workspace(request, user_id=USER)
+        service.prepare_workspace_stream(request, user_id=USER)
 
     assert agent.calls == 1
+
+
+async def _consume(events: AsyncIterator[object]) -> None:
+    """Exhaust one service stream so its terminal metric is persisted."""
+
+    async for _ in events:
+        pass

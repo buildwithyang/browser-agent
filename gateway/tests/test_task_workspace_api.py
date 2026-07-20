@@ -1,9 +1,19 @@
-"""Final protocol-v2 Workspace API tests."""
+"""Protocol-v3 Workspace NDJSON API tests."""
+
+import json
+from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from app import main
-from app.agents.base import AgentExecution, WorkspaceAgent, WorkspaceAgentContext
+from app.agents.base import (
+    AgentExecution,
+    StreamingWorkspaceAgent,
+    WorkspaceAgent,
+    WorkspaceAgentContext,
+)
+from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
 from app.modules.task.schema import (
     AgentName,
     ChatResult,
@@ -14,7 +24,7 @@ from app.modules.task.schema import (
 PROTOCOL_HEADERS = {"X-Agent-Bridge-Protocol-Version": "3"}
 
 
-class ApiWorkspaceAgent(WorkspaceAgent):
+class ApiWorkspaceAgent(WorkspaceAgent, StreamingWorkspaceAgent):
     """Fake stateless Agent used to exercise the final Workspace transition."""
 
     name = AgentName.SUMMARY_PAGE
@@ -30,6 +40,18 @@ class ApiWorkspaceAgent(WorkspaceAgent):
             model="fake",
         )
 
+    async def stream_chat(
+        self,
+        ctx: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """Yield progress, one reply delta, and one complete execution."""
+
+        execution = self.handle_chat(ctx)
+        yield AgentStatus(stage="generating_reply")
+        yield AgentDelta(text=execution.content.markdown)
+        yield AgentStatus(stage="finalizing")
+        yield AgentCompleted(execution=execution)
+
 
 class FailingIfCalledAgent(ApiWorkspaceAgent):
     """Fail when invalid resource identity reaches Agent execution."""
@@ -38,6 +60,15 @@ class FailingIfCalledAgent(ApiWorkspaceAgent):
         """Prove URL identity validation happens before Agent execution."""
 
         raise AssertionError("agent must not run for mismatched resourceUrl")
+
+    async def stream_chat(
+        self,
+        ctx: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """Prove invalid resource identity never creates an Agent stream."""
+
+        raise AssertionError("agent must not run for mismatched resourceUrl")
+        yield  # pragma: no cover
 
 
 class LongAssistantAgent(ApiWorkspaceAgent):
@@ -90,11 +121,18 @@ def _payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
-def test_workspace_endpoint_returns_complete_final_state(monkeypatch) -> None:
-    """Return trigger-reduced histories, artifacts and result type without documents."""
+def _stream_lines(response: Response) -> list[dict[str, object]]:
+    """Decode all non-empty NDJSON lines from one TestClient stream response."""
+
+    return [json.loads(line) for line in response.iter_lines() if line]
+
+
+def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None:
+    """Stream progress and the complete final state with anti-buffering headers."""
 
     _wire(monkeypatch, ApiWorkspaceAgent())
-    response = TestClient(main.app).post(
+    with TestClient(main.app).stream(
+        "POST",
         "/tasks/workspace",
         headers=PROTOCOL_HEADERS,
         json=_payload(
@@ -102,10 +140,25 @@ def test_workspace_endpoint_returns_complete_final_state(monkeypatch) -> None:
             resourceUrl="https://example.com/article?a=1&b=2",
             histories=[{"role": "assistant", "content": "previous"}],
         ),
-    )
+    ) as response:
+        lines = _stream_lines(response)
 
     assert response.status_code == 200
-    body = response.json()
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    assert response.headers["x-accel-buffering"] == "no"
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-agent-bridge-protocol-version"] == "3"
+    assert [line["type"] for line in lines] == [
+        "started",
+        "status",
+        "delta",
+        "status",
+        "completed",
+    ]
+    assert [line["sequence"] for line in lines] == list(range(len(lines)))
+    assert all(line["operation_id"] == _payload()["operationId"] for line in lines)
+    body = lines[-1]["response"]
+    assert isinstance(body, dict)
     assert body["resource_url"] == "https://example.com/article?a=1&b=2"
     assert body["selected_action_id"] == "ask_more"
     assert body["result_type"] == "reply"
@@ -136,6 +189,45 @@ def test_workspace_endpoint_rejects_mismatched_resource_url(monkeypatch) -> None
     assert response.json()["detail"] == "resourceUrl does not match normalized url"
 
 
+def test_workspace_maps_unexpected_preparation_failure_before_stream(monkeypatch) -> None:
+    """Return an ordinary 502 when request-scoped preparation cannot complete."""
+
+    class PreparationFailingService:
+        """Fail before the API creates a StreamingResponse."""
+
+        def prepare_workspace_stream(
+            self,
+            task: object,
+            *,
+            user_id: str | None,
+        ) -> object:
+            """Simulate a request-scoped dependency failure during preparation."""
+
+            raise RuntimeError("resume repository unavailable")
+
+    monkeypatch.setattr(
+        main.app.state,
+        "task_service",
+        PreparationFailingService(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.app.state,
+        "settings",
+        type("Settings", (), {"require_auth": False})(),
+        raising=False,
+    )
+
+    response = TestClient(main.app).post(
+        "/tasks/workspace",
+        headers=PROTOCOL_HEADERS,
+        json=_payload(),
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "resume repository unavailable"
+
+
 def test_quick_insight_rejects_invalid_url_before_agent_execution(monkeypatch) -> None:
     """Keep URL normalization errors inside the accepted protocol response."""
 
@@ -154,14 +246,20 @@ def test_workspace_accepts_assistant_reply_over_user_message_limit(monkeypatch) 
     """Apply the larger Assistant Markdown cap to reducer output."""
 
     _wire(monkeypatch, LongAssistantAgent())
-    response = TestClient(main.app).post(
+    with TestClient(main.app).stream(
+        "POST",
         "/tasks/workspace",
         headers=PROTOCOL_HEADERS,
         json=_payload(),
-    )
+    ) as response:
+        lines = _stream_lines(response)
 
     assert response.status_code == 200
-    assert len(response.json()["histories"][-1]["content"]) == 10_001
+    body = lines[-1]["response"]
+    assert isinstance(body, dict)
+    histories = body["histories"]
+    assert isinstance(histories, list)
+    assert len(histories[-1]["content"]) == 10_001
 
 
 def test_workspace_rejects_public_agent_field(monkeypatch) -> None:
