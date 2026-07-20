@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Annotated, Generic, Literal, TypeVar
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.modules.task.protocol import CURRENT_EXTENSION_PROTOCOL_VERSION
 
 T = TypeVar("T")
 
@@ -37,6 +40,28 @@ class ActionId(StrEnum):
     ASK_MORE = "ask_more"
 
 
+class WorkspaceTrigger(StrEnum):
+    """Stable entry modes for one stateless Workspace transition."""
+
+    USER_MESSAGE = "user_message"
+    QUICK_INSIGHT_ACTION = "quick_insight_action"
+
+
+class WorkspaceResultType(StrEnum):
+    """Possible final outcomes reported by the Workspace reducer."""
+
+    REPLY = "reply"
+    CREATE_ARTIFACT = "create_artifact"
+    UPDATE_ARTIFACT = "update_artifact"
+
+
+class ArtifactType(StrEnum):
+    """The two versioned Workspace artifact categories."""
+
+    CV = "cv"
+    COVER_LETTER = "cover_letter"
+
+
 Recommendation = Literal["strong_apply", "apply", "cautious", "skip"]
 
 # /tasks 输入封顶：防止匿名/恶意调用塞超大正文烧平台 LLM 钱。
@@ -50,6 +75,9 @@ DOCUMENT_DRAFT_KIND_MAX_CHARS = 100
 DOCUMENT_DRAFT_TITLE_MAX_CHARS = 500
 # Preserve every valid generated document across the next stateless Workspace turn.
 DOCUMENT_DRAFT_TEXT_MAX_CHARS = DOCUMENT_TEXT_MAX_CHARS
+ATTACHMENT_CV_CONTENT_MAX_CHARS = 4_096
+TITLE_MAX_CHARS = 500
+ARTIFACT_VERSION_MAX = 2_147_483_647
 
 
 class PageContext(BaseModel):
@@ -149,28 +177,84 @@ class WorkspaceDescriptor(BaseModel):
     default_action_id: ActionId
 
 
+class Attachment(BaseModel):
+    """An immutable Artifact version snapshot embedded in an Assistant message."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID = Field(default_factory=uuid4)
+    artifact_id: UUID
+    version: int = Field(ge=1, le=ARTIFACT_VERSION_MAX)
+    type: ArtifactType
+    title: str = Field(min_length=1, max_length=TITLE_MAX_CHARS)
+    content: str = Field(min_length=1, max_length=DOCUMENT_TEXT_MAX_CHARS)
+
+    @model_validator(mode="after")
+    def validate_content_for_type(self) -> "Attachment":
+        """Enforce the URL-only CV attachment representation."""
+
+        if self.type is ArtifactType.CV:
+            parsed = urlparse(self.content)
+            if (
+                len(self.content) > ATTACHMENT_CV_CONTENT_MAX_CHARS
+                or parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+            ):
+                raise ValueError("CV Attachment content must be an absolute HTTP(S) URL")
+        return self
+
+
+class Artifact(BaseModel):
+    """The latest complete snapshot of one Workspace artifact category."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID = Field(default_factory=uuid4)
+    type: ArtifactType
+    version: int = Field(ge=1, le=ARTIFACT_VERSION_MAX)
+    title: str = Field(min_length=1, max_length=TITLE_MAX_CHARS)
+    draft: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
+    attachment: Attachment
+
+
+class Artifacts(BaseModel):
+    """Fixed-key latest Artifact map carried in every Workspace state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cv: Artifact | None
+    cover_letter: Artifact | None
+
+
 class HistoryMessage(BaseModel):
-    """一次 Workspace 用户或 Assistant 消息。"""
+    """One complete Workspace message supplied by or returned to the Extension."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: UUID = Field(default_factory=uuid4)
     role: Literal["user", "assistant"]
     content: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
     action_id: ActionId | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    attachments: list[Attachment] = Field(default_factory=list, max_length=1)
 
     @model_validator(mode="after")
-    def validate_user_content(self) -> "HistoryMessage":
-        """Apply the smaller interactive-input limit only to user history."""
+    def validate_workspace_message(self) -> "HistoryMessage":
+        """Validate role-specific text, Attachment and UTC timestamp constraints."""
 
         if self.role == "user" and not 1 <= len(self.content) <= USER_MESSAGE_MAX_CHARS:
             raise ValueError(
                 f"user history content must contain 1 to {USER_MESSAGE_MAX_CHARS} characters"
             )
+        if self.role == "user" and self.attachments:
+            raise ValueError("user message attachments must be empty")
+        if self.created_at.tzinfo is None or self.created_at.utcoffset() != timedelta(0):
+            raise ValueError("message created_at must be UTC")
         return self
 
 
 class DocumentDraft(BaseModel):
-    """客户端回传的最新文档草稿，供本次无状态生成使用。"""
+    """Transitional v1 document input kept until Task 8 migrates consumers."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -179,29 +263,93 @@ class DocumentDraft(BaseModel):
     text: str = Field("", max_length=DOCUMENT_DRAFT_TEXT_MAX_CHARS)
 
 
-class WorkspaceRequest(PageContext):
-    """共享 Workspace 的一次无状态 Action 请求。"""
+def validate_workspace_state(histories: list[HistoryMessage], artifacts: Artifacts) -> None:
+    """Validate cross-object identity, reference and latest-snapshot invariants."""
+
+    message_ids = [message.id for message in histories]
+    if len(message_ids) != len(set(message_ids)):
+        raise ValueError("message IDs must be unique")
+
+    attachments = [attachment for message in histories for attachment in message.attachments]
+    attachment_ids = [attachment.id for attachment in attachments]
+    if len(attachment_ids) != len(set(attachment_ids)):
+        raise ValueError("Attachment IDs must be unique")
+
+    artifact_by_type = {
+        ArtifactType.CV: artifacts.cv,
+        ArtifactType.COVER_LETTER: artifacts.cover_letter,
+    }
+    present_artifacts = [artifact for artifact in artifact_by_type.values() if artifact is not None]
+    artifact_ids = [artifact.id for artifact in present_artifacts]
+    if len(artifact_ids) != len(set(artifact_ids)):
+        raise ValueError("Artifact IDs must be unique")
+
+    latest_attachment_by_type: dict[ArtifactType, Attachment] = {}
+    for attachment in attachments:
+        referenced_artifact = artifact_by_type[attachment.type]
+        if referenced_artifact is None or attachment.artifact_id != referenced_artifact.id:
+            raise ValueError("Attachment artifact_id must reference its current Artifact")
+        latest_attachment_by_type[attachment.type] = attachment
+
+    for artifact_type, artifact in artifact_by_type.items():
+        if artifact is None:
+            continue
+        if artifact.type is not artifact_type:
+            raise ValueError("Artifact type must match its Artifacts key")
+        if artifact.attachment.artifact_id != artifact.id:
+            raise ValueError("Artifact Attachment artifact_id must match its Artifact")
+        if latest_attachment_by_type.get(artifact_type) != artifact.attachment:
+            raise ValueError("Artifact Attachment must equal the latest Attachment of its type")
+
+
+class WorkspaceRequestBase(PageContext):
+    """Shared fields for the two intentionally disjoint Workspace triggers."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     resource_url: str = Field(alias="resourceUrl")
     action_id: ActionId = Field(alias="actionId")
     histories: list[HistoryMessage] = Field(default_factory=list, max_length=10)
-    current_document: DocumentDraft | None = Field(
-        default=None,
-        alias="currentDocument",
-    )
+    artifacts: Artifacts
+
+
+class UserMessageWorkspaceRequest(WorkspaceRequestBase):
+    """Workspace request that appends one non-empty user message before execution."""
+
+    trigger: Literal[WorkspaceTrigger.USER_MESSAGE]
     message: str = Field(min_length=1, max_length=USER_MESSAGE_MAX_CHARS)
 
     @model_validator(mode="after")
-    def validate_message_limit(self) -> "WorkspaceRequest":
-        """Count the current user message against the ten-message input cap."""
+    def validate_user_message_state(self) -> "UserMessageWorkspaceRequest":
+        """Reserve one of the ten incoming message slots for the user text."""
 
-        if len(self.histories) + 1 > 10:
-            raise ValueError("histories plus current message must not exceed 10")
+        if len(self.histories) > 9:
+            raise ValueError("user_message histories must contain at most 9 messages")
+        validate_workspace_state(self.histories, self.artifacts)
         return self
 
 
+class QuickInsightActionWorkspaceRequest(WorkspaceRequestBase):
+    """Workspace request triggered by a deterministic Quick Insight Action."""
+
+    trigger: Literal[WorkspaceTrigger.QUICK_INSIGHT_ACTION]
+
+    @model_validator(mode="after")
+    def validate_quick_insight_action_state(self) -> "QuickInsightActionWorkspaceRequest":
+        """Validate the complete pre-existing state without appending a user message."""
+
+        validate_workspace_state(self.histories, self.artifacts)
+        return self
+
+
+WorkspaceRequest = Annotated[
+    UserMessageWorkspaceRequest | QuickInsightActionWorkspaceRequest,
+    Field(discriminator="trigger"),
+]
+
+
 class DocumentContent(BaseModel):
-    """Agent 生成并返回给客户端的最新文档。"""
+    """Transitional v1 document output kept until Task 8 migrates consumers."""
 
     kind: str = ""
     title: str = ""
@@ -221,22 +369,77 @@ class ExecutionMeta(BaseModel):
     duration_ms: int | None = None
 
 
+class ReplyResult(BaseModel):
+    """Markdown-only Agent result that does not create an Artifact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal[WorkspaceResultType.REPLY]
+    markdown: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
+
+
+class CreateArtifactResult(BaseModel):
+    """Markdown Agent result that creates a complete first Artifact snapshot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal[WorkspaceResultType.CREATE_ARTIFACT]
+    markdown: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
+    artifact_type: ArtifactType
+    title: str = Field(min_length=1, max_length=TITLE_MAX_CHARS)
+    draft: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
+
+
+class UpdateArtifactResult(BaseModel):
+    """Markdown Agent result that replaces one existing Artifact snapshot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal[WorkspaceResultType.UPDATE_ARTIFACT]
+    markdown: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
+    artifact_type: ArtifactType
+    title: str = Field(min_length=1, max_length=TITLE_MAX_CHARS)
+    draft: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
+
+
+ChatResult = Annotated[
+    ReplyResult | CreateArtifactResult | UpdateArtifactResult,
+    Field(discriminator="type"),
+]
+
+
 class QuickInsightResponse(BaseModel):
     request: QuickInsightRequest
     insight: Insight
     actions: list[Action] = Field(default_factory=list)
     workspace: WorkspaceDescriptor
     meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
+    protocol_version: Literal[CURRENT_EXTENSION_PROTOCOL_VERSION] = (
+        CURRENT_EXTENSION_PROTOCOL_VERSION
+    )
 
 
 class WorkspaceResponse(BaseModel):
-    """Workspace 单次状态转换的完整结果。"""
+    """Protocol-v2 Markdown-only complete Workspace state returned to the Extension."""
+
+    model_config = ConfigDict(extra="forbid")
 
     resource_url: str
     selected_action_id: ActionId
-    histories: list[HistoryMessage]
-    document: DocumentContent | None
+    result_type: WorkspaceResultType
+    histories: list[HistoryMessage] = Field(max_length=11)
+    artifacts: Artifacts
     meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
+    protocol_version: Literal[CURRENT_EXTENSION_PROTOCOL_VERSION] = (
+        CURRENT_EXTENSION_PROTOCOL_VERSION
+    )
+
+    @model_validator(mode="after")
+    def validate_response_state(self) -> "WorkspaceResponse":
+        """Apply the same state invariants used for both incoming trigger variants."""
+
+        validate_workspace_state(self.histories, self.artifacts)
+        return self
 
 
 class TaskResponse(BaseModel):
