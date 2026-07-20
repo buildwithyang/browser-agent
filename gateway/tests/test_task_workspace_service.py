@@ -486,6 +486,76 @@ def test_invalid_cover_letter_snapshot_fails_before_metrics_or_state_allocation(
     assert repository.records[0].status == "failed"
 
 
+def test_unvalidated_chat_result_fails_before_workspace_state_allocation() -> None:
+    """Fully revalidate a model-constructed ChatResult before clock or UUID use."""
+
+    repository = RecordingRepository()
+    clock_calls = 0
+
+    def workspace_clock() -> datetime:
+        """Record any forbidden state-time allocation."""
+
+        nonlocal clock_calls
+        clock_calls += 1
+        return FIXED_NOW
+
+    invalid_result = ReplyResult.model_construct(
+        type=WorkspaceResultType.REPLY,
+        markdown="x" * 100_001,
+    )
+    service = _service(
+        FakeWorkspaceAgent(invalid_result),
+        uuid_values=(),
+        repository=repository,
+        workspace_clock=workspace_clock,
+    )
+
+    with pytest.raises(TaskExecutionError):
+        service.workspace_chat(_user_request(), user_id="user-1")
+
+    assert clock_calls == 0
+    assert [record.status for record in repository.records] == ["failed"]
+
+
+def test_workspace_clock_failure_records_only_failed_metrics() -> None:
+    """Commit no completed metric when next-state time allocation fails."""
+
+    repository = RecordingRepository()
+
+    def failing_clock() -> datetime:
+        """Simulate a Gateway-owned next-state provider failure."""
+
+        raise RuntimeError("workspace clock unavailable")
+
+    service = _service(
+        FakeWorkspaceAgent(_reply()),
+        uuid_values=(),
+        repository=repository,
+        workspace_clock=failing_clock,
+    )
+
+    with pytest.raises(TaskExecutionError, match="workspace clock unavailable"):
+        service.workspace_chat(_user_request(), user_id="user-1")
+
+    assert [record.status for record in repository.records] == ["failed"]
+
+
+def test_final_response_validation_failure_records_only_failed_metrics() -> None:
+    """Treat invalid provider identity as a failed atomic Workspace operation."""
+
+    repository = RecordingRepository()
+    service = _service(
+        FakeWorkspaceAgent(_reply()),
+        uuid_values=(1, 1),
+        repository=repository,
+    )
+
+    with pytest.raises(TaskExecutionError, match="message IDs"):
+        service.workspace_chat(_user_request(), user_id="user-1")
+
+    assert [record.status for record in repository.records] == ["failed"]
+
+
 def test_resume_injection_metrics_url_normalization_and_full_duration() -> None:
     """Preserve operational orchestration around the complete v2 Agent call."""
 

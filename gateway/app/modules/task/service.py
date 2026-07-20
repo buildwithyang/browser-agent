@@ -5,7 +5,9 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, TypeVar
+from typing import Callable, Generic, NoReturn, TypeVar
+
+from pydantic import BaseModel, TypeAdapter
 
 from app.agents.base import (
     AgentContext,
@@ -52,6 +54,7 @@ from app.modules.task.schema import (
 logger = logging.getLogger("agent_bridge")
 ContentT = TypeVar("ContentT", Insight, DocumentContent, ChatResult)
 CV_PREVIEW_URL = "https://browser.buildwithyang.com"
+_CHAT_RESULT_ADAPTER = TypeAdapter(ChatResult)
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,18 @@ class _WorkspaceTransitionIdentity:
     assistant_message_id: uuid.UUID
     artifact_id: uuid.UUID | None
     attachment_id: uuid.UUID | None
+
+
+@dataclass(frozen=True)
+class _StagedAgentOperation(Generic[ContentT]):
+    """A timed Agent outcome whose completed metric is not yet committed."""
+
+    request: PageContext
+    agent_name: AgentName
+    user_id: str | None
+    record_id: uuid.UUID
+    execution: AgentExecution[ContentT]
+    meta: ExecutionMeta
 
 
 def _artifact_for_type(
@@ -105,10 +120,21 @@ def _validated_workspace_execution(
     request: WorkspaceChatRequest,
     execution: AgentExecution[ChatResult],
 ) -> AgentExecution[ChatResult]:
-    """Keep invalid Agent output inside the timed failure/metrics boundary."""
+    """Fully revalidate Agent output before checking transition preconditions."""
 
-    _validate_workspace_transition(request, execution.content)
-    return execution
+    payload = (
+        execution.content.model_dump(mode="python")
+        if isinstance(execution.content, BaseModel)
+        else execution.content
+    )
+    result = _CHAT_RESULT_ADAPTER.validate_python(payload)
+    _validate_workspace_transition(request, result)
+    return AgentExecution(
+        content=result,
+        raw_result=execution.raw_result,
+        prompt=execution.prompt,
+        model=execution.model,
+    )
 
 
 def _reduce_workspace_state(
@@ -363,33 +389,40 @@ class TaskService:
             raise ValueError("resourceUrl does not match normalized url")
 
         routed, agent = self._resolve_agent(request)
-        execution, meta, _ = self._execute_workspace_agent(
+        outcome, _ = self._execute_workspace_agent(
             request,
             agent_name=routed,
             agent=agent,
             user_id=user_id,
         )
-        # State identity is allocated only after the complete Agent operation and
-        # result/precondition validation have succeeded.
-        identity = _allocate_workspace_transition_identity(
-            request,
-            execution.content,
-            new_id=self._workspace_id_factory,
-            clock=self._workspace_clock,
-        )
-        histories, artifacts = _reduce_workspace_state(
-            request,
-            execution.content,
-            identity=identity,
-        )
-        return WorkspaceChatResponse(
-            resource_url=resource_url,
-            selected_action_id=request.action_id,
-            result_type=execution.content.type,
-            histories=histories,
-            artifacts=artifacts,
-            meta=meta,
-        )
+        try:
+            execution = _validated_workspace_execution(request, outcome.execution)
+            # State identity is allocated only after complete ChatResult
+            # revalidation and create/update precondition checks succeed.
+            identity = _allocate_workspace_transition_identity(
+                request,
+                execution.content,
+                new_id=self._workspace_id_factory,
+                clock=self._workspace_clock,
+            )
+            histories, artifacts = _reduce_workspace_state(
+                request,
+                execution.content,
+                identity=identity,
+            )
+            response = WorkspaceChatResponse(
+                resource_url=resource_url,
+                selected_action_id=request.action_id,
+                result_type=execution.content.type,
+                histories=histories,
+                artifacts=artifacts,
+                meta=outcome.meta,
+            )
+        except Exception as exc:
+            self._fail_staged_agent_operation(outcome, exc)
+
+        self._complete_staged_agent_operation(outcome)
+        return response
 
     @staticmethod
     def _workspace_document(
@@ -468,8 +501,8 @@ class TaskService:
         agent_name: AgentName,
         agent: TaskAgent,
         user_id: str | None,
-    ) -> tuple[AgentExecution[ChatResult], ExecutionMeta, WorkspaceAgentContext]:
-        """Prepare request-scoped v2 dependencies and execute one Workspace Agent."""
+    ) -> tuple[_StagedAgentOperation[ChatResult], WorkspaceAgentContext]:
+        """Prepare dependencies and stage one timed Workspace Agent outcome."""
 
         if not isinstance(agent, WorkspaceAgent):
             raise ValueError(f"Agent does not support Workspace chat: {agent_name}")
@@ -478,16 +511,13 @@ class TaskService:
 
         resume_text = self._resolve_cv_text(user_id) if agent.requires_resume else None
         ctx = WorkspaceAgentContext(request=request, resume_text=resume_text)
-        execution, meta = self._run_agent_operation(
+        outcome = self._stage_agent_operation(
             request,
             agent_name=agent_name,
             user_id=user_id,
-            operation=lambda: _validated_workspace_execution(
-                request,
-                agent.handle_chat(ctx),
-            ),
+            operation=lambda: agent.handle_chat(ctx),
         )
-        return execution, meta, ctx
+        return outcome, ctx
 
     def _run_agent_operation(
         self,
@@ -499,6 +529,25 @@ class TaskService:
     ) -> tuple[AgentExecution[ContentT], ExecutionMeta]:
         """Time one complete Agent operation and persist operational metrics."""
 
+        outcome = self._stage_agent_operation(
+            request,
+            agent_name=agent_name,
+            user_id=user_id,
+            operation=operation,
+        )
+        self._complete_staged_agent_operation(outcome)
+        return outcome.execution, outcome.meta
+
+    def _stage_agent_operation(
+        self,
+        request: PageContext,
+        *,
+        agent_name: AgentName,
+        user_id: str | None,
+        operation: Callable[[], AgentExecution[ContentT]],
+    ) -> _StagedAgentOperation[ContentT]:
+        """Time an Agent call without committing its completed metric yet."""
+
         rid = uuid.uuid4()
         started_at = datetime.now(timezone.utc)
         t0 = self._perf_counter()
@@ -508,7 +557,6 @@ class TaskService:
             execution = operation()
             prompt = execution.prompt
             model = execution.model
-            result = execution.raw_result
             duration_ms = int((self._perf_counter() - t0) * 1000)
             meta = ExecutionMeta(
                 id=rid,
@@ -520,16 +568,14 @@ class TaskService:
                 finished_at=datetime.now(timezone.utc),
                 duration_ms=duration_ms,
             )
-            self._persist(
-                rid.hex, request, agent_name, user_id, model, "completed",
-                len(prompt), len(result), duration_ms, "",
-                prompt=prompt, result=result,
+            return _StagedAgentOperation(
+                request=request,
+                agent_name=agent_name,
+                user_id=user_id,
+                record_id=rid,
+                execution=execution,
+                meta=meta,
             )
-            logger.info(
-                "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
-                agent_name, model, len(prompt) / 1000, duration_ms, len(result),
-            )
-            return execution, meta
         except Exception as exc:
             duration_ms = int((self._perf_counter() - t0) * 1000)
             self._persist(
@@ -542,6 +588,67 @@ class TaskService:
                 agent_name, len(prompt) / 1000, duration_ms,
             )
             raise TaskExecutionError(str(exc)) from exc
+
+    def _complete_staged_agent_operation(
+        self,
+        outcome: _StagedAgentOperation[ContentT],
+    ) -> None:
+        """Commit completed metrics only after all caller finalization succeeds."""
+
+        execution = outcome.execution
+        duration_ms = outcome.meta.duration_ms
+        self._persist(
+            outcome.record_id.hex,
+            outcome.request,
+            outcome.agent_name,
+            outcome.user_id,
+            execution.model,
+            "completed",
+            len(execution.prompt),
+            len(execution.raw_result),
+            duration_ms,
+            "",
+            prompt=execution.prompt,
+            result=execution.raw_result,
+        )
+        logger.info(
+            "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
+            outcome.agent_name,
+            execution.model,
+            len(execution.prompt) / 1000,
+            duration_ms or 0,
+            len(execution.raw_result),
+        )
+
+    def _fail_staged_agent_operation(
+        self,
+        outcome: _StagedAgentOperation[ContentT],
+        exc: Exception,
+    ) -> NoReturn:
+        """Commit one failed metric for a staged outcome and raise the service error."""
+
+        execution = outcome.execution
+        self._persist(
+            outcome.record_id.hex,
+            outcome.request,
+            outcome.agent_name,
+            outcome.user_id,
+            execution.model,
+            "failed",
+            len(execution.prompt),
+            0,
+            outcome.meta.duration_ms,
+            str(exc)[:512],
+            prompt=execution.prompt,
+            result="",
+        )
+        logger.exception(
+            "task failed agent=%s input=%.1fk duration_ms=%d",
+            outcome.agent_name,
+            len(execution.prompt) / 1000,
+            outcome.meta.duration_ms or 0,
+        )
+        raise TaskExecutionError(str(exc)) from exc
 
     def recent_for_user(self, *, user_id: str, limit: int = 50) -> list[TaskRecordData]:
         if self._repository is None:
