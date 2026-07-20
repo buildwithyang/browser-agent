@@ -131,6 +131,20 @@ test("package contains complete licenses copied from locked dependencies", async
   });
 });
 
+test("package contains the local DM Sans font and license", async () => {
+  const entries = await listArchiveEntries();
+  assert.ok(entries.includes("fonts/dm-sans-latin-variable.woff2"));
+  assert.ok(entries.includes("fonts/LICENSE.DM-Sans-OFL.txt"));
+
+  await withExtractedArchive(async (root) => {
+    const license = await readFile(
+      path.join(root, "fonts/LICENSE.DM-Sans-OFL.txt"),
+      "utf8"
+    );
+    assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/);
+  });
+});
+
 test("package runtime contains no remote module or stylesheet imports", async () => {
   const entries = await listArchiveEntries();
   await withExtractedArchive(async (root) => {

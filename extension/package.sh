@@ -35,6 +35,7 @@ FILES=(
   auth.js
   config.js
   icons
+  fonts
 )
 
 # 缺文件就直接失败，避免打出残缺包。
