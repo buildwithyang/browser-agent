@@ -17,6 +17,7 @@ from app.modules.task.schema import (
     ScoreInsightCard,
     TaskRequest,
     TextInsightCard,
+    WorkspaceRequest,
     WorkspaceTrigger,
 )
 from app.modules.task.service import TaskService
@@ -274,3 +275,33 @@ def test_temporary_legacy_delegate_returns_old_task_response() -> None:
     ]
     assert "LEGACY REQUEST CV" in captured["messages"][1]["content"]
     assert not hasattr(agent, "_cv_text")
+
+
+def test_temporary_legacy_delegate_returns_v1_workspace_document() -> None:
+    """Preserve the v1 Workspace document mapping through Task 7."""
+
+    captured: dict = {}
+    agent = JobMatchAgent(
+        client=fake_client("# Ready-to-send letter", captured),
+        model="m",
+    )
+    request = WorkspaceRequest(
+        url="https://www.linkedin.com/jobs/view/1",
+        resourceUrl="https://www.linkedin.com/jobs/view/1",
+        title="Senior Go Engineer",
+        selectedText=LONG_JD,
+        actionId=ActionId.WRITE_COVER_LETTER,
+        message="Generate the complete cover letter.",
+        lang="en",
+    )
+
+    execution = agent.execute(
+        AgentContext(request=request, resume_text="V1 WORKSPACE CV")
+    )
+
+    assert execution.content.kind == "cover_letter"
+    assert execution.content.title == "Cover Letter"
+    assert execution.content.text == "# Ready-to-send letter"
+    assert execution.content.sections[0].id == "result"
+    assert execution.content.sections[0].html == execution.content.html
+    assert "V1 WORKSPACE CV" in captured["messages"][1]["content"]
