@@ -309,13 +309,19 @@ function extensionUpdateError(body, headerValue) {
   });
 }
 
-/** Validate protocol compatibility before converting HTTP status or JSON failures. */
-export async function readGatewayResponse(response) {
-  // Header inspection is deliberately first so a version mismatch can never become a 401 clear.
+/** Validate the Gateway protocol Header before any status, auth, or body handling. */
+export function assertGatewayProtocolResponse(response) {
   const protocolHeader = response?.headers?.get?.(EXTENSION_PROTOCOL_HEADER) ?? null;
   if (protocolHeader !== String(EXTENSION_PROTOCOL_VERSION)) {
     throw extensionUpdateError(null, protocolHeader);
   }
+  return protocolHeader;
+}
+
+/** Validate protocol compatibility before converting HTTP status or JSON failures. */
+export async function readGatewayResponse(response) {
+  // Header inspection is deliberately first so a version mismatch can never become a 401 clear.
+  const protocolHeader = assertGatewayProtocolResponse(response);
   let body = null;
   let parseFailed = false;
   try {

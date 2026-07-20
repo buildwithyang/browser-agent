@@ -1,3 +1,5 @@
+import { EXTENSION_PROTOCOL_VERSION } from "./config.js";
+
 /** The explicit owner used by self-hosted extensions without authentication. */
 export const ANONYMOUS_WORKSPACE_OWNER = "anonymous";
 
@@ -427,7 +429,10 @@ export function applyWorkspaceResponse(state, response) {
     "Workspace response selected Action is invalid"
   );
   requireSchema(RESULT_TYPES.has(response.result_type), "Workspace response result type is invalid");
-  requireSchema(response.protocol_version === 2, "Workspace response protocol version is invalid");
+  requireSchema(
+    response.protocol_version === EXTENSION_PROTOCOL_VERSION,
+    "Workspace response protocol version is invalid"
+  );
   validateExecutionMeta(response.meta);
   validateWorkspaceState(response.histories, response.artifacts);
 

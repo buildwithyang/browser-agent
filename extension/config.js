@@ -1,7 +1,7 @@
 export const LOCAL_GATEWAY = "http://127.0.0.1:17321";
 export const PRODUCTION_GATEWAY = "https://browser.buildwithyang.com/api";
 // Wire compatibility is intentionally independent from manifest.json releases.
-export const EXTENSION_PROTOCOL_VERSION = 2;
+export const EXTENSION_PROTOCOL_VERSION = 3;
 export const EXTENSION_PROTOCOL_HEADER = "X-Agent-Bridge-Protocol-Version";
 export const DEFAULT_EXTENSION_UPDATE_URL =
   "https://chromewebstore.google.com/detail/agent-bridge/cmajoaedbjinocbfdkebaedkdbkhbhai";

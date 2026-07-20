@@ -108,7 +108,7 @@ function workspaceResponse(overrides = {}) {
       finished_at: "2026-07-20T10:00:01Z",
       duration_ms: 1000,
     },
-    protocol_version: 2,
+    protocol_version: 3,
     ...overrides,
   };
 }

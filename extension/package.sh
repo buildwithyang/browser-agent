@@ -22,6 +22,7 @@ FILES=(
   background.js
   quick-insight.js
   workspace-operation.js
+  workspace-stream.js
   workspace.js
   workspace-controller.js
   markdown.js

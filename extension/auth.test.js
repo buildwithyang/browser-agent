@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import {
   buildAuthHeaders,
   buildQuickInsightBody,
+  buildUserMessageWorkspaceBody,
   buildWorkspaceBody,
+  buildWorkspaceHeaders,
   taskUrl,
   webBaseUrl,
   loginStrings,
@@ -38,13 +40,40 @@ function fakeStore(initial = {}) {
 test("buildAuthHeaders always versions requests and adds bearer only when token present", () => {
   assert.deepEqual(buildAuthHeaders(""), {
     "Content-Type": "application/json",
-    [EXTENSION_PROTOCOL_HEADER]: "2",
+    [EXTENSION_PROTOCOL_HEADER]: "3",
   });
   assert.deepEqual(buildAuthHeaders("t"), {
     "Content-Type": "application/json",
-    [EXTENSION_PROTOCOL_HEADER]: "2",
+    [EXTENSION_PROTOCOL_HEADER]: "3",
     Authorization: "Bearer t",
   });
+});
+
+test("Workspace request requires one operationId and NDJSON Accept header", () => {
+  const operationId = "00000000-0000-0000-0000-000000000001";
+  const body = buildUserMessageWorkspaceBody(
+    { url: "https://example.com/article" },
+    {
+      resourceUrl: "https://example.com/article",
+      actionId: "ask_more",
+      state: { histories: [], artifacts: { cv: null, cover_letter: null } },
+      message: "What matters?",
+      lang: "en",
+      operationId,
+    }
+  );
+
+  assert.equal(body.operationId, operationId);
+  assert.deepEqual(buildWorkspaceHeaders("token"), {
+    "Content-Type": "application/json",
+    Accept: "application/x-ndjson",
+    [EXTENSION_PROTOCOL_HEADER]: "3",
+    Authorization: "Bearer token",
+  });
+  assert.throws(
+    () => buildUserMessageWorkspaceBody({}, { state: {}, operationId: "invalid" }),
+    /operationId/i
+  );
 });
 
 test("taskUrl routes each scenario to its explicit endpoint", () => {
@@ -229,6 +258,7 @@ test("user-message Workspace request carries full v2 state without legacy fields
     { url: "u", title: "Page", pageText: "fresh", agent: "job_match" },
     {
       trigger: "user_message",
+      operationId: "00000000-0000-0000-0000-000000000001",
       resourceUrl: "https://x/resource",
       actionId: "write_cover_letter",
       histories,
@@ -252,6 +282,7 @@ test("user-message Workspace request carries full v2 state without legacy fields
     selectedText: "",
     pageText: "fresh",
     imageText: "",
+    operationId: "00000000-0000-0000-0000-000000000001",
     resourceUrl: "https://x/resource",
     actionId: "write_cover_letter",
     histories,
@@ -268,6 +299,7 @@ test("Quick Insight Action Workspace request omits message and fixes Artifact ke
     { url: "u", currentDocument: { text: "legacy" }, agent: "summary_page" },
     {
       trigger: "quick_insight_action",
+      operationId: "00000000-0000-0000-0000-000000000002",
       resourceUrl: "https://x/resource",
       actionId: "analyze",
       histories: [],
@@ -284,6 +316,7 @@ test("Quick Insight Action Workspace request omits message and fixes Artifact ke
     selectedText: "",
     pageText: "",
     imageText: "",
+    operationId: "00000000-0000-0000-0000-000000000002",
     resourceUrl: "https://x/resource",
     actionId: "analyze",
     histories: [],

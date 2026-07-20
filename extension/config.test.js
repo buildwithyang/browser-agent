@@ -24,7 +24,7 @@ test("production environment selects cloud gateway", () => {
 test("wire protocol is independent from the manifest release version", async () => {
   const manifest = JSON.parse(await readFile(new URL("./manifest.json", import.meta.url), "utf8"));
 
-  assert.equal(EXTENSION_PROTOCOL_VERSION, 2);
+  assert.equal(EXTENSION_PROTOCOL_VERSION, 3);
   assert.equal(EXTENSION_PROTOCOL_HEADER, "X-Agent-Bridge-Protocol-Version");
   assert.equal(manifest.version, "0.2.0");
   assert.notEqual(String(EXTENSION_PROTOCOL_VERSION), manifest.version);

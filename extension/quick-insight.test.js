@@ -15,7 +15,7 @@ const {
 } = quickInsight;
 
 /** Build one response-shaped Gateway fixture for protocol-boundary tests. */
-function gatewayResponse({ status = 200, protocol = "2", body = {} } = {}) {
+function gatewayResponse({ status = 200, protocol = "3", body = {} } = {}) {
   return {
     status,
     ok: status >= 200 && status < 300,

@@ -62,7 +62,7 @@ function fakeStorageArea(initial = {}) {
 }
 
 /** Build one Fetch Response-shaped protocol fixture. */
-function gatewayResponse({ status = 200, body = {}, protocol = "2", jsonError = null } = {}) {
+function gatewayResponse({ status = 200, body = {}, protocol = "3", jsonError = null } = {}) {
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -671,7 +671,7 @@ test("gateway non-2xx responses reject with status and detail", async () => {
 });
 
 test("gateway success returns parsed versioned JSON", async () => {
-  const body = { protocol_version: 2, histories: [], artifacts: {} };
+  const body = { protocol_version: 3, histories: [], artifacts: {} };
   assert.equal(
     await readGatewayResponse(gatewayResponse({ body })),
     body
@@ -721,13 +721,13 @@ test("426 carries the server-required version and update destination", async () 
       status: 426,
       body: {
         code: "extension_update_required",
-        required_protocol_version: 2,
+        required_protocol_version: 3,
         update_url: updateUrl,
       },
     })),
     (error) =>
       error instanceof ExtensionUpdateRequiredError
-      && error.requiredVersion === 2
+      && error.requiredVersion === 3
       && error.updateUrl === updateUrl
       && error.status === 426
       && shouldClearToken(error.status) === false
@@ -736,7 +736,7 @@ test("426 carries the server-required version and update destination", async () 
 
 test("missing or unequal protocol Header rejects before a 401 can clear auth", async () => {
   const ExtensionUpdateRequiredError = requiredExport("ExtensionUpdateRequiredError");
-  for (const protocol of [null, "1", "3", "invalid"]) {
+  for (const protocol of [null, "1", "2", "invalid"]) {
     await assert.rejects(
       readGatewayResponse(gatewayResponse({
         status: 401,
@@ -753,12 +753,12 @@ test("missing or unequal protocol Header rejects before a 401 can clear auth", a
 
 test("success requires an equal top-level protocol version", async () => {
   const ExtensionUpdateRequiredError = requiredExport("ExtensionUpdateRequiredError");
-  for (const body of [{}, { protocol_version: 1 }, { protocol_version: "2" }]) {
+  for (const body of [{}, { protocol_version: 2 }, { protocol_version: "3" }]) {
     await assert.rejects(
       readGatewayResponse(gatewayResponse({ body })),
       (error) =>
         error instanceof ExtensionUpdateRequiredError
-        && error.requiredVersion === 2
+        && error.requiredVersion === 3
         && error.updateUrl === DEFAULT_EXTENSION_UPDATE_URL
     );
   }

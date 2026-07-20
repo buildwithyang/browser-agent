@@ -10,6 +10,8 @@ export const EXPIRES_KEY = "authTokenExpiresAt";
 export const WORKSPACE_OWNER_KEY = "workspaceOwnerId";
 export { DEFAULT_GATEWAY };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Build versioned JSON headers, adding bearer authentication only when available. */
 export function buildAuthHeaders(token) {
   const headers = {
@@ -18,6 +20,14 @@ export function buildAuthHeaders(token) {
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
+}
+
+/** Build versioned Workspace headers that explicitly negotiate an NDJSON response. */
+export function buildWorkspaceHeaders(token) {
+  return {
+    ...buildAuthHeaders(token),
+    Accept: "application/x-ndjson",
+  };
 }
 
 export function taskUrl(base, endpoint) {
@@ -99,9 +109,13 @@ export function buildWorkspaceBody(pageContext, workspace = {}) {
   if (trigger !== "user_message" && trigger !== "quick_insight_action") {
     throw new TypeError("Workspace trigger must be user_message or quick_insight_action");
   }
+  if (typeof workspace.operationId !== "string" || !UUID_PATTERN.test(workspace.operationId)) {
+    throw new TypeError("Workspace operationId must be a UUID");
+  }
   const body = {
     trigger,
     ...pageContextBody(pageContext),
+    operationId: workspace.operationId,
     resourceUrl: workspace.resourceUrl,
     actionId: workspace.actionId,
     histories: Array.isArray(workspace.histories) ? workspace.histories : [],
@@ -117,6 +131,7 @@ export function buildUserMessageWorkspaceBody(pageContext, options = {}) {
   const state = options.state && typeof options.state === "object" ? options.state : {};
   return buildWorkspaceBody(pageContext, {
     trigger: "user_message",
+    operationId: options.operationId,
     resourceUrl: options.resourceUrl,
     actionId: options.actionId,
     histories: state.histories,

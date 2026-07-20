@@ -52,7 +52,7 @@ function firstArtifactResponse() {
       finished_at: "2026-07-20T10:00:00Z",
       duration_ms: 1000,
     },
-    protocol_version: 2,
+    protocol_version: 3,
   };
 }
 
@@ -79,6 +79,7 @@ test("next SEND carries the complete Artifact state returned by the prior respon
       state,
       message: "Make it shorter",
       lang: "en",
+      operationId: "50000000-0000-4000-8000-000000000001",
     }
   );
 
