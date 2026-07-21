@@ -1,4 +1,4 @@
-"""Contract tests for raw-Markdown job-match Specialist streams."""
+"""Contract tests for raw-text job-match Specialist streams."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -227,7 +227,7 @@ def test_each_specialist_owns_mode_specific_raw_markdown_instructions(
     mode: OutputMode,
     expected_instruction: str,
 ) -> None:
-    """Keep scenario and raw-output rules in each concrete Strategy prompt."""
+    """Keep scenario and output-format rules in each concrete Strategy prompt."""
 
     captured: list[dict[str, str]] = []
     agent = agent_type(open_prompt_stream=_open_stream(["Markdown"], captured))
@@ -240,8 +240,13 @@ def test_each_specialist_owns_mode_specific_raw_markdown_instructions(
     assert "Return exactly one JSON object" not in system
     assert "artifact_draft" not in system
     if mode is OutputMode.ARTIFACT:
-        assert "raw Markdown" in system
         assert "commentary" in system
+        if agent_type is CoverLetterAgent:
+            assert "copy-ready plain text" in system
+            assert "Markdown syntax" in system
+            assert "raw Markdown" not in system
+        else:
+            assert "raw Markdown" in system
 
 
 def test_prompt_separates_current_request_from_untrusted_reference_data() -> None:

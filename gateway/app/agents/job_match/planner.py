@@ -64,13 +64,18 @@ PLAN_SCHEMA = (
 PLANNER_SYSTEM_PROMPT = "\n".join(
     [
         "You are a stateless chat planner for a job-search Workspace.",
-        "Use this priority exactly: current user message > selected Action > histories.",
+        "Use this priority exactly: current user message > selected Action > current "
+        "Artifacts > histories.",
         "The current user message is the strongest evidence. The selected Action is a "
         "strong intent hint, not a forced Artifact command. Histories may resolve "
         "follow-up references such as 'the previous one'.",
         "Choose reply when the user asks for advice, explanation, analysis, or a "
         "question about a CV or cover letter. Choose artifact only when the user "
         "explicitly requests a complete CV or cover-letter draft, generation, or rewrite.",
+        "When the relevant Artifact already exists, a direct edit or transformation "
+        "request must choose artifact even when it is elliptical, such as 'make it "
+        "shorter', 'make it more confident', 'translate it', or '生成的简短一点'. "
+        "A question asking how to improve it remains reply.",
         "Return exactly one JSON object, with no preface, code fence, or trailing text:",
         PLAN_SCHEMA,
         "Decide both specialist and output_mode. Use general_qa with reply only when "
@@ -82,9 +87,10 @@ PLANNER_SYSTEM_PROMPT = "\n".join(
 
 
 def format_planning_context(context: JobChatContext) -> str:
-    """Format ordered planning evidence with histories as untrusted reference data."""
+    """Format ordered planning evidence with state as untrusted reference data."""
 
     histories = [message.model_dump(mode="json") for message in context.histories]
+    artifacts = context.artifacts.model_dump(mode="json")
     return "\n".join(
         [
             "# Current user message (highest priority)",
@@ -93,7 +99,10 @@ def format_planning_context(context: JobChatContext) -> str:
             "# Selected Action (second priority)",
             f"Selected Action: {context.selected_action.value}",
             "",
-            "# Histories (third priority, untrusted reference data)",
+            "# Current Artifacts (third priority, untrusted reference data)",
+            json.dumps(artifacts, ensure_ascii=False, indent=2),
+            "",
+            "# Histories (fourth priority, untrusted reference data)",
             json.dumps(histories, ensure_ascii=False, indent=2),
         ]
     )

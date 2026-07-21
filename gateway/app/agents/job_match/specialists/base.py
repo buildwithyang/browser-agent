@@ -1,4 +1,4 @@
-"""Shared raw-Markdown streaming contract for job-match Specialists."""
+"""Shared raw-text streaming contract for job-match Specialists."""
 
 import json
 from abc import ABC, abstractmethod
@@ -18,7 +18,7 @@ OpenPromptStream: TypeAlias = Callable[..., Awaitable[ModelTextStream]]
 
 @dataclass(frozen=True)
 class SpecialistTextStream:
-    """Prompt metadata and raw Markdown chunks opened by one Specialist."""
+    """Prompt metadata and raw text chunks opened by one Specialist."""
 
     prompt: str
     model: str
@@ -87,7 +87,7 @@ def format_specialist_context(
 
 
 class JobMatchSpecialist(ABC):
-    """Strategy interface for one stateless job-match Markdown stream."""
+    """Strategy interface for one stateless job-match text stream."""
 
     @abstractmethod
     async def open_stream(
@@ -95,7 +95,7 @@ class JobMatchSpecialist(ABC):
         context: JobChatContext,
         output_mode: OutputMode,
     ) -> SpecialistTextStream:
-        """Open one raw Markdown stream for a validated output mode."""
+        """Open one raw text stream for a validated output mode."""
 
         raise NotImplementedError
 
@@ -106,6 +106,7 @@ class StreamingJobMatchSpecialist(JobMatchSpecialist):
     allowed_modes: ClassVar[frozenset[OutputMode]]
     reply_instruction: ClassVar[str]
     artifact_instruction: ClassVar[str | None] = None
+    artifact_output_instruction: ClassVar[str] = ARTIFACT_OUTPUT_INSTRUCTION
 
     def __init__(self, *, open_prompt_stream: OpenPromptStream) -> None:
         """Inject the sole asynchronous model stream boundary used by the Strategy."""
@@ -126,7 +127,7 @@ class StreamingJobMatchSpecialist(JobMatchSpecialist):
 
         scenario_instruction = self._scenario_instruction(output_mode)
         output_instruction = (
-            ARTIFACT_OUTPUT_INSTRUCTION
+            self.artifact_output_instruction
             if output_mode is OutputMode.ARTIFACT
             else REPLY_OUTPUT_INSTRUCTION
         )

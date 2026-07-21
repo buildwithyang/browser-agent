@@ -29,7 +29,7 @@ const COPY = {
     attachment: "Attachment",
     coverLetter: "Cover Letter",
     cv: "CV",
-    copy: "Copy Markdown",
+    copy: "Copy",
     copied: "Copied",
     copyFailed: "Copy failed",
     openCv: "Open CV",
@@ -58,7 +58,7 @@ const COPY = {
     attachment: "附件",
     coverLetter: "求职信",
     cv: "简历",
-    copy: "复制 Markdown",
+    copy: "复制",
     copied: "已复制",
     copyFailed: "复制失败",
     openCv: "打开简历",
@@ -457,8 +457,8 @@ function renderAttachment(documentRef, attachment, view, dependencies) {
 
   if (!isCv) {
     const body = documentRef.createElement("div");
-    body.className = "attachment-body markdown-content";
-    renderMarkdownInto(body, attachment.content || "", documentRef.defaultView);
+    body.className = "attachment-body cover-letter-text";
+    body.textContent = attachment.content || "";
     card.append(body);
   }
   return card;

@@ -336,7 +336,7 @@ class ReplyResult(BaseModel):
 
 
 class CreateArtifactResult(BaseModel):
-    """Markdown Agent result that creates a complete first Artifact snapshot."""
+    """Agent result that creates a complete first Artifact snapshot."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -348,7 +348,7 @@ class CreateArtifactResult(BaseModel):
 
 
 class UpdateArtifactResult(BaseModel):
-    """Markdown Agent result that replaces one existing Artifact snapshot."""
+    """Agent result that replaces one existing Artifact snapshot."""
 
     model_config = ConfigDict(extra="forbid")
 

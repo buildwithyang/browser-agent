@@ -889,7 +889,7 @@ test("messages preserve chronology, render roles safely, and show semantic local
   }
 });
 
-test("Cover Letter Attachment stays in its Assistant Message, renders Markdown, and copies source", async () => {
+test("Cover Letter Attachment stays in its Assistant Message, renders plain text, and copies source", async () => {
   const item = attachment();
   const histories = [message(1, { content: "Draft ready.", attachments: [item] })];
   const artifacts = {
@@ -911,14 +911,21 @@ test("Cover Letter Attachment stays in its Assistant Message, renders Markdown, 
   assert.ok(attachmentNode);
   assert.equal(document.querySelector(".timeline > .attachment"), null);
   assert.equal(attachmentNode.querySelector("h2")?.textContent, "Cover Letter");
-  assert.equal(attachmentNode.querySelector("strong")?.textContent, "Hiring Manager");
+  assert.equal(
+    attachmentNode.querySelector(".attachment-body")?.textContent,
+    COVER_LETTER_MARKDOWN
+  );
+  assert.equal(attachmentNode.querySelector("h1"), null);
+  assert.equal(attachmentNode.querySelector("strong"), null);
   assert.equal(attachmentNode.querySelector("script"), null);
-  attachmentNode.querySelector(".attachment-copy")?.click();
+  const copyButton = attachmentNode.querySelector(".attachment-copy");
+  assert.equal(copyButton?.textContent, "Copy");
+  copyButton?.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(copied, [COVER_LETTER_MARKDOWN]);
 });
 
-test("historical Attachment versions remain visible and copy their own raw Markdown", async () => {
+test("historical Attachment versions remain visible and copy their own plain text", async () => {
   const first = attachment({ content: "# Version one", idIndex: 11, version: 1 });
   const second = attachment({ content: "# Version two", idIndex: 12, version: 2 });
   const histories = [
@@ -941,7 +948,7 @@ test("historical Attachment versions remain visible and copy their own raw Markd
 
   assert.deepEqual(
     attachments.map((item) => item.querySelector(".attachment-body")?.textContent.trim()),
-    ["Version one", "Version two"]
+    ["# Version one", "# Version two"]
   );
   attachments[0].querySelector(".attachment-copy")?.click();
   attachments[1].querySelector(".attachment-copy")?.click();
@@ -993,7 +1000,7 @@ test("Cover Letter copy reports Clipboard absence and rejection before restoring
     assert.equal(button?.disabled, true);
     assert.equal(typeof restore, "function");
     restore();
-    assert.equal(button?.textContent, "Copy Markdown");
+    assert.equal(button?.textContent, "Copy");
     assert.equal(button?.disabled, false);
     assert.ok(elements.timeline.contains(button));
   }

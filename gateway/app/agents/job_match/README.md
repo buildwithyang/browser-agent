@@ -33,8 +33,9 @@ job_match/
 ```
 
 所有模型调用都走 OpenAI-compatible **Chat Completions**。Workspace Specialist 通过
-`chat.completions.create(..., stream=True)` 返回 raw Markdown chunk；不使用 Responses API，
-也不要求模型生成 JSON transport envelope。
+`chat.completions.create(..., stream=True)` 返回 raw text chunk；普通回复和 CV 使用
+Markdown，Cover Letter 使用可直接复制的纯文本；不使用 Responses API，也不要求模型
+生成 JSON transport envelope。
 
 ## 用户消息与 Quick Action
 
@@ -91,13 +92,18 @@ Attachment、Artifact ID 和版本只存在于 Gateway 成功的 `completed.resp
 
 `StreamingJobMatchSpecialist` 使用 Template Method 固定四个步骤：校验输出模式、构造
 system/user prompt、打开 Chat Completions stream、返回 provider-independent chunk
-iterator。具体 Strategy 只提供场景指令和允许的输出模式。
+iterator。具体 Strategy 提供场景指令、允许的输出模式和产物格式。
 
-模型输出契约是 raw Markdown：
+模型输出契约是 raw text：
 
-- reply 模式只输出完整对话回答；
-- Artifact 模式只输出完整产物正文；
+- reply 模式只输出完整 Markdown 对话回答；
+- CV Artifact 只输出完整 Markdown 简历正文；
+- Cover Letter Artifact 只输出带自然段落的纯文本，不使用标题、列表、强调、分隔线或
+  代码围栏等 Markdown 语法；
 - 不增加代码围栏、JSON 对象、transport metadata 或 Artifact 外的完成说明。
+
+Planner 会显式读取当前 Artifact 状态。用户对已有产物发出“短一点”“更自信”“翻译成
+英文”等直接编辑指令时进入 Artifact 更新模式；询问“应该怎么改”时仍返回普通回复。
 
 页面、简历、histories 与 artifacts 均作为不可信参考数据放入 prompt；当前用户消息才是
 本轮指令。Agent 不把 provider chunk、prompt 或原始结果写日志。

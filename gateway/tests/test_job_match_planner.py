@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from uuid import uuid4
 
 import pytest
 
@@ -16,7 +17,10 @@ from app.agents.job_match.planner import (
 )
 from app.modules.task.schema import (
     ActionId,
+    Artifact,
+    ArtifactType,
     Artifacts,
+    Attachment,
     HistoryMessage,
     UserMessageWorkspaceRequest,
     WorkspaceTrigger,
@@ -34,6 +38,7 @@ def context(
     action: ActionId = ActionId.ASK_MORE,
     message: str = "What should I emphasize?",
     histories: list[HistoryMessage] | None = None,
+    artifacts: Artifacts | None = None,
 ) -> JobChatContext:
     """Build one immutable user-message context for a planning decision."""
 
@@ -50,7 +55,7 @@ def context(
         lang="en",
         actionId=action,
         histories=histories or [],
-        artifacts=Artifacts(cv=None, cover_letter=None),
+        artifacts=artifacts or Artifacts(cv=None, cover_letter=None),
         message=message,
     )
     return JobChatContext(
@@ -110,7 +115,10 @@ def test_current_message_outranks_selected_action() -> None:
         specialist=SpecialistId.COVER_LETTER,
         output_mode=OutputMode.ARTIFACT,
     )
-    assert "current user message > selected Action > histories" in captured[0]["system"]
+    assert (
+        "current user message > selected Action > current Artifacts > histories"
+        in captured[0]["system"]
+    )
     assert "Write me a concise cover letter for this role." in captured[0]["prompt"]
     assert "Selected Action: tailor_resume" in captured[0]["prompt"]
 
@@ -175,6 +183,61 @@ def test_history_informs_follow_up_plan() -> None:
     assert decision.output_mode is OutputMode.ARTIFACT
     assert "Rewrite the previous one to sound more direct." in captured[0]["prompt"]
     assert "# Cover Letter" in captured[0]["prompt"]
+
+
+def test_existing_cover_letter_edit_is_explicitly_planned_as_artifact() -> None:
+    """Expose the current Artifact and classify an elliptical direct edit as an update."""
+
+    artifact_id = uuid4()
+    attachment = Attachment(
+        artifact_id=artifact_id,
+        version=1,
+        type=ArtifactType.COVER_LETTER,
+        title="Cover Letter",
+        content="Dear Hiring Team,\n\nExisting complete letter.",
+    )
+    artifact = Artifact(
+        id=artifact_id,
+        type=ArtifactType.COVER_LETTER,
+        version=1,
+        title=attachment.title,
+        draft=attachment.content,
+        attachment=attachment,
+    )
+    histories = [
+        HistoryMessage(
+            role="assistant",
+            content="已创建求职信。",
+            attachments=[attachment],
+        )
+    ]
+    captured: list[dict[str, str]] = []
+    planner = ChatPlanner(
+        complete_prompt=async_completion(
+            [plan_result(SpecialistId.COVER_LETTER, OutputMode.ARTIFACT)],
+            captured,
+        )
+    )
+
+    decision = asyncio.run(
+        planner.plan(
+            context(
+                action=ActionId.WRITE_COVER_LETTER,
+                message="生成的简短一点。",
+                histories=histories,
+                artifacts=Artifacts(cv=None, cover_letter=artifact),
+            )
+        )
+    )
+
+    assert decision == ChatPlan(
+        specialist=SpecialistId.COVER_LETTER,
+        output_mode=OutputMode.ARTIFACT,
+    )
+    assert "direct edit or transformation" in captured[0]["system"]
+    assert "make it shorter" in captured[0]["system"]
+    assert "# Current Artifacts" in captured[0]["prompt"]
+    assert "Existing complete letter." in captured[0]["prompt"]
 
 
 def test_general_qa_is_used_only_after_a_valid_model_plan() -> None:
