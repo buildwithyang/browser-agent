@@ -23,15 +23,14 @@ from app.core.db import Base
 from app.modules.auth import AuthService
 from app.modules.task.repo import TaskRepository
 from app.modules.task.schema import (
-    Action,
-    ActionId,
     AgentName,
     ChatResult,
     Insight,
+    PromptShortcut,
     QuickInsightRequest,
     ReplyResult,
     TaskRecordData,
-    UserMessageWorkspaceRequest,
+    WorkspaceRequest,
 )
 from app.modules.task.service import RateLimitError, TaskService
 
@@ -74,8 +73,8 @@ def test_service_blocks_after_max(tmp_path):
 
         requires_resume = False
 
-        def available_actions(self, ctx: AgentContext) -> list[Action]:
-            """Declare no actions for the rate-limit fake."""
+        def available_shortcuts(self, ctx: AgentContext) -> list[PromptShortcut]:
+            """Declare no shortcuts for the rate-limit fake."""
 
             return []
 
@@ -116,7 +115,7 @@ def test_api_maps_rate_limit_to_429(monkeypatch):
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "3"},
+        headers={"X-Agent-Bridge-Protocol-Version": "4"},
         json={"url": "https://x"},
     )
     assert r.status_code == 429
@@ -170,12 +169,10 @@ def test_workspace_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
         rate_limit_max=1,
         rate_limit_window_seconds=3600,
     )
-    request = UserMessageWorkspaceRequest(
-        trigger="user_message",
+    request = WorkspaceRequest(
         url="https://example.com",
         resourceUrl="https://example.com/",
         operationId="00000000-0000-0000-0000-000000000001",
-        actionId=ActionId.ASK_MORE,
         histories=[],
         artifacts={"cv": None, "cover_letter": None},
         message="Question",

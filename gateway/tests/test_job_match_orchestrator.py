@@ -15,7 +15,6 @@ from app.agents.job_match.context import JobChatContext
 from app.agents.job_match.planner import ChatPlan, OutputMode, SpecialistId
 from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
 from app.modules.task.schema import (
-    ActionId,
     Artifact,
     ArtifactType,
     Artifacts,
@@ -23,11 +22,9 @@ from app.modules.task.schema import (
     CreateArtifactResult,
     DOCUMENT_TEXT_MAX_CHARS,
     HistoryMessage,
-    QuickInsightActionWorkspaceRequest,
     ReplyResult,
     UpdateArtifactResult,
-    UserMessageWorkspaceRequest,
-    WorkspaceTrigger,
+    WorkspaceRequest,
 )
 
 
@@ -260,18 +257,15 @@ def _artifact_state(
 
 def _context(
     *,
-    action: ActionId = ActionId.ANALYZE,
-    trigger: WorkspaceTrigger = WorkspaceTrigger.USER_MESSAGE,
     message: str = "What should I emphasize?",
     existing_types: tuple[ArtifactType, ...] = (),
     resume_text: str | None = "# Canonical Resume",
     lang: str = "en",
 ) -> WorkspaceAgentContext:
-    """Build one valid immutable v2 Workspace Agent context."""
+    """Build one valid immutable v4 Workspace Agent context."""
 
     artifacts, histories = _artifact_state(*existing_types)
-    common = dict(
-        trigger=trigger,
+    request = WorkspaceRequest(
         url="https://www.linkedin.com/jobs/view/123",
         resourceUrl="https://www.linkedin.com/jobs/view/123",
         operationId="00000000-0000-0000-0000-000000000001",
@@ -279,14 +273,10 @@ def _context(
         selectedText=LONG_JD,
         pageText="Full job page.",
         lang=lang,
-        actionId=action,
         histories=histories,
         artifacts=artifacts,
+        message=message,
     )
-    if trigger is WorkspaceTrigger.USER_MESSAGE:
-        request = UserMessageWorkspaceRequest(**common, message=message)
-    else:
-        request = QuickInsightActionWorkspaceRequest(**common)
     return WorkspaceAgentContext(request=request, resume_text=resume_text)
 
 
@@ -486,68 +476,21 @@ def test_artifact_stream_uses_only_same_type_existing_artifact(
     assert result.draft == "# Complete draft"
 
 
-@pytest.mark.parametrize(
-    ("action", "specialist_id", "output_mode", "expects_delta"),
-    [
-        (ActionId.ANALYZE, SpecialistId.JOB_ANALYSIS, OutputMode.REPLY, True),
-        (ActionId.TAILOR_RESUME, SpecialistId.RESUME, OutputMode.ARTIFACT, False),
-        (
-            ActionId.WRITE_COVER_LETTER,
-            SpecialistId.COVER_LETTER,
-            OutputMode.ARTIFACT,
-            False,
-        ),
-    ],
-)
-def test_quick_actions_use_deterministic_plan_and_bypass_planner(
-    action: ActionId,
-    specialist_id: SpecialistId,
-    output_mode: OutputMode,
-    expects_delta: bool,
-) -> None:
-    """Map backend Quick commands directly to fixed Specialist/output pairs."""
+def test_every_workspace_message_uses_chat_planner() -> None:
+    """Route every v4 message through the conversational planner."""
 
     agent, planner, specialists = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.GENERAL_QA, output_mode=OutputMode.REPLY),
-        chunks=["# Generated content"],
+        plan=ChatPlan(specialist=SpecialistId.JOB_ANALYSIS, output_mode=OutputMode.REPLY),
+        chunks=["# Analysis"],
     )
-    specialists[specialist_id].chunks = ["# Deterministic content"]
 
     events = asyncio.run(
-        _collect_events(
-            agent.stream_chat(
-                _context(action=action, trigger=WorkspaceTrigger.QUICK_INSIGHT_ACTION)
-            )
-        )
+        _collect_events(agent.stream_chat(_context(message="Analyze this role.")))
     )
 
-    assert planner.calls == []
-    assert specialists[specialist_id].calls[0][1] is output_mode
-    assert any(isinstance(event, AgentDelta) for event in events) is expects_delta
-
-
-def test_quick_ask_more_rejects_without_planner_or_specialist() -> None:
-    """Reject the UI-only Quick Action before any model dependency is called."""
-
-    agent, planner, specialists = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.GENERAL_QA, output_mode=OutputMode.REPLY),
-        chunks=["unexpected"],
-    )
-
-    with pytest.raises(job_match_agent_module.JobMatchOrchestrationError, match="ask_more"):
-        asyncio.run(
-            _collect_events(
-                agent.stream_chat(
-                    _context(
-                        action=ActionId.ASK_MORE,
-                        trigger=WorkspaceTrigger.QUICK_INSIGHT_ACTION,
-                    )
-                )
-            )
-        )
-
-    assert planner.calls == []
-    assert all(specialist.calls == [] for specialist in specialists.values())
+    assert planner.calls[0].current_message == "Analyze this role."
+    assert specialists[SpecialistId.JOB_ANALYSIS].calls
+    assert any(isinstance(event, AgentDelta) for event in events)
 
 
 @pytest.mark.parametrize(
@@ -703,6 +646,5 @@ def test_orchestrator_does_not_cache_request_state() -> None:
         "resume_text",
         "histories",
         "artifacts",
-        "selected_action",
         "current_message",
     }.intersection(vars(agent))

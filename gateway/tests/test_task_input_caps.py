@@ -8,7 +8,7 @@ def test_oversized_page_text_rejected():
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "3"},
+        headers={"X-Agent-Bridge-Protocol-Version": "4"},
         json={"url": "https://x", "pageText": "a" * (PAGE_TEXT_MAX_CHARS + 1)},
     )
     assert r.status_code == 422
@@ -19,7 +19,7 @@ def test_within_cap_accepted_by_validation():
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "3"},
+        headers={"X-Agent-Bridge-Protocol-Version": "4"},
         json={"url": "https://x", "pageText": "a" * 100},
     )
     assert r.status_code != 422

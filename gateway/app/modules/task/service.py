@@ -31,7 +31,6 @@ from app.modules.task.repo import TaskRepository
 from app.modules.task.router import normalize_resource_url, route_browser_task
 from app.modules.task.schema import (
     ARTIFACT_VERSION_MAX,
-    ActionId,
     AgentName,
     Artifact,
     Artifacts,
@@ -48,7 +47,6 @@ from app.modules.task.schema import (
     ReplyResult,
     TaskRecordData,
     UpdateArtifactResult,
-    UserMessageWorkspaceRequest,
     WorkspaceDescriptor,
     WorkspaceRequest,
     WorkspaceResponse,
@@ -74,7 +72,7 @@ class _WorkspaceTransitionIdentity:
     """Immutable IDs and UTC time allocated after one valid Agent execution."""
 
     created_at: datetime
-    user_message_id: uuid.UUID | None
+    user_message_id: uuid.UUID
     assistant_message_id: uuid.UUID
     artifact_id: uuid.UUID | None
     attachment_id: uuid.UUID | None
@@ -244,18 +242,14 @@ def _reduce_workspace_state(
     """Return one complete next state without mutating the validated prior state."""
 
     histories = list(request.histories)
-    if isinstance(request, UserMessageWorkspaceRequest):
-        if identity.user_message_id is None:
-            raise ValueError("user-message transition identity is incomplete")
-        histories.append(
-            HistoryMessage(
-                id=identity.user_message_id,
-                role="user",
-                content=request.message,
-                action_id=request.action_id,
-                created_at=identity.created_at,
-            )
+    histories.append(
+        HistoryMessage(
+            id=identity.user_message_id,
+            role="user",
+            content=request.message,
+            created_at=identity.created_at,
         )
+    )
 
     artifacts = request.artifacts
     attachment: Attachment | None = None
@@ -303,7 +297,6 @@ def _reduce_workspace_state(
             id=identity.assistant_message_id,
             role="assistant",
             content=result.markdown,
-            action_id=request.action_id,
             created_at=identity.created_at,
             attachments=[attachment] if attachment is not None else [],
         )
@@ -323,7 +316,7 @@ def _allocate_workspace_transition_identity(
     created_at = clock()
     if created_at.tzinfo is None or created_at.utcoffset() != timedelta(0):
         raise ValueError("Workspace transition time must be UTC")
-    user_message_id = new_id() if isinstance(request, UserMessageWorkspaceRequest) else None
+    user_message_id = new_id()
     creates_artifact = isinstance(result, CreateArtifactResult)
     changes_artifact = isinstance(result, CreateArtifactResult | UpdateArtifactResult)
     artifact_id = new_id() if creates_artifact else None
@@ -399,15 +392,8 @@ class TaskService:
         return QuickInsightResponse(
             request=request,
             insight=execution.content,
-            actions=agent.available_actions(ctx),
-            workspace=WorkspaceDescriptor(
-                resource_url=resource_url,
-                default_action_id=(
-                    ActionId.ANALYZE
-                    if routed is AgentName.JOB_MATCH
-                    else ActionId.ASK_MORE
-                ),
-            ),
+            shortcuts=agent.available_shortcuts(ctx),
+            workspace=WorkspaceDescriptor(resource_url=resource_url),
             meta=meta,
         )
 
@@ -417,7 +403,7 @@ class TaskService:
         *,
         user_id: str | None,
     ) -> WorkspaceResponse:
-        """Execute one v2 Agent call and atomically reduce its complete next state."""
+        """Execute one v4 Agent call and atomically reduce its complete next state."""
 
         resource_url = normalize_resource_url(request.url)
         if request.resource_url != resource_url:
@@ -447,7 +433,6 @@ class TaskService:
             )
             response = WorkspaceResponse(
                 resource_url=resource_url,
-                selected_action_id=request.action_id,
                 result_type=execution.content.type,
                 histories=histories,
                 artifacts=artifacts,
@@ -614,7 +599,6 @@ class TaskService:
                         )
                         response = WorkspaceResponse(
                             resource_url=prepared.resource_url,
-                            selected_action_id=request.action_id,
                             result_type=execution.content.type,
                             histories=histories,
                             artifacts=artifacts,

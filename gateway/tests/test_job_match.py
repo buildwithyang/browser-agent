@@ -8,15 +8,14 @@ from app.agents.base import AgentContext, QuickInsightAgent
 from app.agents.job_match import MIN_JOB_CONTENT_CHARS, JobMatchAgent
 from app.agents.job_match.context import JobChatContext
 from app.modules.task.schema import (
-    ActionId,
     AgentName,
     Artifacts,
     DetailsInsightCard,
-    QuickInsightActionWorkspaceRequest,
+    PromptShortcutId,
     QuickInsightRequest,
     ScoreInsightCard,
     TextInsightCard,
-    WorkspaceTrigger,
+    WorkspaceRequest,
 )
 from app.modules.task.service import TaskService
 
@@ -68,52 +67,54 @@ def test_package_preserves_public_import_surface() -> None:
 def test_job_chat_context_is_immutable_and_request_scoped() -> None:
     """Keep all future Workspace state in one frozen request context."""
 
-    request = QuickInsightActionWorkspaceRequest(
-        trigger=WorkspaceTrigger.QUICK_INSIGHT_ACTION,
+    request = WorkspaceRequest(
         url="https://www.linkedin.com/jobs/view/1",
         resourceUrl="https://www.linkedin.com/jobs/view/1",
         operationId="00000000-0000-0000-0000-000000000001",
         title="Senior Go Engineer",
         selectedText=LONG_JD,
-        actionId=ActionId.ANALYZE,
         artifacts=Artifacts(cv=None, cover_letter=None),
+        message="Analyze this role.",
     )
     context = JobChatContext(
-        trigger=request.trigger,
         request=request,
         resume_text="REQUEST CV",
         histories=tuple(request.histories),
         artifacts=request.artifacts,
-        selected_action=request.action_id,
+        current_message=request.message,
     )
 
-    assert context.current_message is None
+    assert context.current_message == "Analyze this role."
     assert context.histories == ()
     with pytest.raises(FrozenInstanceError):
         context.resume_text = "OTHER USER CV"
 
 
-def test_job_match_declares_workspace_actions() -> None:
-    """Expose the ordered stable Action ids declared by the job Agent."""
+def test_job_match_declares_english_prompt_shortcuts() -> None:
+    """Expose the ordered stable Prompt Shortcut catalogue for an English request."""
 
     agent = JobMatchAgent()
     ctx = AgentContext(request=quick_request(lang="en"), resume_text="CV")
 
-    actions = agent.available_actions(ctx)
+    shortcuts = agent.available_shortcuts(ctx)
 
     assert isinstance(agent, QuickInsightAgent)
-    assert [action.id for action in actions] == [
-        ActionId.ANALYZE,
-        ActionId.TAILOR_RESUME,
-        ActionId.WRITE_COVER_LETTER,
-        ActionId.ASK_MORE,
+    assert [shortcut.id for shortcut in shortcuts] == [
+        PromptShortcutId.ANALYZE,
+        PromptShortcutId.TAILOR_RESUME,
+        PromptShortcutId.WRITE_COVER_LETTER,
+        PromptShortcutId.ASK_MORE,
     ]
-    assert [action.title for action in actions] == [
+    assert [shortcut.title for shortcut in shortcuts] == [
         "Analyze",
         "Tailor Resume",
         "Generate Cover Letter",
         "Ask More",
     ]
+    assert 'exactly two columns, "JD Requirement" and "Match"' in shortcuts[0].prompt
+    assert "wait for my confirmation" in shortcuts[1].prompt
+    assert "write a concise, specific cover letter" in shortcuts[2].prompt
+    assert shortcuts[3].prompt == ""
 
 
 def test_quick_insight_returns_decision_overview_strength_and_gap() -> None:
@@ -211,7 +212,46 @@ def test_quick_insight_service_routes_agent_and_injects_user_resume() -> None:
 
     response = service.quick_insight(quick_request(), user_id="user-1")
 
-    assert response.workspace.default_action_id == "analyze"
+    assert [shortcut.id for shortcut in response.shortcuts] == list(PromptShortcutId)
+    assert response.workspace.model_dump() == {
+        "resource_url": "https://www.linkedin.com/jobs/view/1"
+    }
     assert isinstance(response.insight.cards[0], ScoreInsightCard)
     assert "INJECTED USER CV" in captured["messages"][1]["content"]
     assert not hasattr(agent, "_cv_text")
+
+
+def test_job_match_returns_localized_zh_prompt_shortcuts() -> None:
+    """Return the exact approved Chinese Prompt Shortcut catalogue."""
+
+    result = (
+        '@@INSIGHT\n{"score":87,"recommendation":"apply",'
+        '"reason":"匹配。","industry_business":"科技",'
+        '"role_focus":"后端","summary":"构建服务。",'
+        '"top_strength":"Go","top_gap":"支付"}'
+    )
+    agent = JobMatchAgent(client=fake_client(result), model="m")
+    service = TaskService(
+        agents={AgentName.JOB_MATCH: agent},
+        repository=None,
+        resume_service=None,
+        default_model="m",
+    )
+
+    response = service.quick_insight(quick_request(lang="zh"), user_id=None)
+
+    assert [shortcut.id for shortcut in response.shortcuts] == list(PromptShortcutId)
+    assert [shortcut.title for shortcut in response.shortcuts] == [
+        "分析岗位",
+        "定制简历",
+        "撰写求职信",
+        "继续提问",
+    ]
+    assert response.shortcuts[0].prompt == (
+        "请分析这个岗位真正看重的能力，并以 Markdown 表格逐项对比“JD 要求”和“匹配情况”。"
+        "表格后总结我的匹配优势、核心差距，以及是否值得申请，并给出明确结论和理由。"
+    )
+    assert response.shortcuts[-1].prompt == ""
+    assert response.workspace.model_dump() == {
+        "resource_url": "https://www.linkedin.com/jobs/view/1"
+    }

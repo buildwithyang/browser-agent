@@ -1,4 +1,4 @@
-"""TaskService protocol-v3 Workspace stream and atomic reducer tests."""
+"""TaskService protocol-v4 Workspace stream and atomic reducer tests."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from app.agents.base import (
 from app.agents.job_match import JobMatchAgent
 from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus
 from app.modules.task.schema import (
-    ActionId,
     AgentName,
     Artifact,
     Artifacts,
@@ -28,11 +27,10 @@ from app.modules.task.schema import (
     ChatResult,
     CreateArtifactResult,
     HistoryMessage,
-    QuickInsightActionWorkspaceRequest,
     ReplyResult,
     TaskRecordData,
     UpdateArtifactResult,
-    UserMessageWorkspaceRequest,
+    WorkspaceRequest,
     WorkspaceResultType,
 )
 from app.modules.task.service import TaskExecutionError, TaskService
@@ -317,7 +315,6 @@ def _artifact_state(
                 id=UUID(int=offset + 20),
                 role="assistant",
                 content=f"Created {title}.",
-                action_id=ActionId.TAILOR_RESUME,
                 created_at=FIXED_NOW,
                 attachments=[attachment],
             )
@@ -338,36 +335,16 @@ def _user_request(
     message: str = "Please help me.",
     url: str = "https://example.com/jobs/1",
     resource_url: str = "https://example.com/jobs/1",
-) -> UserMessageWorkspaceRequest:
+) -> WorkspaceRequest:
     """Build one valid user-message transition request."""
 
-    return UserMessageWorkspaceRequest(
-        trigger="user_message",
+    return WorkspaceRequest(
         url=url,
         resourceUrl=resource_url,
         operationId="00000000-0000-0000-0000-000000000001",
-        actionId=ActionId.ASK_MORE,
         histories=histories or [],
         artifacts=artifacts or _empty_artifacts(),
         message=message,
-    )
-
-
-def _quick_request(
-    *,
-    histories: list[HistoryMessage] | None = None,
-    artifacts: Artifacts | None = None,
-) -> QuickInsightActionWorkspaceRequest:
-    """Build one valid Quick Insight Action transition request."""
-
-    return QuickInsightActionWorkspaceRequest(
-        trigger="quick_insight_action",
-        url="https://example.com/jobs/1",
-        resourceUrl="https://example.com/jobs/1",
-        operationId="00000000-0000-0000-0000-000000000001",
-        actionId=ActionId.ANALYZE,
-        histories=histories or [],
-        artifacts=artifacts or _empty_artifacts(),
     )
 
 
@@ -711,18 +688,17 @@ def test_user_message_appends_user_then_assistant_with_gateway_identity() -> Non
     assert all(message.attachments == [] for message in response.histories)
 
 
-def test_quick_action_appends_only_one_assistant_message() -> None:
-    """Do not synthesize a User message for a deterministic Quick Action."""
+def test_workspace_reducer_appends_action_free_user_and_assistant_messages() -> None:
+    """Append one canonical pair without removed Action metadata."""
 
     response = _service(
-        FakeWorkspaceAgent(_reply("Quick analysis.")),
-        uuid_values=(1,),
-    ).workspace(_quick_request(), user_id=None)
+        FakeWorkspaceAgent(_reply("Analysis.")),
+        uuid_values=(1, 2),
+    ).workspace(_user_request(message="What matters?"), user_id=None)
 
-    assert [(message.role, message.content) for message in response.histories] == [
-        ("assistant", "Quick analysis.")
-    ]
-    assert response.histories[0].id == UUID(int=1)
+    assert [message.role for message in response.histories[-2:]] == ["user", "assistant"]
+    assert all("action_id" not in message.model_dump() for message in response.histories)
+    assert "selected_action_id" not in response.model_dump()
 
 
 def test_reply_returns_both_artifacts_byte_for_byte_unchanged() -> None:
@@ -815,13 +791,13 @@ def test_attachment_content_is_gateway_owned_and_draft_remains_opaque() -> None:
     cover_result = _create(ArtifactType.COVER_LETTER)
     cover = _service(
         FakeWorkspaceAgent(cover_result),
-        uuid_values=(1, 2, 3),
-    ).workspace(_quick_request(), user_id=None).artifacts.cover_letter
+        uuid_values=(1, 2, 3, 4),
+    ).workspace(_user_request(), user_id=None).artifacts.cover_letter
     cv_result = _create(ArtifactType.CV)
     cv = _service(
         FakeWorkspaceAgent(cv_result),
-        uuid_values=(4, 5, 6),
-    ).workspace(_quick_request(), user_id=None).artifacts.cv
+        uuid_values=(5, 6, 7, 8),
+    ).workspace(_user_request(), user_id=None).artifacts.cv
 
     assert cover is not None and cover.attachment.content == cover_result.draft
     assert cover.draft == "# Cover Letter\n\n<script>opaque letter</script>"
@@ -986,21 +962,24 @@ def test_resume_injection_metrics_url_normalization_and_full_duration() -> None:
     assert repository.records[0].result_chars == len("raw specialist output")
 
 
-def test_message_capacity_allows_last_user_and_quick_transitions() -> None:
-    """Permit legal terminal transitions that return eleven total messages."""
+def test_message_capacity_allows_tenth_turn_and_rejects_eleventh() -> None:
+    """Permit the tenth canonical pair and reject a request after ten user sends."""
 
-    nine = [HistoryMessage(role="user", content=str(index)) for index in range(9)]
-    user_response = _service(
+    nine_turns = [
+        HistoryMessage(role=role, content=f"{role}-{index}")
+        for index in range(9)
+        for role in ("user", "assistant")
+    ]
+    response = _service(
         FakeWorkspaceAgent(_reply()),
         uuid_values=(1, 2),
-    ).workspace(_user_request(histories=nine), user_id=None)
-    ten = [HistoryMessage(role="user", content=str(index)) for index in range(10)]
-    quick_response = _service(
-        FakeWorkspaceAgent(_reply()),
-        uuid_values=(3,),
-    ).workspace(_quick_request(histories=ten), user_id=None)
+    ).workspace(_user_request(histories=nine_turns), user_id=None)
+    ten_turns = [
+        HistoryMessage(role=role, content=f"{role}-{index}")
+        for index in range(10)
+        for role in ("user", "assistant")
+    ]
 
-    assert len(user_response.histories) == 11
-    assert len(quick_response.histories) == 11
-    with pytest.raises(ValidationError, match="histories"):
-        _user_request(histories=ten)
+    assert len(response.histories) == 20
+    with pytest.raises(ValidationError, match="10 user turns"):
+        _user_request(histories=ten_turns)

@@ -19,22 +19,27 @@ def test_quick_insight_response_contains_only_insight_content() -> None:
     response = schema.QuickInsightResponse(
         request=request,
         insight=insight,
-        workspace=schema.WorkspaceDescriptor(
-            resource_url="https://example.com/",
-            default_action_id="ask_more",
-        ),
+        workspace=schema.WorkspaceDescriptor(resource_url="https://example.com/"),
     )
 
     assert response.insight.cards[0].type == "text"
-    assert response.actions == []
-    assert response.workspace.default_action_id == "ask_more"
+    assert response.shortcuts == []
+    assert response.workspace.model_dump() == {"resource_url": "https://example.com/"}
     assert "document" not in response.model_dump()
 
 
-def test_new_action_contract_uses_title_only() -> None:
-    action = schema.Action(id="tailor_resume", title="Tailor Resume")
+def test_prompt_shortcut_contract_includes_editable_prompt() -> None:
+    shortcut = schema.PromptShortcut(
+        id="tailor_resume",
+        title="Tailor Resume",
+        prompt="Plan the changes first.",
+    )
 
-    assert action.model_dump() == {"id": "tailor_resume", "title": "Tailor Resume"}
+    assert shortcut.model_dump() == {
+        "id": "tailor_resume",
+        "title": "Tailor Resume",
+        "prompt": "Plan the changes first.",
+    }
 
 
 def test_chat_result_is_discriminated_and_markdown_only() -> None:

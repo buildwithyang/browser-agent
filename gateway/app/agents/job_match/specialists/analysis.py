@@ -10,8 +10,12 @@ class JobAnalysisAgent(StreamingJobMatchSpecialist):
     allowed_modes = frozenset({OutputMode.REPLY})
     reply_instruction = (
         "Own the job analysis scenario. Return a conversational analysis reply. "
-        "Analyze the role, hard requirements, strengths, gaps, realistic fit, application "
-        "risks, and concrete next steps from the supplied evidence."
+        "First compare every material requirement against the candidate in one Markdown "
+        "table with exactly two comparison columns. For Chinese, use exactly "
+        "'| JD 要求 | 匹配情况 |' followed by '| --- | --- |'. For English, use exactly "
+        "'| JD Requirement | Match |' followed by '| --- | --- |'. Do not add any other "
+        "comparison columns. After the table, narratively summarize strengths, core gaps, "
+        "realistic fit, application risks, and a clear apply recommendation with reasons."
     )
 
 

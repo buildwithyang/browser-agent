@@ -19,13 +19,13 @@ from app.agents.stream import (
     closing_if_supported,
 )
 from app.modules.task.schema import (
-    Action,
-    ActionId,
     AgentName,
     ChatResult,
     DOCUMENT_TEXT_MAX_CHARS,
     Insight,
     PageContext,
+    PromptShortcut,
+    PromptShortcutId,
     QuickInsightRequest,
     ReplyResult,
     TextInsightCard,
@@ -63,17 +63,11 @@ class SummaryPageAgent(
     name = AgentName.SUMMARY_PAGE
     system_prompt = SYSTEM_PROMPT
 
-    def available_actions(self, ctx: AgentContext) -> list[Action]:
-        """Declare Ask More as the only generic-page Workspace mode."""
+    def available_shortcuts(self, ctx: AgentContext) -> list[PromptShortcut]:
+        """Declare empty Ask More as the only generic-page Prompt Shortcut."""
 
-        title = "Ask More" if ctx.request.lang == "en" else "继续提问"
-        return [Action(id=ActionId.ASK_MORE, title=title)]
-
-    def _validate_workspace_action(self, task: WorkspaceRequest) -> None:
-        """Validate the single Action supported by a generic page."""
-
-        if task.action_id != ActionId.ASK_MORE:
-            raise ValueError(f"Unsupported workspace action: {task.action_id}")
+        title = "继续提问" if ctx.request.lang == "zh" else "Ask More"
+        return [PromptShortcut(id=PromptShortcutId.ASK_MORE, title=title, prompt="")]
 
     def _workspace_page_context(self, task: WorkspaceRequest) -> str:
         """Render the current selected passage or full page as untrusted context."""
@@ -102,7 +96,6 @@ class SummaryPageAgent(
     def _build_workspace_prompt(self, task: WorkspaceRequest) -> str:
         """Build the final Workspace prompt from complete immutable request state."""
 
-        self._validate_workspace_action(task)
         return format_workspace_context(
             task,
             page_context=self._workspace_page_context(task),

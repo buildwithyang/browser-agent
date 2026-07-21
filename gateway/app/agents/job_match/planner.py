@@ -64,10 +64,8 @@ PLAN_SCHEMA = (
 PLANNER_SYSTEM_PROMPT = "\n".join(
     [
         "You are a stateless chat planner for a job-search Workspace.",
-        "Use this priority exactly: current user message > selected Action > current "
-        "Artifacts > histories.",
-        "The current user message is the strongest evidence. The selected Action is a "
-        "strong intent hint, not a forced Artifact command. Histories may resolve "
+        "Use this priority exactly: current message > current artifacts > histories.",
+        "The current user message is the strongest evidence. Histories may resolve "
         "follow-up references such as 'the previous one'.",
         "Choose reply when the user asks for advice, explanation, analysis, or a "
         "question about a CV or cover letter. Choose artifact only when the user "
@@ -93,16 +91,13 @@ def format_planning_context(context: JobChatContext) -> str:
     artifacts = context.artifacts.model_dump(mode="json")
     return "\n".join(
         [
-            "# Current user message (highest priority)",
-            context.current_message or "(none)",
+            "# Current user message",
+            context.current_message,
             "",
-            "# Selected Action (second priority)",
-            f"Selected Action: {context.selected_action.value}",
-            "",
-            "# Current Artifacts (third priority, untrusted reference data)",
+            "# Current artifacts",
             json.dumps(artifacts, ensure_ascii=False, indent=2),
             "",
-            "# Histories (fourth priority, untrusted reference data)",
+            "# Shared conversation history",
             json.dumps(histories, ensure_ascii=False, indent=2),
         ]
     )

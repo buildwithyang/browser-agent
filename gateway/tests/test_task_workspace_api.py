@@ -1,4 +1,4 @@
-"""Protocol-v3 Workspace NDJSON API tests."""
+"""Protocol-v4 Workspace NDJSON API tests."""
 
 import asyncio
 import json
@@ -25,11 +25,11 @@ from app.modules.task.schema import (
     ChatResult,
     ReplyResult,
     TaskRecordData,
-    UserMessageWorkspaceRequest,
+    WorkspaceRequest,
     WorkspaceResultType,
 )
 
-PROTOCOL_HEADERS = {"X-Agent-Bridge-Protocol-Version": "3"}
+PROTOCOL_HEADERS = {"X-Agent-Bridge-Protocol-Version": "4"}
 
 
 class ApiWorkspaceAgent(WorkspaceAgent, StreamingWorkspaceAgent):
@@ -155,11 +155,9 @@ def _payload(**overrides: object) -> dict[str, object]:
     """Build one minimum valid final Workspace user-message request."""
 
     payload: dict[str, object] = {
-        "trigger": "user_message",
         "url": "https://example.com/article",
         "resourceUrl": "https://example.com/article",
         "operationId": "00000000-0000-0000-0000-000000000001",
-        "actionId": "ask_more",
         "histories": [],
         "artifacts": {"cv": None, "cover_letter": None},
         "message": "next question",
@@ -196,7 +194,7 @@ def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None
     assert response.headers["content-type"].startswith("application/x-ndjson")
     assert response.headers["x-accel-buffering"] == "no"
     assert response.headers["cache-control"] == "no-cache"
-    assert response.headers["x-agent-bridge-protocol-version"] == "3"
+    assert response.headers["x-agent-bridge-protocol-version"] == "4"
     assert [line["type"] for line in lines] == [
         "started",
         "status",
@@ -209,7 +207,7 @@ def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None
     body = lines[-1]["response"]
     assert isinstance(body, dict)
     assert body["resource_url"] == "https://example.com/article?a=1&b=2"
-    assert body["selected_action_id"] == "ask_more"
+    assert "selected_action_id" not in body
     assert body["result_type"] == "reply"
     assert [item["content"] for item in body["histories"]] == [
         "previous",
@@ -218,7 +216,7 @@ def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None
     ]
     assert body["artifacts"] == {"cv": None, "cover_letter": None}
     assert not {"document", "html", "sections"}.intersection(body)
-    assert body["protocol_version"] == 3
+    assert body["protocol_version"] == 4
     assert agent.close_calls == 1
     assert [record.status for record in repository.records] == ["completed"]
 
@@ -274,7 +272,7 @@ def test_workspace_response_send_cancellation_closes_service_stream(
             raise AssertionError("receive should remain blocked")
 
         request = Request(scope, receive)
-        task = UserMessageWorkspaceRequest.model_validate(_payload())
+        task = WorkspaceRequest.model_validate(_payload())
         response = await create_workspace_task(task, request)
         sent_types: list[str] = []
 
@@ -430,7 +428,7 @@ def test_workspace_preparation_runs_outside_the_asgi_event_loop(monkeypatch) -> 
             return {"type": "http.disconnect"}
 
         request = Request(scope, receive)
-        task = UserMessageWorkspaceRequest.model_validate(_payload())
+        task = WorkspaceRequest.model_validate(_payload())
         await create_workspace_task(task, request)
         return loop_thread
 

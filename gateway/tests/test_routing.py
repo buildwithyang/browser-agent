@@ -11,9 +11,9 @@ from app.agents.base import (
 from app.agents.model_router import ModelRouter, ModelTier
 from app.modules.task.router import normalize_resource_url
 from app.modules.task.schema import (
-    Action,
     ChatResult,
     Insight,
+    PromptShortcut,
     QuickInsightRequest,
 )
 
@@ -135,8 +135,8 @@ class DummyAgent(OpenAIChatAgent, QuickInsightAgent, WorkspaceAgent):
 
         raise NotImplementedError
 
-    def available_actions(self, ctx: AgentContext) -> list[Action]:
-        """Provide the explicit Quick Insight action operation for routing tests."""
+    def available_shortcuts(self, ctx: AgentContext) -> list[PromptShortcut]:
+        """Provide the explicit Prompt Shortcut operation for routing tests."""
 
         return []
 

@@ -20,7 +20,7 @@ from app.agents.job_match.context import JobChatContext
 from app.agents.job_match.planner import ChatPlan, ChatPlanner, OutputMode, SpecialistId
 from app.agents.job_match.quick_insight import (
     MIN_JOB_CONTENT_CHARS,
-    WORKSPACE_ACTION_TITLES,
+    PROMPT_SHORTCUT_CATALOGUES,
     JobQuickInsightAgent,
 )
 from app.agents.job_match.specialists.analysis import JobAnalysisAgent
@@ -36,8 +36,6 @@ from app.agents.stream import (
     closing_if_supported,
 )
 from app.modules.task.schema import (
-    Action,
-    ActionId,
     AgentName,
     Artifact,
     ArtifactType,
@@ -45,36 +43,13 @@ from app.modules.task.schema import (
     CreateArtifactResult,
     DOCUMENT_TEXT_MAX_CHARS,
     Insight,
+    PromptShortcut,
     ReplyResult,
     UpdateArtifactResult,
     WorkspaceResultType,
-    WorkspaceTrigger,
 )
 
 DEFAULT_CV_PATH = os.environ.get("AGENT_BRIDGE_CV_PATH", "data/cv/cv.pdf")
-JOB_WORKSPACE_ACTION_IDS = (
-    ActionId.ANALYZE,
-    ActionId.TAILOR_RESUME,
-    ActionId.WRITE_COVER_LETTER,
-    ActionId.ASK_MORE,
-)
-
-QUICK_PLAN_BY_ACTION = {
-    ActionId.ANALYZE: ChatPlan(
-        specialist=SpecialistId.JOB_ANALYSIS,
-        output_mode=OutputMode.REPLY,
-    ),
-    ActionId.TAILOR_RESUME: ChatPlan(
-        specialist=SpecialistId.RESUME,
-        output_mode=OutputMode.ARTIFACT,
-    ),
-    ActionId.WRITE_COVER_LETTER: ChatPlan(
-        specialist=SpecialistId.COVER_LETTER,
-        output_mode=OutputMode.ARTIFACT,
-    ),
-}
-"""Deterministic Quick Action plans that bypass the conversational planner."""
-
 ARTIFACT_BY_SPECIALIST = {
     SpecialistId.RESUME: ArtifactType.CV,
     SpecialistId.COVER_LETTER: ArtifactType.COVER_LETTER,
@@ -174,13 +149,11 @@ class JobMatchAgent(
                 "Job Match Workspace context is missing resolved resume text"
             )
         return JobChatContext(
-            trigger=request.trigger,
             request=request,
             resume_text=resume_text,
             histories=tuple(request.histories),
             artifacts=request.artifacts,
-            selected_action=request.action_id,
-            current_message=getattr(request, "message", None),
+            current_message=request.message,
         )
 
     def prepare_workspace_context(
@@ -195,20 +168,9 @@ class JobMatchAgent(
         )
 
     async def _select_plan(self, context: JobChatContext) -> ChatPlan:
-        """Plan a user message or resolve a deterministic Quick command directly."""
+        """Plan every message from current request-scoped Workspace evidence."""
 
-        if context.trigger is WorkspaceTrigger.USER_MESSAGE:
-            return await self._planner.plan(context)
-        if context.selected_action is ActionId.ASK_MORE:
-            raise JobMatchOrchestrationError(
-                "ask_more is not a backend Quick Insight Action command"
-            )
-        try:
-            return QUICK_PLAN_BY_ACTION[context.selected_action]
-        except KeyError as exc:
-            raise JobMatchOrchestrationError(
-                f"unsupported Quick Insight Action: {context.selected_action.value}"
-            ) from exc
+        return await self._planner.plan(context)
 
     async def _open_specialist_stream(
         self,
@@ -394,14 +356,13 @@ class JobMatchAgent(
             )
         return text
 
-    def available_actions(self, context: AgentContext) -> list[Action]:
-        """Declare the ordered job Workspace Actions for the request language."""
+    def available_shortcuts(self, context: AgentContext) -> list[PromptShortcut]:
+        """Declare ordered localized editable Prompt Shortcuts for a job page."""
 
-        title_lang = "en" if context.request.lang == "en" else "zh"
-        titles = WORKSPACE_ACTION_TITLES[title_lang]
+        copy_lang = "zh" if context.request.lang == "zh" else "en"
         return [
-            Action(id=action_id, title=titles[action_id])
-            for action_id in JOB_WORKSPACE_ACTION_IDS
+            PromptShortcut(id=shortcut_id, title=title, prompt=prompt)
+            for shortcut_id, title, prompt in PROMPT_SHORTCUT_CATALOGUES[copy_lang]
         ]
 
     def quick_insight(self, context: AgentContext) -> AgentExecution[Insight]:

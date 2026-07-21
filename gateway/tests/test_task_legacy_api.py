@@ -9,7 +9,7 @@ from app.modules.task.protocol import DEFAULT_EXTENSION_UPDATE_URL
 EXPECTED_BODY = {
     "code": "extension_update_required",
     "message": "Extension update required",
-    "required_protocol_version": 3,
+    "required_protocol_version": 4,
     "update_url": DEFAULT_EXTENSION_UPDATE_URL,
 }
 
@@ -30,5 +30,5 @@ def test_legacy_tasks_always_returns_the_same_upgrade_response(body: bytes) -> N
 
     assert response.status_code == 426
     assert response.json() == EXPECTED_BODY
-    assert response.headers["X-Agent-Bridge-Protocol-Version"] == "3"
-    assert response.headers["Upgrade"] == "Agent-Bridge/3"
+    assert response.headers["X-Agent-Bridge-Protocol-Version"] == "4"
+    assert response.headers["Upgrade"] == "Agent-Bridge/4"

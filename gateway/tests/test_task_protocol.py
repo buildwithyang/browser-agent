@@ -25,7 +25,6 @@ from app.modules.task.protocol import (
     TaskProtocolMiddleware,
 )
 from app.modules.task.schema import (
-    ActionId,
     Artifacts,
     ExecutionMeta,
     Insight,
@@ -135,7 +134,6 @@ class RecordingService:
             insight=Insight(title="Summary"),
             workspace=WorkspaceDescriptor(
                 resource_url="https://example.com/",
-                default_action_id=ActionId.ASK_MORE,
             ),
             meta=ExecutionMeta(model="fake"),
         )
@@ -154,7 +152,6 @@ class RecordingService:
 
         response = WorkspaceResponse(
             resource_url="https://example.com/",
-            selected_action_id=ActionId.ASK_MORE,
             result_type=WorkspaceResultType.REPLY,
             histories=[],
             artifacts=Artifacts(cv=None, cover_letter=None),
@@ -188,10 +185,8 @@ def _workspace_payload() -> dict[str, object]:
     """Build the minimum valid final Workspace request."""
 
     return {
-        "trigger": "user_message",
         "url": "https://example.com",
         "resourceUrl": "https://example.com/",
-        "actionId": "ask_more",
         "histories": [],
         "artifacts": {"cv": None, "cover_letter": None},
         "message": "What matters?",
@@ -247,8 +242,8 @@ def test_settings_value_is_wired_through_main_middleware_to_actual_426() -> None
 @pytest.mark.parametrize(
     "values",
     [
-        pytest.param((b"3", b"3"), id="same"),
-        pytest.param((b"3", b"2"), id="conflicting"),
+        pytest.param((b"4", b"4"), id="same"),
+        pytest.param((b"4", b"3"), id="conflicting"),
     ],
 )
 def test_duplicate_protocol_headers_are_rejected(
@@ -293,7 +288,7 @@ def test_single_matching_protocol_header_reaches_inner_app_once() -> None:
     messages = _run_protocol_middleware(
         inner,
         path="/tasks/quick-insight",
-        headers=[(PROTOCOL_HEADER_BYTES, b"3")],
+        headers=[(PROTOCOL_HEADER_BYTES, b"4")],
     )
 
     assert messages[0]["status"] == 204
@@ -355,7 +350,7 @@ def test_accepted_inner_protocol_headers_are_replaced_with_one_current_value() -
     messages = _run_protocol_middleware(
         inner,
         path="/tasks/workspace",
-        headers=[(PROTOCOL_HEADER_BYTES, b"3")],
+        headers=[(PROTOCOL_HEADER_BYTES, b"4")],
     )
     response_headers = [
         value
@@ -363,7 +358,7 @@ def test_accepted_inner_protocol_headers_are_replaced_with_one_current_value() -
         if name.lower() == PROTOCOL_HEADER_BYTES
     ]
 
-    assert response_headers == [b"3"]
+    assert response_headers == [b"4"]
 
 
 @pytest.mark.parametrize("path", ["/tasks/quick-insight", "/tasks/workspace"])
@@ -378,7 +373,8 @@ def test_accepted_inner_protocol_headers_are_replaced_with_one_current_value() -
         pytest.param("-1", id="negative"),
         pytest.param("1", id="older"),
         pytest.param("2", id="older"),
-        pytest.param("4", id="newer"),
+        pytest.param("3", id="older-v3"),
+        pytest.param("5", id="newer"),
         pytest.param("9" * 10_000, id="huge"),
     ],
 )

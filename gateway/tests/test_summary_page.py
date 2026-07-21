@@ -21,11 +21,11 @@ from app.agents.stream import (
     ModelTextStream,
 )
 from app.modules.task.schema import (
-    ActionId,
     DOCUMENT_TEXT_MAX_CHARS,
+    PromptShortcutId,
     QuickInsightRequest,
     ReplyResult,
-    UserMessageWorkspaceRequest,
+    WorkspaceRequest,
 )
 from app.agents.summary_page import SummaryPageAgent
 
@@ -134,20 +134,17 @@ def selection_task() -> QuickInsightRequest:
 
 def workspace_request(
     *,
-    action_id: ActionId = ActionId.ASK_MORE,
     message: str = "When does it ship?",
     lang: str = "en",
-) -> UserMessageWorkspaceRequest:
-    """Build a v2 Workspace chat request for the streaming Agent contract."""
+) -> WorkspaceRequest:
+    """Build a v4 Workspace chat request for the streaming Agent contract."""
 
-    return UserMessageWorkspaceRequest(
-        trigger="user_message",
+    return WorkspaceRequest(
         url="https://example.com/article",
         resourceUrl="https://example.com/article",
         operationId="00000000-0000-0000-0000-000000000001",
         title="Release Notes",
         pageText="Version 2.0 ships Friday.",
-        actionId=action_id,
         histories=[{"role": "assistant", "content": "The release is ready."}],
         artifacts={"cv": None, "cover_letter": None},
         message=message,
@@ -199,11 +196,12 @@ def test_summary_declares_only_ask_more() -> None:
     agent = SummaryPageAgent()
     request = full_page_task().model_copy(update={"lang": "en"})
 
-    actions = agent.available_actions(AgentContext(request=request))
+    shortcuts = agent.available_shortcuts(AgentContext(request=request))
 
     assert isinstance(agent, QuickInsightAgent)
-    assert [action.id for action in actions] == [ActionId.ASK_MORE]
-    assert [action.title for action in actions] == ["Ask More"]
+    assert [shortcut.id for shortcut in shortcuts] == [PromptShortcutId.ASK_MORE]
+    assert [shortcut.title for shortcut in shortcuts] == ["Ask More"]
+    assert shortcuts[0].prompt == ""
 
 
 def test_summary_workspace_streams_reply_only_markdown() -> None:
@@ -235,7 +233,7 @@ def test_summary_workspace_streams_reply_only_markdown() -> None:
     assert completed.execution.raw_result == "It ships Friday."
     assert completed.execution.model == "summary-model"
     assert "When does it ship?" in completed.execution.prompt
-    assert "ask_more" in completed.execution.prompt
+    assert "# Current user message" in completed.execution.prompt
     assert "Version 2.0 ships Friday." in completed.execution.prompt
     assert "Respond entirely in English" in cast(
         list[dict[str, str]], client.calls[0]["messages"]
@@ -282,26 +280,6 @@ def test_closing_summary_agent_stream_closes_provider_chunks() -> None:
     asyncio.run(cancel_after_first_delta())
 
     assert client.streams[0].closed is True
-
-
-def test_summary_workspace_rejects_non_ask_more_before_model_call() -> None:
-    """Reject non-generic v2 Actions without opening a model stream."""
-
-    client = FakeAsyncClient(["unexpected"])
-    agent = SummaryPageAgent(async_client=client, model="m")
-
-    with pytest.raises(ValueError, match="Unsupported workspace action"):
-        asyncio.run(
-            _collect_events(
-                agent.stream_chat(
-                    WorkspaceAgentContext(
-                        request=workspace_request(action_id=ActionId.ANALYZE)
-                    )
-                )
-            )
-        )
-
-    assert client.calls == []
 
 
 @pytest.mark.parametrize(

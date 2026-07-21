@@ -1,4 +1,4 @@
-"""Protocol-v3 NDJSON Workspace event schema tests."""
+"""Protocol-v4 NDJSON Workspace event schema tests."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from app.modules.task.schema import Artifacts, UserMessageWorkspaceRequest, WorkspaceResponse
+from app.modules.task.schema import Artifacts, WorkspaceRequest, WorkspaceResponse
 from app.modules.task.stream_schema import (
     WorkspaceCompletedEvent,
     WorkspaceDeltaEvent,
@@ -29,10 +29,8 @@ def workspace_payload() -> dict[str, object]:
     """Build one valid Workspace request except for the operation ID under test."""
 
     return {
-        "trigger": "user_message",
         "url": "https://example.com/article",
         "resourceUrl": "https://example.com/article",
-        "actionId": "ask_more",
         "histories": [],
         "artifacts": {"cv": None, "cover_letter": None},
         "message": "What matters?",
@@ -44,10 +42,10 @@ def test_workspace_request_requires_operation_id() -> None:
 
     payload = workspace_payload()
     with pytest.raises(ValidationError, match="operationId"):
-        UserMessageWorkspaceRequest.model_validate(payload)
+        WorkspaceRequest.model_validate(payload)
 
     operation_id = uuid4()
-    request = UserMessageWorkspaceRequest.model_validate(
+    request = WorkspaceRequest.model_validate(
         {**payload, "operationId": str(operation_id)}
     )
 
@@ -104,7 +102,6 @@ def test_stream_events_reject_unknown_fields(event: type[object], unknown_field:
             type="completed",
             response=WorkspaceResponse(
                 resource_url="https://example.com/article",
-                selected_action_id="ask_more",
                 result_type="reply",
                 histories=[],
                 artifacts=Artifacts(cv=None, cover_letter=None),
@@ -169,7 +166,6 @@ def test_status_wire_omits_only_its_inapplicable_artifact_type() -> None:
         sequence=2,
         response=WorkspaceResponse(
             resource_url="https://example.com/article",
-            selected_action_id="ask_more",
             result_type="reply",
             histories=[],
             artifacts=Artifacts(cv=None, cover_letter=None),
@@ -181,3 +177,23 @@ def test_status_wire_omits_only_its_inapplicable_artifact_type() -> None:
         "cv": None,
         "cover_letter": None,
     }
+
+
+def test_completed_event_rejects_removed_selected_action_id() -> None:
+    """Keep the terminal v4 response free of Action routing metadata."""
+
+    with pytest.raises(ValidationError, match="selected_action_id"):
+        STREAM_EVENT_ADAPTER.validate_python(
+            {
+                "type": "completed",
+                "operation_id": str(uuid4()),
+                "sequence": 1,
+                "response": {
+                    "resource_url": "https://example.com/article",
+                    "selected_action_id": "analyze",
+                    "result_type": "reply",
+                    "histories": [],
+                    "artifacts": {"cv": None, "cover_letter": None},
+                },
+            }
+        )

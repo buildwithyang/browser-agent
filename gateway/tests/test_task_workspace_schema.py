@@ -1,4 +1,4 @@
-"""Workspace v2 wire-contract tests."""
+"""Workspace v4 wire-contract tests."""
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -7,12 +7,12 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from app.modules.task.schema import (
-    ActionId,
     Artifact,
     Attachment,
     HistoryMessage,
     WorkspaceRequest,
     WorkspaceResponse,
+    count_user_turns,
 )
 
 
@@ -53,10 +53,8 @@ def _request_payload(**overrides: object) -> dict[str, object]:
     """Build a minimum valid user-message Workspace request payload."""
 
     payload: dict[str, object] = {
-        "trigger": "user_message",
         "url": "https://example.com/jobs/1",
         "resourceUrl": "https://example.com/jobs/1",
-        "actionId": "ask_more",
         "histories": [],
         "artifacts": _artifacts(),
         "message": "What should I highlight?",
@@ -66,48 +64,69 @@ def _request_payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
-def test_workspace_request_is_discriminated_by_trigger() -> None:
-    """Accept both trigger variants while preserving their typed contracts."""
+def test_workspace_request_accepts_only_one_user_message_shape() -> None:
+    request = WorkspaceRequest.model_validate(_request_payload(message="Analyze this role."))
 
-    user_request = REQUEST_ADAPTER.validate_python(_request_payload())
-    action_payload = _request_payload(trigger="quick_insight_action")
-    action_payload.pop("message")
-    action_request = REQUEST_ADAPTER.validate_python(action_payload)
-
-    assert user_request.trigger == "user_message"
-    assert action_request.trigger == "quick_insight_action"
+    assert request.message == "Analyze this role."
 
 
-def test_user_message_requires_message_and_reserves_one_history_slot() -> None:
-    """Require user text and limit its incoming state to nine histories."""
+def test_workspace_request_requires_message() -> None:
+    """Require one non-empty user message for every Workspace transition."""
 
     with pytest.raises(ValidationError, match="message"):
         REQUEST_ADAPTER.validate_python(_request_payload(message=""))
-    with pytest.raises(ValidationError, match="histories"):
-        REQUEST_ADAPTER.validate_python(
-            _request_payload(histories=[{"role": "user", "content": str(index)} for index in range(10)])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("trigger", "user_message"), ("actionId", "analyze")],
+)
+def test_workspace_request_rejects_removed_action_fields(field: str, value: str) -> None:
+    with pytest.raises(ValidationError, match=field):
+        WorkspaceRequest.model_validate({**_request_payload(), field: value})
+
+
+def _paired_histories(turns: int) -> list[HistoryMessage]:
+    """Build complete canonical user/Assistant pairs for turn-limit tests."""
+
+    return [
+        HistoryMessage(role=role, content=f"{role}-{turn}")
+        for turn in range(turns)
+        for role in ("user", "assistant")
+    ]
+
+
+def test_workspace_allows_tenth_user_turn_but_rejects_eleventh() -> None:
+    nine_turns = _paired_histories(turns=9)
+    assert count_user_turns(nine_turns) == 9
+    assert WorkspaceRequest.model_validate(
+        {**_request_payload(), "histories": [item.model_dump() for item in nine_turns]}
+    )
+
+    with pytest.raises(ValidationError, match="10 user turns"):
+        WorkspaceRequest.model_validate(
+            {
+                **_request_payload(),
+                "histories": [item.model_dump() for item in _paired_histories(turns=10)],
+            }
         )
 
-    request = REQUEST_ADAPTER.validate_python(
-        _request_payload(histories=[{"role": "user", "content": str(index)} for index in range(9)])
+
+def test_workspace_accepts_migrated_history_capacity_but_rejects_over_31() -> None:
+    migrated = [HistoryMessage(role="assistant", content=f"legacy-{index}") for index in range(31)]
+    assert WorkspaceRequest.model_validate(
+        {**_request_payload(), "histories": [item.model_dump() for item in migrated]}
     )
-
-    assert len(request.histories) == 9
-
-
-def test_quick_insight_action_forbids_message_and_allows_ten_histories() -> None:
-    """Allow the deterministic Action trigger to carry the full ten-message state."""
-
-    payload = _request_payload(
-        trigger="quick_insight_action",
-        histories=[{"role": "user", "content": str(index)} for index in range(10)],
-    )
-    payload.pop("message")
-    request = REQUEST_ADAPTER.validate_python(payload)
-
-    assert len(request.histories) == 10
-    with pytest.raises(ValidationError, match="message"):
-        REQUEST_ADAPTER.validate_python(_request_payload(trigger="quick_insight_action", message="not allowed"))
+    with pytest.raises(ValidationError, match="histories"):
+        WorkspaceRequest.model_validate(
+            {
+                **_request_payload(),
+                "histories": [
+                    item.model_dump()
+                    for item in [*migrated, HistoryMessage(role="assistant", content="overflow")]
+                ],
+            }
+        )
 
 
 def test_history_messages_have_identity_utc_time_and_attachment_rules() -> None:
@@ -117,7 +136,6 @@ def test_history_messages_have_identity_utc_time_and_attachment_rules() -> None:
     assistant = HistoryMessage(
         role="assistant",
         content="Generated a cover letter.",
-        action_id=ActionId.WRITE_COVER_LETTER,
         attachments=[_attachment(artifact_id)],
     )
 
@@ -240,26 +258,41 @@ def test_workspace_limits_and_extra_fields_are_rejected() -> None:
         REQUEST_ADAPTER.validate_python(_request_payload(currentDocument={}))
 
 
+def test_history_and_response_reject_removed_action_fields() -> None:
+    with pytest.raises(ValidationError, match="action_id"):
+        HistoryMessage.model_validate(
+            {"role": "user", "content": "Hello", "action_id": "ask_more"}
+        )
+    with pytest.raises(ValidationError, match="selected_action_id"):
+        WorkspaceResponse.model_validate(
+            {
+                "resource_url": "https://example.com/jobs/1",
+                "selected_action_id": "analyze",
+                "result_type": "reply",
+                "histories": [],
+                "artifacts": _artifacts(),
+            }
+        )
+
+
 def test_workspace_response_is_markdown_only_full_state() -> None:
     """Return protocol-tagged full state without v1 document rendering fields."""
 
     response = WorkspaceResponse(
         resource_url="https://example.com/jobs/1",
-        selected_action_id="ask_more",
         result_type="reply",
         histories=[],
         artifacts=_artifacts(),
     )
 
     dumped = response.model_dump()
-    assert response.protocol_version == 3
+    assert response.protocol_version == 4
     assert response.result_type == "reply"
     assert dumped["artifacts"] == {"cv": None, "cover_letter": None}
     assert not {"document", "html", "sections"}.intersection(dumped)
     with pytest.raises(ValidationError, match="result_type"):
         WorkspaceResponse(
             resource_url="https://example.com/jobs/1",
-            selected_action_id="ask_more",
             histories=[],
             artifacts=_artifacts(),
         )

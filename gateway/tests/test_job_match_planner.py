@@ -16,14 +16,12 @@ from app.agents.job_match.planner import (
     SpecialistId,
 )
 from app.modules.task.schema import (
-    ActionId,
     Artifact,
     ArtifactType,
     Artifacts,
     Attachment,
     HistoryMessage,
-    UserMessageWorkspaceRequest,
-    WorkspaceTrigger,
+    WorkspaceRequest,
 )
 
 
@@ -35,15 +33,13 @@ LONG_JD = (
 
 def context(
     *,
-    action: ActionId = ActionId.ASK_MORE,
     message: str = "What should I emphasize?",
     histories: list[HistoryMessage] | None = None,
     artifacts: Artifacts | None = None,
 ) -> JobChatContext:
     """Build one immutable user-message context for a planning decision."""
 
-    request = UserMessageWorkspaceRequest(
-        trigger=WorkspaceTrigger.USER_MESSAGE,
+    request = WorkspaceRequest(
         url="https://www.linkedin.com/jobs/view/123",
         resourceUrl="https://www.linkedin.com/jobs/view/123",
         operationId="00000000-0000-0000-0000-000000000001",
@@ -53,18 +49,15 @@ def context(
         imageText="COMPANY LOGO CLUE",
         intent="JOB PAGE INTENT",
         lang="en",
-        actionId=action,
         histories=histories or [],
         artifacts=artifacts or Artifacts(cv=None, cover_letter=None),
         message=message,
     )
     return JobChatContext(
-        trigger=request.trigger,
         request=request,
         resume_text="# Canonical Resume\n\nREQUEST RESUME",
         histories=tuple(request.histories),
         artifacts=request.artifacts,
-        selected_action=request.action_id,
         current_message=request.message,
     )
 
@@ -92,7 +85,7 @@ def plan_result(specialist: SpecialistId, output_mode: OutputMode) -> str:
     return json.dumps({"specialist": specialist, "output_mode": output_mode})
 
 
-def test_current_message_outranks_selected_action() -> None:
+def test_current_message_outranks_current_artifacts_and_histories() -> None:
     """Keep the current user message as the planner's strongest evidence."""
 
     captured: list[dict[str, str]] = []
@@ -105,7 +98,6 @@ def test_current_message_outranks_selected_action() -> None:
     decision = asyncio.run(
         planner.plan(
             context(
-                action=ActionId.TAILOR_RESUME,
                 message="Write me a concise cover letter for this role.",
             )
         )
@@ -116,15 +108,17 @@ def test_current_message_outranks_selected_action() -> None:
         output_mode=OutputMode.ARTIFACT,
     )
     assert (
-        "current user message > selected Action > current Artifacts > histories"
+        "current message > current artifacts > histories"
         in captured[0]["system"]
     )
     assert "Write me a concise cover letter for this role." in captured[0]["prompt"]
-    assert "Selected Action: tailor_resume" in captured[0]["prompt"]
+    prompt = captured[0]["prompt"]
+    assert prompt.index("# Current user message") < prompt.index("# Current artifacts")
+    assert prompt.index("# Current artifacts") < prompt.index("# Shared conversation history")
 
 
-def test_selected_action_is_a_strong_hint_but_does_not_force_artifact() -> None:
-    """Allow an Action to select a Specialist while the message selects reply mode."""
+def test_resume_advice_message_can_select_reply_mode() -> None:
+    """Allow the current message to select a resume reply without routing metadata."""
 
     captured: list[dict[str, str]] = []
     planner = ChatPlanner(
@@ -136,7 +130,6 @@ def test_selected_action_is_a_strong_hint_but_does_not_force_artifact() -> None:
     decision = asyncio.run(
         planner.plan(
             context(
-                action=ActionId.TAILOR_RESUME,
                 message="Which experience should I emphasize?",
                 histories=[
                     HistoryMessage(
@@ -149,8 +142,7 @@ def test_selected_action_is_a_strong_hint_but_does_not_force_artifact() -> None:
     )
 
     assert decision.output_mode is OutputMode.REPLY
-    assert "Selected Action: tailor_resume" in captured[0]["prompt"]
-    assert "strong intent hint, not a forced Artifact command" in captured[0]["system"]
+    assert "Selected Action" not in captured[0]["prompt"]
     assert "Maybe write a cover letter later." in captured[0]["prompt"]
 
 
@@ -222,7 +214,6 @@ def test_existing_cover_letter_edit_is_explicitly_planned_as_artifact() -> None:
     decision = asyncio.run(
         planner.plan(
             context(
-                action=ActionId.WRITE_COVER_LETTER,
                 message="生成的简短一点。",
                 histories=histories,
                 artifacts=Artifacts(cv=None, cover_letter=artifact),
@@ -236,7 +227,7 @@ def test_existing_cover_letter_edit_is_explicitly_planned_as_artifact() -> None:
     )
     assert "direct edit or transformation" in captured[0]["system"]
     assert "make it shorter" in captured[0]["system"]
-    assert "# Current Artifacts" in captured[0]["prompt"]
+    assert "# Current artifacts" in captured[0]["prompt"]
     assert "Existing complete letter." in captured[0]["prompt"]
 
 

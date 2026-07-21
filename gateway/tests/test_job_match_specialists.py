@@ -14,14 +14,12 @@ from app.agents.job_match.specialists.general_qa import GeneralQAAgent
 from app.agents.job_match.specialists.resume import ResumeTailoringAgent
 from app.agents.stream import ModelTextStream
 from app.modules.task.schema import (
-    ActionId,
     Artifact,
     ArtifactType,
     Artifacts,
     Attachment,
     HistoryMessage,
-    UserMessageWorkspaceRequest,
-    WorkspaceTrigger,
+    WorkspaceRequest,
 )
 
 
@@ -77,8 +75,7 @@ def _context(*, lang: str = "en", message: str = "What should I emphasize?") -> 
         ),
     ]
     artifacts = Artifacts(cv=cv, cover_letter=letter)
-    request = UserMessageWorkspaceRequest(
-        trigger=WorkspaceTrigger.USER_MESSAGE,
+    request = WorkspaceRequest(
         url="https://www.linkedin.com/jobs/view/123",
         resourceUrl="https://www.linkedin.com/jobs/view/123",
         operationId="00000000-0000-0000-0000-000000000001",
@@ -88,18 +85,15 @@ def _context(*, lang: str = "en", message: str = "What should I emphasize?") -> 
         imageText="COMPANY LOGO CLUE",
         intent="JOB PAGE INTENT",
         lang=lang,
-        actionId=ActionId.ASK_MORE,
         histories=histories,
         artifacts=artifacts,
         message=message,
     )
     return JobChatContext(
-        trigger=request.trigger,
         request=request,
         resume_text="# Canonical Resume\n\nREQUEST RESUME",
         histories=tuple(request.histories),
         artifacts=request.artifacts,
-        selected_action=request.action_id,
         current_message=request.message,
     )
 
@@ -159,7 +153,6 @@ def test_analysis_opens_reply_stream_with_complete_context_and_language() -> Non
         "CV SNAPSHOT",
         "LETTER SNAPSHOT",
         "What should I emphasize?",
-        "ask_more",
         "https://www.linkedin.com/jobs/view/123",
         "Senior Go Engineer",
         LONG_JD,
@@ -264,9 +257,21 @@ def test_prompt_separates_current_request_from_untrusted_reference_data() -> Non
         "system"
     ]
     prompt = captured[0]["prompt"]
-    assert "# Current user request (instruction)\nACTUAL USER REQUEST" in prompt
-    assert "# Untrusted reference data" in prompt
-    assert prompt.index("ACTUAL USER REQUEST") < prompt.index("# Untrusted reference data")
+    assert "# Current user message\nACTUAL USER REQUEST" in prompt
+    assert prompt.index("# Current user message") < prompt.index("# Current artifacts")
+    assert prompt.index("# Current artifacts") < prompt.index("# Shared conversation history")
+
+
+def test_analysis_specialist_requires_exact_two_column_comparison_tables() -> None:
+    """Constrain analysis replies to the approved localized table contract."""
+
+    agent = JobAnalysisAgent(open_prompt_stream=_open_stream(["analysis"]))
+    system = agent.build_system_prompt("zh", OutputMode.REPLY)
+
+    assert "| JD 要求 | 匹配情况 |" in system
+    assert "| JD Requirement | Match |" in system
+    assert "Do not add any other comparison columns" in system
+    assert "After the table" in system
 
 
 def test_specialist_does_not_cache_request_context() -> None:

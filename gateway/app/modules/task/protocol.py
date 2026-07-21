@@ -7,7 +7,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
 # This version is a wire-contract integer, independent from manifest.json releases.
-CURRENT_EXTENSION_PROTOCOL_VERSION = 3
+CURRENT_EXTENSION_PROTOCOL_VERSION = 4
 EXTENSION_PROTOCOL_HEADER = "X-Agent-Bridge-Protocol-Version"
 DEFAULT_EXTENSION_UPDATE_URL = (
     "https://chromewebstore.google.com/detail/agent-bridge/"

@@ -1,22 +1,14 @@
 from dataclasses import dataclass
 
-from app.modules.task.schema import (
-    ActionId,
-    Artifacts,
-    HistoryMessage,
-    WorkspaceRequest,
-    WorkspaceTrigger,
-)
+from app.modules.task.schema import Artifacts, HistoryMessage, WorkspaceRequest
 
 
 @dataclass(frozen=True)
 class JobChatContext:
-    """Immutable request-scoped state for one future job Workspace transition."""
+    """Complete request-scoped state used by the Job Match orchestrator."""
 
-    trigger: WorkspaceTrigger
     request: WorkspaceRequest
-    resume_text: str | None
+    resume_text: str
     histories: tuple[HistoryMessage, ...]
     artifacts: Artifacts
-    selected_action: ActionId
-    current_message: str | None = None
+    current_message: str

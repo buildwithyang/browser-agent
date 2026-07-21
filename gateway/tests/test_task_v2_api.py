@@ -3,9 +3,9 @@ from fastapi.testclient import TestClient
 from app import main
 from app.agents.base import AgentContext, AgentExecution, QuickInsightAgent
 from app.modules.task.schema import (
-    Action,
     AgentName,
     Insight,
+    PromptShortcut,
 )
 
 
@@ -13,8 +13,8 @@ class ApiAgent(QuickInsightAgent):
     name = AgentName.SUMMARY_PAGE
     requires_resume = False
 
-    def available_actions(self, ctx: AgentContext) -> list[Action]:
-        """Declare no actions for the response-shape fake."""
+    def available_shortcuts(self, ctx: AgentContext) -> list[PromptShortcut]:
+        """Declare no shortcuts for the response-shape fake."""
 
         return []
 
@@ -46,11 +46,11 @@ def test_quick_insight_endpoint_has_stable_response_shape(monkeypatch) -> None:
     _wire(monkeypatch)
     response = TestClient(main.app).post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "3"},
+        headers={"X-Agent-Bridge-Protocol-Version": "4"},
         json={"url": "https://example.com", "pageText": "Page"},
     )
 
     assert response.status_code == 200
     assert response.json()["insight"]["title"] == "Page Summary"
-    assert response.json()["protocol_version"] == 3
+    assert response.json()["protocol_version"] == 4
     assert "document" not in response.json()

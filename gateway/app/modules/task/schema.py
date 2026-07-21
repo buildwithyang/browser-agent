@@ -31,20 +31,13 @@ class AgentName(StrEnum):
     OPENCLAW = "openclaw"
 
 
-class ActionId(StrEnum):
-    """Workspace 支持的稳定 Action 标识。"""
+class PromptShortcutId(StrEnum):
+    """Stable Prompt Shortcut identities returned by Quick Insight."""
 
     ANALYZE = "analyze"
     TAILOR_RESUME = "tailor_resume"
     WRITE_COVER_LETTER = "write_cover_letter"
     ASK_MORE = "ask_more"
-
-
-class WorkspaceTrigger(StrEnum):
-    """Stable entry modes for one stateless Workspace transition."""
-
-    USER_MESSAGE = "user_message"
-    QUICK_INSIGHT_ACTION = "quick_insight_action"
 
 
 class WorkspaceResultType(StrEnum):
@@ -137,18 +130,22 @@ class Insight(BaseModel):
     cards: list[InsightCard] = Field(default_factory=list)
 
 
-class Action(BaseModel):
-    """后端声明的 Current Task 入口；执行参数由后端按 id 解析。"""
+class PromptShortcut(BaseModel):
+    """Localized editable composer draft declared by a routed Agent."""
 
-    id: str
-    title: str
+    model_config = ConfigDict(extra="forbid")
+
+    id: PromptShortcutId
+    title: str = Field(min_length=1, max_length=TITLE_MAX_CHARS)
+    prompt: str = Field(max_length=USER_MESSAGE_MAX_CHARS)
 
 
 class WorkspaceDescriptor(BaseModel):
-    """Quick Insight 返回的客户端 Workspace 身份和默认 Action。"""
+    """Quick Insight returned stable client Workspace identity."""
+
+    model_config = ConfigDict(extra="forbid")
 
     resource_url: str
-    default_action_id: ActionId
 
 
 class Attachment(BaseModel):
@@ -208,7 +205,6 @@ class HistoryMessage(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     role: Literal["user", "assistant"]
     content: str = Field(max_length=DOCUMENT_TEXT_MAX_CHARS)
-    action_id: ActionId | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     attachments: list[Attachment] = Field(default_factory=list, max_length=1)
 
@@ -268,51 +264,39 @@ def validate_workspace_state(histories: list[HistoryMessage], artifacts: Artifac
             raise ValueError("Artifact Attachment must equal the latest Attachment of its type")
 
 
-class WorkspaceRequestBase(PageContext):
-    """Shared fields for the two intentionally disjoint Workspace triggers."""
+MAX_WORKSPACE_TURNS = 10
+MAX_FRESH_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2
+MAX_WORKSPACE_HISTORIES = 11 + MAX_FRESH_WORKSPACE_HISTORIES
+
+
+def count_user_turns(histories: list[HistoryMessage]) -> int:
+    """Count completed canonical user sends in shared Workspace history."""
+
+    return sum(message.role == "user" for message in histories)
+
+
+class WorkspaceRequest(PageContext):
+    """One message-only protocol-v4 Workspace transition request."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     resource_url: str = Field(alias="resourceUrl")
     operation_id: UUID = Field(alias="operationId")
-    action_id: ActionId = Field(alias="actionId")
-    histories: list[HistoryMessage] = Field(default_factory=list, max_length=10)
+    histories: list[HistoryMessage] = Field(
+        default_factory=list,
+        max_length=MAX_WORKSPACE_HISTORIES,
+    )
     artifacts: Artifacts
-
-
-class UserMessageWorkspaceRequest(WorkspaceRequestBase):
-    """Workspace request that appends one non-empty user message before execution."""
-
-    trigger: Literal[WorkspaceTrigger.USER_MESSAGE]
     message: str = Field(min_length=1, max_length=USER_MESSAGE_MAX_CHARS)
 
     @model_validator(mode="after")
-    def validate_user_message_state(self) -> "UserMessageWorkspaceRequest":
-        """Reserve one of the ten incoming message slots for the user text."""
-
-        if len(self.histories) > 9:
-            raise ValueError("user_message histories must contain at most 9 messages")
-        validate_workspace_state(self.histories, self.artifacts)
-        return self
-
-
-class QuickInsightActionWorkspaceRequest(WorkspaceRequestBase):
-    """Workspace request triggered by a deterministic Quick Insight Action."""
-
-    trigger: Literal[WorkspaceTrigger.QUICK_INSIGHT_ACTION]
-
-    @model_validator(mode="after")
-    def validate_quick_insight_action_state(self) -> "QuickInsightActionWorkspaceRequest":
-        """Validate the complete pre-existing state without appending a user message."""
+    def validate_workspace_request(self) -> "WorkspaceRequest":
+        """Validate canonical state and reserve the next user turn."""
 
         validate_workspace_state(self.histories, self.artifacts)
+        if count_user_turns(self.histories) >= MAX_WORKSPACE_TURNS:
+            raise ValueError("Workspace already contains 10 user turns")
         return self
-
-
-WorkspaceRequest = Annotated[
-    UserMessageWorkspaceRequest | QuickInsightActionWorkspaceRequest,
-    Field(discriminator="trigger"),
-]
 
 
 class ExecutionMeta(BaseModel):
@@ -368,9 +352,11 @@ ChatResult = Annotated[
 class QuickInsightResponse(BaseModel):
     """Quick Insight response with its stable extension protocol marker."""
 
+    model_config = ConfigDict(extra="forbid")
+
     request: QuickInsightRequest
     insight: Insight
-    actions: list[Action] = Field(default_factory=list)
+    shortcuts: list[PromptShortcut] = Field(default_factory=list)
     workspace: WorkspaceDescriptor
     meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
     protocol_version: Literal[CURRENT_EXTENSION_PROTOCOL_VERSION] = (
@@ -379,14 +365,13 @@ class QuickInsightResponse(BaseModel):
 
 
 class WorkspaceResponse(BaseModel):
-    """Protocol-v3 terminal Workspace response returned to the Extension."""
+    """Protocol-v4 terminal Workspace response returned to the Extension."""
 
     model_config = ConfigDict(extra="forbid")
 
     resource_url: str
-    selected_action_id: ActionId
     result_type: WorkspaceResultType
-    histories: list[HistoryMessage] = Field(max_length=11)
+    histories: list[HistoryMessage] = Field(max_length=MAX_WORKSPACE_HISTORIES)
     artifacts: Artifacts
     meta: ExecutionMeta = Field(default_factory=ExecutionMeta)
     protocol_version: Literal[CURRENT_EXTENSION_PROTOCOL_VERSION] = (
@@ -395,7 +380,7 @@ class WorkspaceResponse(BaseModel):
 
     @model_validator(mode="after")
     def validate_response_state(self) -> "WorkspaceResponse":
-        """Apply the same state invariants used for both incoming trigger variants."""
+        """Apply the same state invariants used for incoming Workspace state."""
 
         validate_workspace_state(self.histories, self.artifacts)
         return self

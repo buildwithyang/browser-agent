@@ -1,14 +1,15 @@
 import json
 from collections.abc import Callable
+from types import MappingProxyType
 
 from app.agents.base import AgentContext, AgentExecution, language_directive
 from app.modules.task.schema import (
-    ActionId,
     DetailsInsightCard,
     Insight,
     InsightItem,
     PageContext,
     QuickInsightRequest,
+    PromptShortcutId,
     ScoreInsightCard,
     TextInsightCard,
 )
@@ -28,20 +29,45 @@ QUICK_INSIGHT_SYSTEM_PROMPT = (
     + QUICK_INSIGHT_INSTRUCTION
 )
 
-WORKSPACE_ACTION_TITLES = {
-    "en": {
-        ActionId.ANALYZE: "Analyze",
-        ActionId.TAILOR_RESUME: "Tailor Resume",
-        ActionId.WRITE_COVER_LETTER: "Generate Cover Letter",
-        ActionId.ASK_MORE: "Ask More",
-    },
-    "zh": {
-        ActionId.ANALYZE: "分析岗位",
-        ActionId.TAILOR_RESUME: "定制简历",
-        ActionId.WRITE_COVER_LETTER: "撰写求职信",
-        ActionId.ASK_MORE: "继续提问",
-    },
-}
+PROMPT_SHORTCUT_CATALOGUES = MappingProxyType({
+    "en": (
+        (
+            PromptShortcutId.ANALYZE,
+            "Analyze",
+            'Analyze what this role actually values. Use a Markdown table with exactly two columns, "JD Requirement" and "Match", to compare each material requirement against my resume. After the table, summarize my strongest matches, core gaps, and whether it is worth applying, with a clear recommendation and reasons.',
+        ),
+        (
+            PromptShortcutId.TAILOR_RESUME,
+            "Tailor Resume",
+            "Compare the current job description with my resume. First identify the experiences worth emphasizing and the sections you plan to change. Do not generate a new resume yet; wait for my confirmation.",
+        ),
+        (
+            PromptShortcutId.WRITE_COVER_LETTER,
+            "Generate Cover Letter",
+            "Using the current job description and my resume, write a concise, specific cover letter without exaggeration. Emphasize only the experience most relevant to the role.",
+        ),
+        (PromptShortcutId.ASK_MORE, "Ask More", ""),
+    ),
+    "zh": (
+        (
+            PromptShortcutId.ANALYZE,
+            "分析岗位",
+            "请分析这个岗位真正看重的能力，并以 Markdown 表格逐项对比“JD 要求”和“匹配情况”。表格后总结我的匹配优势、核心差距，以及是否值得申请，并给出明确结论和理由。",
+        ),
+        (
+            PromptShortcutId.TAILOR_RESUME,
+            "定制简历",
+            "请结合当前 JD 和我的简历，先指出最值得强化的经历及你计划修改的部分。暂时不要生成新简历，等我确认后再生成。",
+        ),
+        (
+            PromptShortcutId.WRITE_COVER_LETTER,
+            "撰写求职信",
+            "请结合当前 JD 和我的简历，生成一封简洁、具体、不过度夸张的求职信，重点突出与岗位最相关的经历。",
+        ),
+        (PromptShortcutId.ASK_MORE, "继续提问", ""),
+    ),
+})
+"""Immutable ordered localized Prompt Shortcut definitions."""
 
 MAX_CV_CHARS = 15000
 # Real selected job descriptions are historically much longer than sparse accidental

@@ -2,25 +2,25 @@
 
 from app.agents.base import AgentContext, AgentExecution, QuickInsightAgent
 from app.modules.task.schema import (
-    Action,
-    ActionId,
     AgentName,
     Insight,
+    PromptShortcut,
+    PromptShortcutId,
     QuickInsightRequest,
 )
 from app.modules.task.service import TaskService
 
 
 class FakeAgent(QuickInsightAgent):
-    """Return deterministic Quick Insight content and Actions."""
+    """Return deterministic Quick Insight content and Prompt Shortcuts."""
 
     name = AgentName.SUMMARY_PAGE
     requires_resume = False
 
-    def available_actions(self, ctx: AgentContext) -> list[Action]:
-        """Declare the fake Agent's stable Quick Insight Action."""
+    def available_shortcuts(self, ctx: AgentContext) -> list[PromptShortcut]:
+        """Declare the fake Agent's stable Prompt Shortcut."""
 
-        return [Action(id=ActionId.ASK_MORE, title="Ask More")]
+        return [PromptShortcut(id=PromptShortcutId.ASK_MORE, title="Ask More", prompt="")]
 
     def quick_insight(self, ctx: AgentContext) -> AgentExecution[Insight]:
         """Return one typed Quick Insight execution."""
@@ -53,19 +53,21 @@ def test_quick_insight_returns_typed_insight_response() -> None:
         user_id=None,
     )
 
-    assert response.workspace.default_action_id == "ask_more"
+    assert response.workspace.model_dump() == {"resource_url": "https://example.com/"}
     assert response.insight.title == "Page Summary"
-    assert response.actions[0].id == "ask_more"
+    assert response.shortcuts[0].id == "ask_more"
     assert response.meta.input_chars == len("quick prompt")
-    assert response.protocol_version == 3
+    assert response.protocol_version == 4
 
 
 def test_quick_insight_uses_explicit_agent_operations() -> None:
-    """Read Actions from the dedicated QuickInsightAgent interface."""
+    """Read Prompt Shortcuts from the dedicated QuickInsightAgent interface."""
 
     response = service().quick_insight(
         QuickInsightRequest(url="https://example.com", pageText="Page"),
         user_id=None,
     )
 
-    assert response.actions == [Action(id=ActionId.ASK_MORE, title="Ask More")]
+    assert response.shortcuts == [
+        PromptShortcut(id=PromptShortcutId.ASK_MORE, title="Ask More", prompt="")
+    ]

@@ -22,10 +22,10 @@ from app.modules.auth import AuthService
 from app.modules.auth.repo import ExtensionTokenRepository
 from app.modules.auth.token_service import ExtensionTokenService
 from app.modules.task.schema import (
-    Action,
     AgentName,
     ChatResult,
     Insight,
+    PromptShortcut,
     ReplyResult,
 )
 from app.modules.task.service import TaskService
@@ -56,8 +56,8 @@ def _wire(monkeypatch, *, settings, token_service):
         name = AgentName.SUMMARY_PAGE
         requires_resume = False
 
-        def available_actions(self, ctx: AgentContext) -> list[Action]:
-            """Declare no actions for authentication boundary tests."""
+        def available_shortcuts(self, ctx: AgentContext) -> list[PromptShortcut]:
+            """Declare no shortcuts for authentication boundary tests."""
 
             return []
 
@@ -112,7 +112,7 @@ def test_require_auth_blocks_anonymous(monkeypatch, tmp_path):
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "3"},
+        headers={"X-Agent-Bridge-Protocol-Version": "4"},
         json={"url": "https://x", "pageText": "y"},
     )
     assert r.status_code == 401
@@ -127,7 +127,7 @@ def test_require_auth_allows_valid_bearer(monkeypatch, tmp_path):
         "/tasks/quick-insight",
         headers={
             "Authorization": f"Bearer {token}",
-                "X-Agent-Bridge-Protocol-Version": "3",
+                "X-Agent-Bridge-Protocol-Version": "4",
         },
         json={"url": "https://x", "pageText": "y"},
     )
@@ -140,7 +140,7 @@ def test_self_hosted_allows_anonymous(monkeypatch, tmp_path):
     client = TestClient(main.app)
     r = client.post(
         "/tasks/quick-insight",
-        headers={"X-Agent-Bridge-Protocol-Version": "3"},
+        headers={"X-Agent-Bridge-Protocol-Version": "4"},
         json={"url": "https://x", "pageText": "y"},
     )
     assert r.status_code == 200
@@ -161,14 +161,12 @@ def test_require_auth_allows_valid_bearer_workspace_stream(monkeypatch, tmp_path
         "/tasks/workspace",
         headers={
             "Authorization": f"Bearer {token}",
-            "X-Agent-Bridge-Protocol-Version": "3",
+            "X-Agent-Bridge-Protocol-Version": "4",
         },
         json={
-            "trigger": "user_message",
             "url": "https://example.com/article",
             "resourceUrl": "https://example.com/article",
             "operationId": "00000000-0000-0000-0000-000000000001",
-            "actionId": "ask_more",
             "histories": [],
             "artifacts": {"cv": None, "cover_letter": None},
             "message": "Question",
