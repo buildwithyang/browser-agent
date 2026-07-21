@@ -27,7 +27,7 @@ Gateway 根据页面类型和请求中的输出语言返回本地化 Prompt Shor
     {
       "id": "analyze",
       "title": "分析岗位",
-      "prompt": "请分析这个岗位真正看重的能力、我的匹配优势、核心差距，以及是否值得申请。请给出明确结论和理由。"
+      "prompt": "请分析这个岗位真正看重的能力，并以 Markdown 表格逐项对比“JD 要求”和“匹配情况”。表格后总结我的匹配优势、核心差距，以及是否值得申请，并给出明确结论和理由。"
     },
     {
       "id": "tailor_resume",
@@ -52,7 +52,7 @@ Gateway 根据页面类型和请求中的输出语言返回本地化 Prompt Shor
 Indeed 返回四个 Shortcut，普通网页只返回 `ask_more`。`lang=zh` 使用上述中文，`lang=en`
 使用语义一致的英文文案：
 
-- Analyze: `Analyze what this role actually values, my strongest matches, the most important gaps, and whether it is worth applying. Give a clear recommendation with reasons.`
+- Analyze: `Analyze what this role actually values. Use a Markdown table with exactly two columns, "JD Requirement" and "Match", to compare each material requirement against my resume. After the table, summarize my strongest matches, core gaps, and whether it is worth applying, with a clear recommendation and reasons.`
 - Tailor Resume: `Compare the current job description with my resume. First identify the experiences worth emphasizing and the sections you plan to change. Do not generate a new resume yet; wait for my confirmation.`
 - Cover Letter: `Using the current job description and my resume, write a concise, specific cover letter without exaggeration. Emphasize only the experience most relevant to the role.`
 - Ask More: empty string.
@@ -140,7 +140,8 @@ Shortcuts。只保证 v2 迁移；更早的 v1 legacy migration 删除。
 - Quick Insight 按页面和 zh/en 返回完整 Shortcuts；普通页面只有空 Prompt 的 Ask More。
 - 两个 UI 入口都只 prefill、不发送；Shortcut 替换现有输入，Ask More 清空输入。
 - 发送请求只携带最终 message；Planner 能完成 Analyze、先计划后生成 CV、直接生成或更新
-  Cover Letter、开放追问四条路径。
+  Cover Letter、开放追问四条路径；Analyze reply 使用且仅使用 `JD 要求 | 匹配情况` 两列
+  Markdown 表格完成逐项对比。
 - 第 10 个用户消息允许成功，第 11 个被前后端拒绝；pending、失败恢复、计数器、禁用状态和
   中英文上限提示正确。
 - v2 Workspace 可迁移到 v3，历史和 Artifact 不丢失且所有 Action 字段被移除。
@@ -149,4 +150,3 @@ Shortcuts。只保证 v2 迁移；更早的 v1 legacy migration 删除。
 这是协调发布：Gateway 升级到 v4 后，旧扩展立即收到更新提示；随后发布 Extension
 `0.3.0`。不提供 v3/v4 双协议窗口。同步更新用户 README、Task/Job Match 模块 README、
 共享 Workspace 与 streaming 设计文档中的旧 Action 和十条消息描述。
-
