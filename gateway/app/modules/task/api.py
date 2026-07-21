@@ -6,6 +6,7 @@ from typing import cast
 import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.types import Receive, Scope, Send
 
 from app.modules.auth.identity import resolve_user_id
@@ -105,7 +106,13 @@ async def create_workspace_task(
     service = get_task_service(request)
     user_id = _user_id(request)
     try:
-        prepared = service.prepare_workspace_stream(task, user_id=user_id)
+        # The repository and PDF adapters are synchronous; keep their request
+        # preparation work off the shared ASGI event loop.
+        prepared = await run_in_threadpool(
+            service.prepare_workspace_stream,
+            task,
+            user_id=user_id,
+        )
     except Exception as exc:
         raise _map_error(exc) from exc
 

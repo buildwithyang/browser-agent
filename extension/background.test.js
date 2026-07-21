@@ -178,6 +178,46 @@ function firstArtifactResponse() {
   };
 }
 
+/** Build one complete reply response for testing visible Markdown deltas. */
+function firstReplyResponse() {
+  const response = firstArtifactResponse();
+  return {
+    ...response,
+    result_type: "reply",
+    histories: [{ ...response.histories[0], attachments: [] }],
+    artifacts: { cv: null, cover_letter: null },
+  };
+}
+
+/** Emit one legal Artifact lifecycle through its completed terminal event. */
+function emitArtifactCompletion(stream, operationId, response, createdAt) {
+  stream.emit({
+    type: "started",
+    operation_id: operationId,
+    sequence: 0,
+    created_at: createdAt,
+  });
+  stream.emit({
+    type: "status",
+    operation_id: operationId,
+    sequence: 1,
+    stage: "generating_artifact",
+    artifact_type: "cover_letter",
+  });
+  stream.emit({
+    type: "status",
+    operation_id: operationId,
+    sequence: 2,
+    stage: "finalizing",
+  });
+  stream.emit({
+    type: "completed",
+    operation_id: operationId,
+    sequence: 3,
+    response,
+  });
+}
+
 test("next SEND carries the complete Artifact state returned by the prior response", async () => {
   assert.equal(
     typeof auth.buildUserMessageWorkspaceBody,
@@ -367,13 +407,19 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     created_at: "2026-07-20T10:00:00Z",
   });
   streams[0].emit({
-    type: "delta",
+    type: "status",
     operation_id: request.operationId,
     sequence: 1,
+    stage: "generating_reply",
+  });
+  streams[0].emit({
+    type: "delta",
+    operation_id: request.operationId,
+    sequence: 2,
     text: "Draft",
   });
   await waitFor(
-    () => runtimeMessages.filter((message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM").length === 2,
+    () => runtimeMessages.filter((message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM").length === 3,
     "Stream snapshots were not broadcast"
   );
 
@@ -387,10 +433,16 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   assert.equal(local.setCalls.length, 0, "delta must remain memory-only");
 
   streams[0].emit({
+    type: "status",
+    operation_id: request.operationId,
+    sequence: 3,
+    stage: "finalizing",
+  });
+  streams[0].emit({
     type: "completed",
     operation_id: request.operationId,
-    sequence: 2,
-    response: firstArtifactResponse(),
+    sequence: 4,
+    response: firstReplyResponse(),
   });
   streams[0].close();
   const completed = await send;
@@ -400,7 +452,10 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const snapshots = runtimeMessages
     .filter((message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM")
     .map((message) => message.snapshot);
-  assert.deepEqual(snapshots.map((snapshot) => snapshot.markdown), ["", "Draft", "Draft"]);
+  assert.deepEqual(
+    snapshots.map((snapshot) => snapshot.markdown),
+    ["", "", "Draft", "Draft", "Draft"]
+  );
 
   const writesAfterCompletion = local.setCalls.length;
   const failedSend = dispatchRuntime(runtimeOnMessage, {
@@ -418,15 +473,21 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     created_at: "2026-07-20T10:01:00Z",
   });
   streams[1].emit({
-    type: "delta",
+    type: "status",
     operation_id: failedRequest.operationId,
     sequence: 1,
+    stage: "generating_reply",
+  });
+  streams[1].emit({
+    type: "delta",
+    operation_id: failedRequest.operationId,
+    sequence: 2,
     text: "untrusted provider response",
   });
   streams[1].emit({
     type: "failed",
     operation_id: failedRequest.operationId,
-    sequence: 2,
+    sequence: 3,
     code: "model_error",
     message: "secret provider response and prompt",
     recoverable: true,
@@ -472,18 +533,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const replacementRequest = JSON.parse(fetchCalls[3].options.body);
   assert.equal(supersededRequest.operationId, replayedOperationId);
   assert.equal(replacementRequest.operationId, replayedOperationId);
-  streams[3].emit({
-    type: "started",
-    operation_id: replacementRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:02:01Z",
-  });
-  streams[3].emit({
-    type: "completed",
-    operation_id: replacementRequest.operationId,
-    sequence: 1,
-    response: firstArtifactResponse(),
-  });
+  emitArtifactCompletion(
+    streams[3],
+    replacementRequest.operationId,
+    firstArtifactResponse(),
+    "2026-07-20T10:02:01Z"
+  );
   streams[3].close();
   const replacement = await replacementSend;
   assert.equal(replacement.ok, true);
@@ -497,18 +552,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   });
   await waitFor(() => fetchCalls.length === 5, "Invalid-terminal fetch did not start");
   const invalidRequest = JSON.parse(fetchCalls[4].options.body);
-  streams[4].emit({
-    type: "started",
-    operation_id: invalidRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:03:00Z",
-  });
-  streams[4].emit({
-    type: "completed",
-    operation_id: invalidRequest.operationId,
-    sequence: 1,
-    response: { protocol_version: 3 },
-  });
+  emitArtifactCompletion(
+    streams[4],
+    invalidRequest.operationId,
+    { protocol_version: 3 },
+    "2026-07-20T10:03:00Z"
+  );
   streams[4].close();
   const invalidTerminal = await invalidTerminalSend;
   assert.equal(invalidTerminal.ok, false);
@@ -524,18 +573,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   });
   await waitFor(() => fetchCalls.length === 6, "Rejected-apply fetch did not start");
   const rejectedApplyRequest = JSON.parse(fetchCalls[5].options.body);
-  streams[5].emit({
-    type: "started",
-    operation_id: rejectedApplyRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:04:00Z",
-  });
-  streams[5].emit({
-    type: "completed",
-    operation_id: rejectedApplyRequest.operationId,
-    sequence: 1,
-    response: firstArtifactResponse(),
-  });
+  emitArtifactCompletion(
+    streams[5],
+    rejectedApplyRequest.operationId,
+    firstArtifactResponse(),
+    "2026-07-20T10:04:00Z"
+  );
   streams[5].close();
   const rejectedApply = await rejectedApplySend;
   assert.equal(rejectedApply.ok, false);
@@ -550,18 +593,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   });
   await waitFor(() => fetchCalls.length === 7, "Apply-recovery fetch did not start");
   const applyRecoveryRequest = JSON.parse(fetchCalls[6].options.body);
-  streams[6].emit({
-    type: "started",
-    operation_id: applyRecoveryRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:04:01Z",
-  });
-  streams[6].emit({
-    type: "completed",
-    operation_id: applyRecoveryRequest.operationId,
-    sequence: 1,
-    response: firstArtifactResponse(),
-  });
+  emitArtifactCompletion(
+    streams[6],
+    applyRecoveryRequest.operationId,
+    firstArtifactResponse(),
+    "2026-07-20T10:04:01Z"
+  );
   streams[6].close();
   const applyRecovery = await applyRecoverySend;
   assert.equal(applyRecovery.ok, true);
@@ -626,18 +663,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   });
   await waitFor(() => fetchCalls.length === 8, "Timeout recovery did not reach fetch");
   const timeoutRecoveryRequest = JSON.parse(fetchCalls[7].options.body);
-  streams[7].emit({
-    type: "started",
-    operation_id: timeoutRecoveryRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:05:00Z",
-  });
-  streams[7].emit({
-    type: "completed",
-    operation_id: timeoutRecoveryRequest.operationId,
-    sequence: 1,
-    response: firstArtifactResponse(),
-  });
+  emitArtifactCompletion(
+    streams[7],
+    timeoutRecoveryRequest.operationId,
+    firstArtifactResponse(),
+    "2026-07-20T10:05:00Z"
+  );
   streams[7].close();
   assert.equal((await timeoutRecoverySend).ok, true);
 
@@ -671,18 +702,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   assert.equal(hungContextResult.stale, true);
   await waitFor(() => fetchCalls.length === 9, "Replacement did not release pre-fetch queue");
   const replacementAfterHungRequest = JSON.parse(fetchCalls[8].options.body);
-  streams[8].emit({
-    type: "started",
-    operation_id: replacementAfterHungRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:06:00Z",
-  });
-  streams[8].emit({
-    type: "completed",
-    operation_id: replacementAfterHungRequest.operationId,
-    sequence: 1,
-    response: firstArtifactResponse(),
-  });
+  emitArtifactCompletion(
+    streams[8],
+    replacementAfterHungRequest.operationId,
+    firstArtifactResponse(),
+    "2026-07-20T10:06:00Z"
+  );
   streams[8].close();
   assert.equal((await replacementAfterHungSend).ok, true);
   replacementContext.resolve({
@@ -746,18 +771,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   });
   await waitFor(() => fetchCalls.length === 10, "Tab-close recovery did not reach fetch");
   const tabRecoveryRequest = JSON.parse(fetchCalls[9].options.body);
-  streams[9].emit({
-    type: "started",
-    operation_id: tabRecoveryRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:07:00Z",
-  });
-  streams[9].emit({
-    type: "completed",
-    operation_id: tabRecoveryRequest.operationId,
-    sequence: 1,
-    response: firstArtifactResponse(),
-  });
+  emitArtifactCompletion(
+    streams[9],
+    tabRecoveryRequest.operationId,
+    firstArtifactResponse(),
+    "2026-07-20T10:07:00Z"
+  );
   streams[9].close();
   assert.equal((await tabRecoverySend).ok, true);
 
@@ -814,18 +833,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   await waitFor(() => fetchCalls.length === fetchesBeforeCommit + 1, "Commit fetch did not start");
   const committingIndex = fetchesBeforeCommit;
   const committingRequest = JSON.parse(fetchCalls[committingIndex].options.body);
-  streams[committingIndex].emit({
-    type: "started",
-    operation_id: committingRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:08:00Z",
-  });
-  streams[committingIndex].emit({
-    type: "completed",
-    operation_id: committingRequest.operationId,
-    sequence: 1,
-    response: orderedOldResponse,
-  });
+  emitArtifactCompletion(
+    streams[committingIndex],
+    committingRequest.operationId,
+    orderedOldResponse,
+    "2026-07-20T10:08:00Z"
+  );
   streams[committingIndex].close();
   await waitFor(
     () => local.setStartedCalls.length === startedWritesBeforeCommit + 1,
@@ -865,18 +878,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const orderedReplacementRequest = JSON.parse(fetchCalls[replacementIndex].options.body);
   const orderedNewResponse = firstArtifactResponse();
   orderedNewResponse.histories[0].content = "Ordered replacement wins";
-  streams[replacementIndex].emit({
-    type: "started",
-    operation_id: orderedReplacementRequest.operationId,
-    sequence: 0,
-    created_at: "2026-07-20T10:08:01Z",
-  });
-  streams[replacementIndex].emit({
-    type: "completed",
-    operation_id: orderedReplacementRequest.operationId,
-    sequence: 1,
-    response: orderedNewResponse,
-  });
+  emitArtifactCompletion(
+    streams[replacementIndex],
+    orderedReplacementRequest.operationId,
+    orderedNewResponse,
+    "2026-07-20T10:08:01Z"
+  );
   streams[replacementIndex].close();
   assert.equal((await orderedReplacementSend).ok, true);
 

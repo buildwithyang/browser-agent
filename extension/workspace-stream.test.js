@@ -96,8 +96,9 @@ async function collect(response) {
 test("NDJSON parser preserves a Chinese code point split across byte chunks", async () => {
   const encoded = encodeEvents([
     started(),
-    { type: "delta", operation_id: OPERATION_ID, sequence: 1, text: "岗" },
-    failed(2),
+    { type: "status", operation_id: OPERATION_ID, sequence: 1, stage: "generating_reply" },
+    { type: "delta", operation_id: OPERATION_ID, sequence: 2, text: "岗" },
+    failed(3),
   ]);
   const chineseByte = encoded.indexOf(0xe5);
   const events = await collect(streamResponse([
@@ -105,7 +106,7 @@ test("NDJSON parser preserves a Chinese code point split across byte chunks", as
     encoded.slice(chineseByte + 1),
   ]));
 
-  assert.equal(events[1].text, "岗");
+  assert.equal(events.find((event) => event.type === "delta").text, "岗");
 });
 
 test("NDJSON parser handles multiple lines and one line split across chunks", async () => {
@@ -126,23 +127,27 @@ test("NDJSON parser handles multiple lines and one line split across chunks", as
 test("NDJSON parser validates a completed response through the canonical Workspace boundary", async () => {
   const events = await collect(streamResponse([encodeEvents([
     started(),
+    { type: "status", operation_id: OPERATION_ID, sequence: 1, stage: "generating_reply" },
+    { type: "status", operation_id: OPERATION_ID, sequence: 2, stage: "finalizing" },
     {
       type: "completed",
       operation_id: OPERATION_ID,
-      sequence: 1,
+      sequence: 3,
       response: workspaceResponse(),
     },
   ], { finalNewline: false })]));
 
-  assert.equal(events[1].response.protocol_version, 3);
+  assert.equal(events.find((event) => event.type === "completed").response.protocol_version, 3);
 
   await assert.rejects(
     collect(streamResponse([encodeEvents([
       started(),
+      { type: "status", operation_id: OPERATION_ID, sequence: 1, stage: "generating_reply" },
+      { type: "status", operation_id: OPERATION_ID, sequence: 2, stage: "finalizing" },
       {
         type: "completed",
         operation_id: OPERATION_ID,
-        sequence: 1,
+        sequence: 3,
         response: workspaceResponse({ protocol_version: 2 }),
       },
     ])])),
@@ -274,6 +279,32 @@ test("Workspace stream requires one operation identity and strictly increasing s
   );
 });
 
+test("Workspace stream rejects an Artifact delta before exposing its draft", async () => {
+  const seen = [];
+  await assert.rejects(async () => {
+    for await (const event of readWorkspaceEventStream(streamResponse([encodeEvents([
+      started(),
+      {
+        type: "status",
+        operation_id: OPERATION_ID,
+        sequence: 1,
+        stage: "generating_artifact",
+        artifact_type: "cv",
+      },
+      {
+        type: "delta",
+        operation_id: OPERATION_ID,
+        sequence: 2,
+        text: "# Private CV draft",
+      },
+      failed(3),
+    ])]))) {
+      seen.push(event.type);
+    }
+  }, /delta.*artifact|active mode/i);
+  assert.deepEqual(seen, ["started", "status"]);
+});
+
 test("Workspace stream rejects duplicate terminals and events after a terminal", async () => {
   await assert.rejects(
     collect(streamResponse([encodeEvents([started(), failed(1), failed(2)])])),
@@ -298,10 +329,12 @@ test("Workspace stream rejects invalid trailing JSON and a missing terminal", as
 test("trailing corruption never exposes a completed event as success", async () => {
   const prefix = encodeEvents([
     started(),
+    { type: "status", operation_id: OPERATION_ID, sequence: 1, stage: "generating_reply" },
+    { type: "status", operation_id: OPERATION_ID, sequence: 2, stage: "finalizing" },
     {
       type: "completed",
       operation_id: OPERATION_ID,
-      sequence: 1,
+      sequence: 3,
       response: workspaceResponse(),
     },
   ]);
@@ -316,7 +349,7 @@ test("trailing corruption never exposes a completed event as success", async () 
       seen.push(event.type);
     }
   }, /JSON|NDJSON/i);
-  assert.deepEqual(seen, ["started"]);
+  assert.deepEqual(seen, ["started", "status", "status"]);
 });
 
 test("Workspace stream validates protocol Header before HTTP status and media type", async () => {

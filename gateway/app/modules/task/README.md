@@ -92,6 +92,8 @@ Quick Insight Action 把 `trigger` 改为 `quick_insight_action`，不发送 `me
 - CV / Cover Letter 只发送 `generating_artifact` status；该 status 才带
   `artifact_type`。Artifact 草稿绝不作为 delta 暴露。
 - Artifact 只在成功的 `completed.response` 中以完整 draft 和 terminal Attachment 出现。
+- Gateway 与 Extension 都校验 `routing -> generating_* -> finalizing -> completed` 生命周期；
+  generation mode 不能切换或回退，Artifact mode 的任何 `delta` 都会使本轮失败。
 - `started`、`status`、`delta` 只是 transient 展示；只有完成终态进入 reducer 和持久化。
 - Extension 乐观显示用户消息，但不会提前写入 canonical history。
 - 模型失败、非法输出、断流、超时或客户端断开都不会 append histories 或更新 Artifact。
@@ -155,6 +157,7 @@ Gateway 自身返回 `X-Accel-Buffering: no`。Nginx 部署还必须对精确路
 - `repo.py`：`task_records` 持久化。
 - `router.py`：根据当前页面选择内部无状态 Agent，并规范化资源 URL。
 
-数据库启用时，Gateway 会记录既有 task record。部署方必须为可能包含页面、Prompt 或
-模型结果的字段配置访问控制、脱敏与保留周期；日志不得记录页面正文、完整 prompt、模型
-响应、bearer token 或 provider key。
+数据库启用时，Gateway 会记录既有 task record。失败、取消和断流记录默认只包含运营指标，
+不会保存 URL、标题、页面正文、Prompt 或模型结果；成功记录仍可能包含这些任务明细。
+部署方必须为成功明细配置访问控制、脱敏与保留周期；日志不得记录页面正文、完整 prompt、
+模型响应、bearer token 或 provider key。

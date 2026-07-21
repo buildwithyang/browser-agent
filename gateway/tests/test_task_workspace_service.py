@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime, timezone
 from uuid import UUID
@@ -15,6 +16,7 @@ from app.agents.base import (
     WorkspaceAgent,
     WorkspaceAgentContext,
 )
+from app.agents.job_match import JobMatchAgent
 from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus
 from app.modules.task.schema import (
     ActionId,
@@ -150,6 +152,29 @@ class InterruptedWorkspaceAgent(FakeWorkspaceAgent):
         yield AgentStatus(stage="generating_reply")
 
 
+class ArtifactDeltaWorkspaceAgent(FakeWorkspaceAgent):
+    """Violate the Artifact status-only contract with one visible draft delta."""
+
+    async def stream_chat(
+        self,
+        ctx: WorkspaceAgentContext,
+    ) -> AsyncIterator[AgentStatus | AgentDelta | AgentCompleted]:
+        """Emit an illegal Artifact draft before the terminal execution."""
+
+        self.calls.append(ctx)
+        yield AgentStatus(stage="generating_artifact", artifact_type=ArtifactType.CV)
+        yield AgentDelta(text="# Private CV draft")
+        yield AgentStatus(stage="finalizing")
+        yield AgentCompleted(
+            execution=AgentExecution(
+                content=self.result,  # type: ignore[arg-type]
+                raw_result="# Private CV draft",
+                prompt="resume prompt",
+                model="specialist-model",
+            )
+        )
+
+
 class RecordingRepository:
     """Minimal operational-metrics Repository fake."""
 
@@ -177,6 +202,22 @@ class FailingRepository(RecordingRepository):
         """Simulate a persistence error that must never enter application logs."""
 
         raise RuntimeError("PRIVATE resume and partial delta")
+
+
+class ThreadRecordingRepository(RecordingRepository):
+    """Record the worker thread used for stream terminal persistence."""
+
+    def __init__(self) -> None:
+        """Start without an observed append thread."""
+
+        super().__init__()
+        self.append_thread: int | None = None
+
+    def append(self, record: TaskRecordData) -> None:
+        """Capture the thread before storing the operational record."""
+
+        self.append_thread = threading.get_ident()
+        super().append(record)
 
 
 class FakeResumeService:
@@ -376,6 +417,50 @@ def test_workspace_reply_stream_reduces_only_at_completed() -> None:
     assert [record.status for record in repository.records] == ["completed"]
 
 
+def test_workspace_stream_persists_outside_the_event_loop() -> None:
+    """Offload synchronous terminal repository writes from the shared loop."""
+
+    repository = ThreadRecordingRepository()
+    service = _service(
+        FakeWorkspaceAgent(_reply("complete")),
+        uuid_values=(1, 2),
+        repository=repository,
+    )
+
+    async def collect_on_loop() -> int:
+        """Consume the stream and return the event-loop thread identity."""
+
+        loop_thread = threading.get_ident()
+        prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+        await _collect_events(service.stream_workspace(prepared))
+        return loop_thread
+
+    loop_thread = asyncio.run(collect_on_loop())
+
+    assert repository.append_thread is not None
+    assert repository.append_thread != loop_thread
+
+
+def test_anonymous_job_match_cv_is_resolved_before_started(tmp_path) -> None:
+    """Fail request preparation before streaming when the local CV is unavailable."""
+
+    missing_cv = tmp_path / "missing.pdf"
+    agent = JobMatchAgent(cv_path=missing_cv, model="fake-model")
+    service = TaskService(
+        agents={AgentName.JOB_MATCH: agent},
+        repository=None,
+        resume_service=None,
+        default_model="fake-model",
+    )
+    url = "https://ae.indeed.com/viewjob?jk=5b927211cdf9ea42"
+    request = _user_request(url=url, resource_url=url).model_copy(
+        update={"selected_text": "complete job description " * 60}
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing.pdf"):
+        service.prepare_workspace_stream(request, user_id=None)
+
+
 def test_workspace_stream_failure_never_reduces_or_emits_completed() -> None:
     """Convert a post-start Agent failure into one bounded failed terminal event."""
 
@@ -486,7 +571,13 @@ def test_workspace_stream_disconnect_closes_agent_without_partial_persistence() 
     repository = RecordingRepository()
     agent = CloseTrackingWorkspaceAgent(_reply("partial reply"))
     service = _service(agent, uuid_values=(), repository=repository)
-    request = _user_request()
+    request = _user_request().model_copy(
+        update={
+            "title": "Private title",
+            "page_text": "Private page body",
+            "selected_text": "Private selection",
+        }
+    )
     before = request.model_dump_json()
 
     async def disconnect() -> None:
@@ -503,8 +594,14 @@ def test_workspace_stream_disconnect_closes_agent_without_partial_persistence() 
     assert agent.stream_closed is True
     assert request.model_dump_json() == before
     assert [record.status for record in repository.records] == ["failed"]
-    assert repository.records[0].prompt == ""
-    assert repository.records[0].result == ""
+    record = repository.records[0]
+    assert (record.url, record.title, record.prompt, record.page_text, record.result) == (
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 def test_workspace_stream_close_after_started_records_one_interruption() -> None:
@@ -563,6 +660,25 @@ def _create(artifact_type: ArtifactType) -> CreateArtifactResult:
         title="Tailored CV" if artifact_type is ArtifactType.CV else "Cover Letter",
         draft=draft,
     )
+
+
+def test_workspace_stream_rejects_artifact_deltas_before_exposing_them() -> None:
+    """Enforce the Artifact status-only lifecycle at the Gateway boundary."""
+
+    repository = RecordingRepository()
+    service = _service(
+        ArtifactDeltaWorkspaceAgent(_create(ArtifactType.CV)),
+        uuid_values=(),
+        repository=repository,
+    )
+
+    prepared = service.prepare_workspace_stream(_user_request(), user_id="user-1")
+    events = asyncio.run(_collect_events(service.stream_workspace(prepared)))
+
+    assert [event.type for event in events] == ["started", "status", "failed"]
+    assert events[-1].type == "failed"
+    assert events[-1].code == "invalid_model_output"
+    assert [record.error for record in repository.records] == ["invalid_model_output"]
 
 
 def _update(artifact_type: ArtifactType) -> UpdateArtifactResult:

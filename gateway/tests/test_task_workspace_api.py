@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncIterator
 
+import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
 from starlette.requests import Request
@@ -221,8 +223,12 @@ def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None
     assert [record.status for record in repository.records] == ["completed"]
 
 
-def test_workspace_response_send_cancellation_closes_service_stream(monkeypatch) -> None:
-    """Close Service and Agent iterators when ASGI send cancels after status."""
+@pytest.mark.parametrize("cancel_event", ["status", "completed"])
+def test_workspace_response_send_cancellation_closes_service_stream(
+    monkeypatch,
+    cancel_event: str,
+) -> None:
+    """Commit only interruption metrics when any ASGI event send is cancelled."""
 
     repository = ApiRecordingRepository()
     agent = ApiCloseTrackingAgent()
@@ -272,20 +278,20 @@ def test_workspace_response_send_cancellation_closes_service_stream(monkeypatch)
         response = await create_workspace_task(task, request)
         sent_types: list[str] = []
 
-        async def cancel_on_status(message: Message) -> None:
-            """Cancel response delivery while Starlette is sending a status chunk."""
+        async def cancel_on_event(message: Message) -> None:
+            """Cancel response delivery while Starlette is sending the selected event."""
 
             body = message.get("body", b"")
             if message["type"] != "http.response.body" or not body:
                 return
             event_type = json.loads(bytes(body))["type"]
             sent_types.append(event_type)
-            if event_type == "status":
+            if event_type == cancel_event:
                 raise asyncio.CancelledError
 
         cancelled = False
         try:
-            await response(scope, receive, cancel_on_status)
+            await response(scope, receive, cancel_on_event)
         except asyncio.CancelledError:
             cancelled = True
         return (
@@ -298,7 +304,7 @@ def test_workspace_response_send_cancellation_closes_service_stream(monkeypatch)
     cancelled, close_calls, sent_types, errors = asyncio.run(execute_response())
 
     assert cancelled is True
-    assert sent_types == ("started", "status")
+    assert sent_types[-1] == cancel_event
     assert close_calls == 1
     assert errors == ("stream_interrupted",)
 
@@ -357,6 +363,81 @@ def test_workspace_maps_unexpected_preparation_failure_before_stream(monkeypatch
 
     assert response.status_code == 502
     assert response.json()["detail"] == "resume repository unavailable"
+
+
+def test_workspace_preparation_runs_outside_the_asgi_event_loop(monkeypatch) -> None:
+    """Offload synchronous rate-limit and CV preparation from the ASGI loop."""
+
+    class ThreadRecordingService:
+        """Record the worker used by the synchronous preparation boundary."""
+
+        def __init__(self) -> None:
+            """Start without an observed preparation thread."""
+
+            self.preparation_thread: int | None = None
+
+        def prepare_workspace_stream(
+            self,
+            task: object,
+            *,
+            user_id: str | None,
+        ) -> object:
+            """Capture the thread and return an opaque prepared request."""
+
+            self.preparation_thread = threading.get_ident()
+            return object()
+
+        async def stream_workspace(self, prepared: object) -> AsyncIterator[object]:
+            """Expose an unused async iterator required by the response boundary."""
+
+            if False:  # pragma: no cover - response body is not consumed here.
+                yield prepared
+
+    service = ThreadRecordingService()
+    monkeypatch.setattr(main.app.state, "task_service", service, raising=False)
+    monkeypatch.setattr(
+        main.app.state,
+        "settings",
+        type("Settings", (), {"require_auth": False})(),
+        raising=False,
+    )
+    monkeypatch.setattr(main.app.state, "auth_service", None, raising=False)
+    monkeypatch.setattr(main.app.state, "extension_token_service", None, raising=False)
+
+    async def create_response() -> int:
+        """Create the response and return the event-loop thread identity."""
+
+        loop_thread = threading.get_ident()
+        scope: Scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "https",
+            "path": "/tasks/workspace",
+            "raw_path": b"/tasks/workspace",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 443),
+            "app": main.app,
+        }
+
+        async def receive() -> Message:
+            """Return a disconnected marker if Request probes the empty body."""
+
+            return {"type": "http.disconnect"}
+
+        request = Request(scope, receive)
+        task = UserMessageWorkspaceRequest.model_validate(_payload())
+        await create_workspace_task(task, request)
+        return loop_thread
+
+    loop_thread = asyncio.run(create_response())
+
+    assert service.preparation_thread is not None
+    assert service.preparation_thread != loop_thread
 
 
 def test_quick_insight_rejects_invalid_url_before_agent_execution(monkeypatch) -> None:

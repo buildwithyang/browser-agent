@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Callable, Generic, NoReturn, TypeVar
 
+import anyio
 from pydantic import BaseModel, TypeAdapter
 
 from app.agents.base import (
@@ -17,6 +18,7 @@ from app.agents.base import (
     StreamingWorkspaceAgent,
     WorkspaceAgent,
     WorkspaceAgentContext,
+    WorkspaceContextPreparer,
 )
 from app.agents.stream import (
     AgentCompleted,
@@ -58,6 +60,7 @@ from app.modules.task.stream_schema import (
     WorkspaceStartedEvent,
     WorkspaceStatusEvent,
     WorkspaceStreamEvent,
+    WorkspaceStreamStage,
 )
 
 logger = logging.getLogger("agent_bridge")
@@ -100,6 +103,79 @@ class PreparedWorkspaceStream:
     context: WorkspaceAgentContext
     user_id: str | None
     started_at: datetime
+
+
+class _AgentStreamContractError(ValueError):
+    """Raised when an Agent violates the Workspace stream lifecycle."""
+
+
+@dataclass
+class _AgentStreamLifecycle:
+    """Validate legal Agent progress using an explicit per-request state machine."""
+
+    routing_seen: bool = False
+    generation_stage: WorkspaceStreamStage | None = None
+    artifact_type: ArtifactType | None = None
+    finalizing: bool = False
+
+    def accept_status(self, event: AgentStatus) -> None:
+        """Advance one legal status without allowing regressions or mode changes."""
+
+        try:
+            stage = WorkspaceStreamStage(event.stage)
+        except ValueError as exc:
+            raise _AgentStreamContractError("Agent emitted an unknown status") from exc
+
+        if stage is WorkspaceStreamStage.ROUTING:
+            if self.routing_seen or self.generation_stage is not None or self.finalizing:
+                raise _AgentStreamContractError("Agent routing status is out of order")
+            if event.artifact_type is not None:
+                raise _AgentStreamContractError("Agent routing status has artifact metadata")
+            self.routing_seen = True
+            return
+
+        if stage in {
+            WorkspaceStreamStage.GENERATING_REPLY,
+            WorkspaceStreamStage.GENERATING_ARTIFACT,
+        }:
+            if self.generation_stage is not None or self.finalizing:
+                raise _AgentStreamContractError("Agent generation status is out of order")
+            is_artifact = stage is WorkspaceStreamStage.GENERATING_ARTIFACT
+            if is_artifact != (event.artifact_type is not None):
+                raise _AgentStreamContractError("Agent generation metadata is invalid")
+            self.generation_stage = stage
+            self.artifact_type = event.artifact_type
+            return
+
+        if self.generation_stage is None or self.finalizing:
+            raise _AgentStreamContractError("Agent finalizing status is out of order")
+        if event.artifact_type is not None:
+            raise _AgentStreamContractError("Agent finalizing status has artifact metadata")
+        self.finalizing = True
+
+    def accept_delta(self) -> None:
+        """Allow visible Markdown only during ordinary reply generation."""
+
+        if (
+            self.generation_stage is not WorkspaceStreamStage.GENERATING_REPLY
+            or self.finalizing
+        ):
+            raise _AgentStreamContractError("Agent delta is invalid for the active mode")
+
+    def accept_completed(self, execution: AgentExecution[ChatResult]) -> None:
+        """Cross-check terminal result type against the selected generation mode."""
+
+        if not self.finalizing:
+            raise _AgentStreamContractError("Agent completed before finalizing")
+        result = execution.content
+        if self.generation_stage is WorkspaceStreamStage.GENERATING_REPLY:
+            if not isinstance(result, ReplyResult):
+                raise _AgentStreamContractError("Reply stream returned an Artifact")
+            return
+        if not isinstance(result, CreateArtifactResult | UpdateArtifactResult):
+            raise _AgentStreamContractError("Artifact stream returned a reply")
+        if result.artifact_type is not self.artifact_type:
+            raise _AgentStreamContractError("Artifact stream changed Artifact type")
 
 
 def _artifact_for_type(
@@ -400,12 +476,17 @@ class TaskService:
             raise ValueError(f"Agent does not support Workspace streaming: {agent_name}")
         self._enforce_rate_limit(user_id)
         resume_text = self._resolve_cv_text(user_id) if agent.requires_resume else None
+        context = self._prepare_workspace_context(
+            request,
+            agent=agent,
+            resume_text=resume_text,
+        )
         return PreparedWorkspaceStream(
             request=request,
             resource_url=resource_url,
             agent_name=agent_name,
             agent=agent,
-            context=WorkspaceAgentContext(request=request, resume_text=resume_text),
+            context=context,
             user_id=user_id,
             started_at=datetime.now(timezone.utc),
         )
@@ -422,16 +503,18 @@ class TaskService:
         sequence = 0
         t0 = self._perf_counter()
         terminal_recorded = False
+        lifecycle = _AgentStreamLifecycle()
 
         def elapsed_ms() -> int:
             """Return elapsed stream time in whole milliseconds."""
 
             return int((self._perf_counter() - t0) * 1000)
 
-        def persist_failure(code: str, duration_ms: int) -> None:
-            """Persist bounded failure metrics without partial output or private errors."""
+        async def persist_failure(code: str, duration_ms: int) -> None:
+            """Persist bounded failure metrics without blocking the ASGI event loop."""
 
-            self._persist(
+            await anyio.to_thread.run_sync(
+                self._persist,
                 record_id.hex,
                 request,
                 prepared.agent_name,
@@ -463,6 +546,7 @@ class TaskService:
                 # Deltas remain transient; only AgentCompleted may enter the reducer.
                 async for event in owned_events:
                     if isinstance(event, AgentStatus):
+                        lifecycle.accept_status(event)
                         yield WorkspaceStatusEvent(
                             operation_id=operation_id,
                             sequence=sequence,
@@ -472,6 +556,7 @@ class TaskService:
                         sequence += 1
                         continue
                     if isinstance(event, AgentDelta):
+                        lifecycle.accept_delta()
                         yield WorkspaceDeltaEvent(
                             operation_id=operation_id,
                             sequence=sequence,
@@ -481,6 +566,7 @@ class TaskService:
                         continue
                     if not isinstance(event, AgentCompleted):
                         raise TypeError("Workspace Agent yielded an unsupported event")
+                    lifecycle.accept_completed(event.execution)
 
                     # Model output validation is distinct from Gateway-owned finalization.
                     try:
@@ -490,7 +576,7 @@ class TaskService:
                         )
                     except (ValueError, TypeError):
                         duration_ms = elapsed_ms()
-                        persist_failure("invalid_model_output", duration_ms)
+                        await persist_failure("invalid_model_output", duration_ms)
                         terminal_recorded = True
                         yield WorkspaceFailedEvent(
                             operation_id=operation_id,
@@ -536,7 +622,7 @@ class TaskService:
                         )
                     except Exception:
                         duration_ms = elapsed_ms()
-                        persist_failure("internal_error", duration_ms)
+                        await persist_failure("internal_error", duration_ms)
                         terminal_recorded = True
                         yield WorkspaceFailedEvent(
                             operation_id=operation_id,
@@ -555,23 +641,45 @@ class TaskService:
                         execution=execution,
                         meta=meta,
                     )
-                    self._complete_staged_agent_operation(outcome)
-                    terminal_recorded = True
                     yield WorkspaceCompletedEvent(
                         operation_id=operation_id,
                         sequence=sequence,
                         response=response,
                     )
+                    # Resuming after the terminal yield is the ASGI boundary's
+                    # acknowledgement that sending the completed chunk did not cancel.
+                    terminal_recorded = True
+                    await anyio.to_thread.run_sync(
+                        self._complete_staged_agent_operation,
+                        outcome,
+                    )
                     return
 
             duration_ms = elapsed_ms()
-            persist_failure("stream_interrupted", duration_ms)
+            await persist_failure("stream_interrupted", duration_ms)
             terminal_recorded = True
             yield WorkspaceFailedEvent(
                 operation_id=operation_id,
                 sequence=sequence,
                 code="stream_interrupted",
                 message="Workspace stream ended before completion.",
+                recoverable=True,
+            )
+        except _AgentStreamContractError:
+            if terminal_recorded:
+                logger.warning(
+                    "workspace stream contract cleanup failed agent=%s",
+                    prepared.agent_name,
+                )
+                return
+            duration_ms = elapsed_ms()
+            await persist_failure("invalid_model_output", duration_ms)
+            terminal_recorded = True
+            yield WorkspaceFailedEvent(
+                operation_id=operation_id,
+                sequence=sequence,
+                code="invalid_model_output",
+                message="Workspace model output was invalid.",
                 recoverable=True,
             )
         except Exception:
@@ -582,7 +690,7 @@ class TaskService:
                 )
                 return
             duration_ms = elapsed_ms()
-            persist_failure("model_error", duration_ms)
+            await persist_failure("model_error", duration_ms)
             terminal_recorded = True
             yield WorkspaceFailedEvent(
                 operation_id=operation_id,
@@ -594,7 +702,7 @@ class TaskService:
         finally:
             # Client disconnect closes this generator; record no partial text or Artifact.
             if not terminal_recorded:
-                persist_failure("stream_interrupted", elapsed_ms())
+                await persist_failure("stream_interrupted", elapsed_ms())
 
     def _resolve_agent(
         self,
@@ -607,6 +715,20 @@ class TaskService:
         if agent is None:
             raise ValueError(f"Unsupported agent: {routed}")
         return routed, agent
+
+    @staticmethod
+    def _prepare_workspace_context(
+        request: WorkspaceRequest,
+        *,
+        agent: RegisteredAgent,
+        resume_text: str | None,
+    ) -> WorkspaceAgentContext:
+        """Resolve optional Agent-owned dependencies before a Workspace operation starts."""
+
+        context = WorkspaceAgentContext(request=request, resume_text=resume_text)
+        if isinstance(agent, WorkspaceContextPreparer):
+            return agent.prepare_workspace_context(context)
+        return context
 
     def _execute_agent(
         self,
@@ -648,7 +770,11 @@ class TaskService:
         logger.info("task received agent=%s url=%s", agent_name, request.url)
 
         resume_text = self._resolve_cv_text(user_id) if agent.requires_resume else None
-        ctx = WorkspaceAgentContext(request=request, resume_text=resume_text)
+        ctx = self._prepare_workspace_context(
+            request,
+            agent=agent,
+            resume_text=resume_text,
+        )
         outcome = self._stage_agent_operation(
             request,
             agent_name=agent_name,
@@ -719,7 +845,6 @@ class TaskService:
             self._persist(
                 rid.hex, request, agent_name, user_id, model, "failed",
                 len(prompt), 0, duration_ms, str(exc)[:512],
-                prompt=prompt, result="",
             )
             logger.exception(
                 "task failed agent=%s input=%.1fk duration_ms=%d",
@@ -748,6 +873,7 @@ class TaskService:
             "",
             prompt=execution.prompt,
             result=execution.raw_result,
+            include_private_details=True,
         )
         logger.info(
             "task completed agent=%s model=%s input=%.1fk duration_ms=%d chars=%d",
@@ -777,8 +903,6 @@ class TaskService:
             0,
             outcome.meta.duration_ms,
             str(exc)[:512],
-            prompt=execution.prompt,
-            result="",
         )
         logger.exception(
             "task failed agent=%s input=%.1fk duration_ms=%d",
@@ -835,18 +959,23 @@ class TaskService:
         *,
         prompt: str = "",
         result: str = "",
+        include_private_details: bool = False,
     ) -> None:
-        """Persist one operational task record without failing the user response."""
+        """Persist metrics and only explicitly requested private task details."""
 
         if self._repository is None:
             return
-        detail = {
-            "url": task.url,
-            "title": task.title,
-            "prompt": prompt,
-            "page_text": task.page_text,
-            "result": result,
-        }
+        detail = (
+            {
+                "url": task.url,
+                "title": task.title,
+                "prompt": prompt,
+                "page_text": task.page_text,
+                "result": result,
+            }
+            if include_private_details
+            else {}
+        )
         try:
             self._repository.append(
                 TaskRecordData(

@@ -679,7 +679,8 @@ def test_anonymous_workspace_resolves_local_cv_per_request(
     )
     monkeypatch.setattr(agent, "_read_cv", lambda: "# Anonymous Local CV")
 
-    asyncio.run(_collect_events(agent.stream_chat(_context(resume_text=None))))
+    prepared = agent.prepare_workspace_context(_context(resume_text=None))
+    asyncio.run(_collect_events(agent.stream_chat(prepared)))
 
     called_context = specialists[SpecialistId.GENERAL_QA].calls[0][0]
     assert called_context.resume_text == "# Anonymous Local CV"

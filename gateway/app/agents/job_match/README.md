@@ -12,7 +12,9 @@ Artifact 版本、UUID、时间戳与持久化仍由 `modules/task` 管理。
 - `handle_chat()` 只保留给同步调用边界，内部消费同一 stream，不维护第二套生成逻辑。
 
 Agent 不缓存用户 CV、页面正文、histories 或 artifacts。认证用户的生效 CV 由
-`TaskService` 按请求注入；匿名自部署每次从 `AGENT_BRIDGE_CV_PATH` 读取。
+`TaskService` 按请求注入；匿名自部署通过可选 `WorkspaceContextPreparer` 在 `started`
+之前从 `AGENT_BRIDGE_CV_PATH` 读取。缺失或不可解析的本地 PDF 因此返回普通 HTTP 错误，
+不会先建立一个必然失败的 Workspace stream。
 
 ## 结构
 

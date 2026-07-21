@@ -189,6 +189,85 @@ async function assertGatewayStreamResponse(response) {
   );
 }
 
+/** Validate one response stream using the protocol-v3 lifecycle state machine. */
+class WorkspaceStreamLifecycle {
+  constructor() {
+    /** Track whether the optional routing stage was already observed. */
+    this.routingSeen = false;
+    /** Track the single active generation mode for delta and terminal validation. */
+    this.generationStage = null;
+    /** Track the Artifact type selected by an Artifact generation stage. */
+    this.artifactType = null;
+    /** Track whether generation advanced to the required finalizing stage. */
+    this.finalizing = false;
+  }
+
+  /** Accept one validated event or reject a cross-event lifecycle violation. */
+  accept(event) {
+    if (event.type === "started" || event.type === "failed") return;
+    if (event.type === "status") {
+      this.#acceptStatus(event);
+      return;
+    }
+    if (event.type === "delta") {
+      requireStreamSchema(
+        this.generationStage === "generating_reply" && !this.finalizing,
+        "Workspace delta is invalid for the active mode"
+      );
+      return;
+    }
+    this.#acceptCompleted(event);
+  }
+
+  /** Advance through routing, one generation mode, and finalizing exactly once. */
+  #acceptStatus(event) {
+    if (event.stage === "routing") {
+      requireStreamSchema(
+        !this.routingSeen && this.generationStage === null && !this.finalizing,
+        "Workspace routing status is out of order"
+      );
+      this.routingSeen = true;
+      return;
+    }
+    if (event.stage === "generating_reply" || event.stage === "generating_artifact") {
+      requireStreamSchema(
+        this.generationStage === null && !this.finalizing,
+        "Workspace generation status is out of order"
+      );
+      this.generationStage = event.stage;
+      this.artifactType = event.artifact_type ?? null;
+      return;
+    }
+    requireStreamSchema(
+      this.generationStage !== null && !this.finalizing,
+      "Workspace finalizing status is out of order"
+    );
+    this.finalizing = true;
+  }
+
+  /** Cross-check the completed result and terminal Attachment against generation mode. */
+  #acceptCompleted(event) {
+    requireStreamSchema(this.finalizing, "Workspace completed before finalizing");
+    const response = event.response;
+    if (this.generationStage === "generating_reply") {
+      requireStreamSchema(
+        response.result_type === "reply",
+        "Workspace reply stream returned an Artifact result"
+      );
+      return;
+    }
+    requireStreamSchema(
+      response.result_type === "create_artifact" || response.result_type === "update_artifact",
+      "Workspace Artifact stream returned a reply result"
+    );
+    const terminalMessage = response.histories.at(-1);
+    requireStreamSchema(
+      terminalMessage?.attachments?.some((item) => item.type === this.artifactType),
+      "Workspace Artifact result does not match the active Artifact type"
+    );
+  }
+}
+
 /** Parse, validate, and yield one strict incremental Workspace NDJSON event stream. */
 export async function* readWorkspaceEventStream(response) {
   await assertGatewayStreamResponse(response);
@@ -200,6 +279,7 @@ export async function* readWorkspaceEventStream(response) {
   let terminalSeen = false;
   let terminalEvent = null;
   let readCompleted = false;
+  const lifecycle = new WorkspaceStreamLifecycle();
 
   try {
     while (true) {
@@ -230,6 +310,7 @@ export async function* readWorkspaceEventStream(response) {
           requireStreamSchema(event.type !== "started", "Workspace stream may start only once");
         }
         previousSequence = event.sequence;
+        lifecycle.accept(event);
         terminalSeen = event.type === "completed" || event.type === "failed";
         if (terminalSeen) {
           // Hold terminal success until EOF proves no trailing corruption or extra events exist.

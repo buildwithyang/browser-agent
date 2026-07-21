@@ -324,8 +324,9 @@ the existing `ReplyResult` shape. It does not use `ChatPlanner`.
 6. Allocate Message/Attachment/Artifact identity.
 7. Run the existing Workspace reducer.
 8. Validate the full `WorkspaceResponse`.
-9. Persist one completed task record.
-10. Emit `completed`.
+9. Stage one `completed` event without committing the completed task record.
+10. Let the API send the terminal chunk.
+11. After the async generator resumes, persist one completed operational record.
 
 An exception after `started` persists a failed operational record, emits one bounded `failed`
 event, and never runs the reducer. Individual deltas are never persisted or logged.
@@ -336,8 +337,10 @@ event, and never runs the reducer. Individual deltas are never persisted or logg
 and returns a Starlette `StreamingResponse`. Business generation, event construction, and metrics
 remain in the service/Agent layers.
 
-The API observes client disconnects and closes the OpenAI stream. A disconnected request cannot
-emit `completed` or persist a successful transition.
+The API observes client disconnects and closes the OpenAI stream. Completed metrics are committed
+only after the terminal yield resumes, which is the ASGI acknowledgement that sending that chunk
+did not cancel. A disconnected request therefore cannot persist a successful transition before
+terminal delivery; it records bounded interruption metrics instead.
 
 ## 7. Extension architecture
 

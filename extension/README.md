@@ -69,6 +69,11 @@ agent-bridge:workspace:v2:<owner>:<resourceUrl>
 - `completed`：携带完整 canonical `response`。
 - `failed`：终止本轮，不携带 next state。
 
+Parser 还维护独立生命周期状态机：只接受可选 `routing`、一个
+`generating_reply | generating_artifact`、`finalizing` 和终态的单向序列，并将终态
+`result_type` / Attachment 类型与 generation mode 交叉校验。即使 Gateway 回归输出非法
+Artifact delta，Extension 也不会渲染或持久化该 draft。
+
 只有完整 stream 通过 UTF-8、NDJSON、事件 schema、顺序、终态和 protocol 校验后，
 Extension 才把 `completed.response` 交给 `applyWorkspaceResponse()`。写入完成前 keyed queue
 不会释放；写入完成后 Side Panel 重新加载 canonical history。刷新 Side Panel 时，成功

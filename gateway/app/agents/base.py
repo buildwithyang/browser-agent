@@ -163,6 +163,19 @@ class StreamingWorkspaceAgent(Protocol):
         ...
 
 
+@runtime_checkable
+class WorkspaceContextPreparer(Protocol):
+    """Optional interface for resolving Agent-owned dependencies before streaming."""
+
+    def prepare_workspace_context(
+        self,
+        context: WorkspaceAgentContext,
+    ) -> WorkspaceAgentContext:
+        """Return a complete request context or raise before ``started`` is emitted."""
+
+        ...
+
+
 class RegisteredAgent(
     QuickInsightAgent,
     WorkspaceAgent,

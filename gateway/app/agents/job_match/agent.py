@@ -168,14 +168,30 @@ class JobMatchAgent(
         """Adapt the public immutable Agent context to the job domain context."""
 
         request = context.request
+        resume_text = context.resume_text
+        if not resume_text or not resume_text.strip():
+            raise JobMatchOrchestrationError(
+                "Job Match Workspace context is missing resolved resume text"
+            )
         return JobChatContext(
             trigger=request.trigger,
             request=request,
-            resume_text=self._resolve_resume_text(context.resume_text),
+            resume_text=resume_text,
             histories=tuple(request.histories),
             artifacts=request.artifacts,
             selected_action=request.action_id,
             current_message=getattr(request, "message", None),
+        )
+
+    def prepare_workspace_context(
+        self,
+        context: WorkspaceAgentContext,
+    ) -> WorkspaceAgentContext:
+        """Resolve the authenticated or local fallback CV before streaming starts."""
+
+        return WorkspaceAgentContext(
+            request=context.request,
+            resume_text=self._resolve_resume_text(context.resume_text),
         )
 
     async def _select_plan(self, context: JobChatContext) -> ChatPlan:
