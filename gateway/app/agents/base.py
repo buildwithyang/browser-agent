@@ -60,7 +60,7 @@ def format_workspace_context(
 
 
 def _format_artifacts(artifacts: Artifacts) -> list[str]:
-    """Render the complete v2 Artifact state in a stable, explicit prompt form."""
+    """Render the complete current Artifact state in a stable prompt form."""
 
     lines: list[str] = []
     for label, artifact in (("CV", artifacts.cv), ("Cover letter", artifacts.cover_letter)):
@@ -93,7 +93,7 @@ class AgentContext:
 
 @dataclass(frozen=True)
 class WorkspaceAgentContext:
-    """Immutable request-scoped dependencies for one v2 Workspace chat transition."""
+    """Immutable request-scoped dependencies for one v4 Workspace transition."""
 
     request: WorkspaceRequest
     resume_text: str | None = None
@@ -129,7 +129,7 @@ class QuickInsightAgent(Protocol):
 
 @runtime_checkable
 class WorkspaceAgent(Protocol):
-    """Explicit interface for one stateless Workspace v2 chat transition."""
+    """Explicit interface for one stateless Workspace v4 chat transition."""
 
     name: AgentName
     requires_resume: bool

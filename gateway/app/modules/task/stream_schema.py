@@ -1,4 +1,4 @@
-"""Strict protocol-v3 NDJSON event contracts for Workspace streaming."""
+"""Strict protocol-v4 NDJSON event contracts for Workspace streaming."""
 
 from __future__ import annotations
 

@@ -135,7 +135,11 @@ def test_resume_advice_message_can_select_reply_mode() -> None:
                     HistoryMessage(
                         role="user",
                         content="Maybe write a cover letter later.",
-                    )
+                    ),
+                    HistoryMessage(
+                        role="assistant",
+                        content="We can decide after reviewing your experience.",
+                    ),
                 ],
             )
         )

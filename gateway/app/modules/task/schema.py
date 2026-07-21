@@ -294,8 +294,14 @@ class WorkspaceRequest(PageContext):
         """Validate canonical state and reserve the next user turn."""
 
         validate_workspace_state(self.histories, self.artifacts)
-        if count_user_turns(self.histories) >= MAX_WORKSPACE_TURNS:
+        user_turns = count_user_turns(self.histories)
+        if user_turns >= MAX_WORKSPACE_TURNS:
             raise ValueError("Workspace already contains 10 user turns")
+        assistant_turns = len(self.histories) - user_turns
+        if not user_turns <= assistant_turns <= user_turns + 11:
+            raise ValueError(
+                "Workspace history role balance must satisfy U <= A <= U + 11"
+            )
         return self
 
 

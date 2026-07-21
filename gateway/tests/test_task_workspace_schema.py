@@ -112,19 +112,47 @@ def test_workspace_allows_tenth_user_turn_but_rejects_eleventh() -> None:
         )
 
 
-def test_workspace_accepts_migrated_history_capacity_but_rejects_over_31() -> None:
-    migrated = [HistoryMessage(role="assistant", content=f"legacy-{index}") for index in range(31)]
-    assert WorkspaceRequest.model_validate(
-        {**_request_payload(), "histories": [item.model_dump() for item in migrated]}
+def _role_histories(*, users: int, assistants: int) -> list[HistoryMessage]:
+    """Build a canonical-role history collection for migrated-state bounds."""
+
+    return [
+        *[HistoryMessage(role="user", content=f"user-{index}") for index in range(users)],
+        *[
+            HistoryMessage(role="assistant", content=f"assistant-{index}")
+            for index in range(assistants)
+        ],
+    ]
+
+
+def test_workspace_accepts_maximum_valid_migrated_request_state() -> None:
+    """Reserve two response slots after nine v4 turns and eleven legacy replies."""
+
+    histories = _role_histories(users=9, assistants=20)
+
+    request = WorkspaceRequest.model_validate(
+        {**_request_payload(), "histories": [item.model_dump() for item in histories]}
     )
-    with pytest.raises(ValidationError, match="histories"):
+
+    assert len(request.histories) == 29
+
+
+@pytest.mark.parametrize(
+    ("users", "assistants"),
+    [(9, 21), (2, 1), (0, 31)],
+)
+def test_workspace_rejects_invalid_migrated_role_balance(
+    users: int,
+    assistants: int,
+) -> None:
+    """Reject surplus Assistants, missing replies, and Assistant-only capacity abuse."""
+
+    histories = _role_histories(users=users, assistants=assistants)
+
+    with pytest.raises(ValidationError, match="role balance"):
         WorkspaceRequest.model_validate(
             {
                 **_request_payload(),
-                "histories": [
-                    item.model_dump()
-                    for item in [*migrated, HistoryMessage(role="assistant", content="overflow")]
-                ],
+                "histories": [item.model_dump() for item in histories],
             }
         )
 

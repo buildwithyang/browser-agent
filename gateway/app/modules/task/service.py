@@ -242,6 +242,7 @@ def _reduce_workspace_state(
     """Return one complete next state without mutating the validated prior state."""
 
     histories = list(request.histories)
+    # Append the accepted current user send to the canonical timeline.
     histories.append(
         HistoryMessage(
             id=identity.user_message_id,
@@ -251,6 +252,7 @@ def _reduce_workspace_state(
         )
     )
 
+    # Reduce any complete Artifact result into the latest immutable snapshot.
     artifacts = request.artifacts
     attachment: Attachment | None = None
     if isinstance(result, CreateArtifactResult | UpdateArtifactResult):
@@ -292,6 +294,7 @@ def _reduce_workspace_state(
             ),
         )
 
+    # Append the Assistant reply and its optional terminal Attachment last.
     histories.append(
         HistoryMessage(
             id=identity.assistant_message_id,
