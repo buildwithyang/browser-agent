@@ -84,6 +84,7 @@ function pageContextBody(payload = {}) {
     selectedText: typeof payload.selectedText === "string" ? payload.selectedText : "",
     pageText: typeof payload.pageText === "string" ? payload.pageText : "",
     imageText: typeof payload.imageText === "string" ? payload.imageText : "",
+    intent: typeof payload.intent === "string" ? payload.intent : "Summarize this page.",
   };
 }
 
@@ -92,7 +93,7 @@ export function buildQuickInsightBody(payload, lang) {
   return { ...pageContextBody(payload), lang };
 }
 
-/** Copy only the two fixed storage-schema-v2 Artifact slots. */
+/** Copy only the two fixed Workspace Artifact slots. */
 function artifactBody(artifacts) {
   const source = artifacts && typeof artifacts === "object" ? artifacts : {};
   return {
@@ -103,26 +104,21 @@ function artifactBody(artifacts) {
 
 /** Build one stateless Workspace transition from fresh page context and local state. */
 export function buildWorkspaceBody(pageContext, workspace = {}) {
-  // Task 9 keeps old SEND callers working until Task 10 passes an explicit trigger.
-  const trigger = workspace.trigger
-    || (typeof workspace.message === "string" ? "user_message" : "quick_insight_action");
-  if (trigger !== "user_message" && trigger !== "quick_insight_action") {
-    throw new TypeError("Workspace trigger must be user_message or quick_insight_action");
-  }
   if (typeof workspace.operationId !== "string" || !UUID_PATTERN.test(workspace.operationId)) {
     throw new TypeError("Workspace operationId must be a UUID");
   }
+  if (typeof workspace.message !== "string" || !workspace.message.trim()) {
+    throw new TypeError("Workspace message is required");
+  }
   const body = {
-    trigger,
     ...pageContextBody(pageContext),
     operationId: workspace.operationId,
     resourceUrl: workspace.resourceUrl,
-    actionId: workspace.actionId,
     histories: Array.isArray(workspace.histories) ? workspace.histories : [],
     artifacts: artifactBody(workspace.artifacts),
     lang: workspace.lang,
   };
-  if (trigger === "user_message") body.message = workspace.message;
+  body.message = workspace.message;
   return body;
 }
 
@@ -130,10 +126,8 @@ export function buildWorkspaceBody(pageContext, workspace = {}) {
 export function buildUserMessageWorkspaceBody(pageContext, options = {}) {
   const state = options.state && typeof options.state === "object" ? options.state : {};
   return buildWorkspaceBody(pageContext, {
-    trigger: "user_message",
     operationId: options.operationId,
     resourceUrl: options.resourceUrl,
-    actionId: options.actionId,
     histories: state.histories,
     artifacts: state.artifacts,
     message: options.message,

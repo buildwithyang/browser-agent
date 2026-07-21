@@ -11,11 +11,10 @@ import { DEFAULT_EXTENSION_UPDATE_URL } from "./config.js";
 const OPERATION_ID = "00000000-0000-0000-0000-000000000001";
 const encoder = new TextEncoder();
 
-/** Build one valid protocol-v3 Workspace response for completed-event validation. */
+/** Build one valid protocol-v4 Workspace response for completed-event validation. */
 function workspaceResponse(overrides = {}) {
   return {
     resource_url: "https://example.com/article",
-    selected_action_id: "ask_more",
     result_type: "reply",
     histories: [],
     artifacts: { cv: null, cover_letter: null },
@@ -29,7 +28,7 @@ function workspaceResponse(overrides = {}) {
       finished_at: "2026-07-20T12:00:01Z",
       duration_ms: 1000,
     },
-    protocol_version: 3,
+    protocol_version: 4,
     ...overrides,
   };
 }
@@ -67,7 +66,7 @@ function streamResponse(
   chunks,
   {
     status = 200,
-    protocol = "3",
+    protocol = "4",
     contentType = "application/x-ndjson; charset=utf-8",
   } = {}
 ) {
@@ -137,7 +136,7 @@ test("NDJSON parser validates a completed response through the canonical Workspa
     },
   ], { finalNewline: false })]));
 
-  assert.equal(events.find((event) => event.type === "completed").response.protocol_version, 3);
+  assert.equal(events.find((event) => event.type === "completed").response.protocol_version, 4);
 
   await assert.rejects(
     collect(streamResponse([encodeEvents([
@@ -153,7 +152,7 @@ test("NDJSON parser validates a completed response through the canonical Workspa
     ])])),
     (error) => error instanceof ExtensionUpdateRequiredError
       && error.status === 426
-      && error.requiredVersion === 3
+      && error.requiredVersion === 4
       && error.updateUrl === DEFAULT_EXTENSION_UPDATE_URL
   );
 });
@@ -220,7 +219,7 @@ test("Workspace stream requires a Fetch ReadableStream body before yielding even
         get(name) {
           return name.toLowerCase() === "content-type"
             ? "application/x-ndjson; charset=utf-8"
-            : "3";
+            : "4";
         },
       },
       body,

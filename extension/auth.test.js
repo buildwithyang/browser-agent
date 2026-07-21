@@ -40,11 +40,11 @@ function fakeStore(initial = {}) {
 test("buildAuthHeaders always versions requests and adds bearer only when token present", () => {
   assert.deepEqual(buildAuthHeaders(""), {
     "Content-Type": "application/json",
-    [EXTENSION_PROTOCOL_HEADER]: "3",
+    [EXTENSION_PROTOCOL_HEADER]: "4",
   });
   assert.deepEqual(buildAuthHeaders("t"), {
     "Content-Type": "application/json",
-    [EXTENSION_PROTOCOL_HEADER]: "3",
+    [EXTENSION_PROTOCOL_HEADER]: "4",
     Authorization: "Bearer t",
   });
 });
@@ -55,7 +55,6 @@ test("Workspace request requires one operationId and NDJSON Accept header", () =
     { url: "https://example.com/article" },
     {
       resourceUrl: "https://example.com/article",
-      actionId: "ask_more",
       state: { histories: [], artifacts: { cv: null, cover_letter: null } },
       message: "What matters?",
       lang: "en",
@@ -67,7 +66,7 @@ test("Workspace request requires one operationId and NDJSON Accept header", () =
   assert.deepEqual(buildWorkspaceHeaders("token"), {
     "Content-Type": "application/json",
     Accept: "application/x-ndjson",
-    [EXTENSION_PROTOCOL_HEADER]: "3",
+    [EXTENSION_PROTOCOL_HEADER]: "4",
     Authorization: "Bearer token",
   });
   assert.throws(
@@ -236,6 +235,7 @@ test("Quick Insight request contains only page context and language", () => {
       selectedText: "selection",
       pageText: "page",
       imageText: "image",
+      intent: "Inspect this page.",
       agent: "job_match",
       [["prior", "Result"].join("")]: "legacy",
     },
@@ -247,20 +247,25 @@ test("Quick Insight request contains only page context and language", () => {
     selectedText: "selection",
     pageText: "page",
     imageText: "image",
+    intent: "Inspect this page.",
     lang: "zh",
   });
 });
 
-test("user-message Workspace request carries full v2 state without legacy fields", () => {
+test("Workspace request carries only protocol-v4 message state and fresh context", () => {
   const histories = [{ id: "message", role: "assistant", content: "Earlier" }];
   const artifacts = { cv: { id: "cv" }, cover_letter: null };
   const body = buildWorkspaceBody(
-    { url: "u", title: "Page", pageText: "fresh", agent: "job_match" },
     {
-      trigger: "user_message",
+      url: "u",
+      title: "Page",
+      pageText: "fresh",
+      intent: "Inspect this page.",
+      agent: "job_match",
+    },
+    {
       operationId: "00000000-0000-0000-0000-000000000001",
       resourceUrl: "https://x/resource",
-      actionId: "write_cover_letter",
       histories,
       artifacts: { ...artifacts, unexpected: "drop" },
       currentDocument: {
@@ -276,15 +281,14 @@ test("user-message Workspace request carries full v2 state without legacy fields
     }
   );
   assert.deepEqual(body, {
-    trigger: "user_message",
     url: "u",
     title: "Page",
     selectedText: "",
     pageText: "fresh",
     imageText: "",
+    intent: "Inspect this page.",
     operationId: "00000000-0000-0000-0000-000000000001",
     resourceUrl: "https://x/resource",
-    actionId: "write_cover_letter",
     histories,
     artifacts,
     message: "Improve it",
@@ -292,37 +296,18 @@ test("user-message Workspace request carries full v2 state without legacy fields
   });
   assert.equal("currentDocument" in body, false);
   assert.equal("agent" in body, false);
+  assert.equal("trigger" in body, false);
+  assert.equal("actionId" in body, false);
 });
 
-test("Quick Insight Action Workspace request omits message and fixes Artifact keys", () => {
-  const body = buildWorkspaceBody(
-    { url: "u", currentDocument: { text: "legacy" }, agent: "summary_page" },
-    {
-      trigger: "quick_insight_action",
-      operationId: "00000000-0000-0000-0000-000000000002",
-      resourceUrl: "https://x/resource",
-      actionId: "analyze",
-      histories: [],
-      artifacts: { cv: null },
-      message: "must not cross the discriminated-union boundary",
-      lang: "zh",
-    }
-  );
-
-  assert.deepEqual(body, {
-    trigger: "quick_insight_action",
-    url: "u",
-    title: "",
-    selectedText: "",
-    pageText: "",
-    imageText: "",
+test("Workspace request requires a non-empty message", () => {
+  const options = {
     operationId: "00000000-0000-0000-0000-000000000002",
     resourceUrl: "https://x/resource",
-    actionId: "analyze",
     histories: [],
     artifacts: { cv: null, cover_letter: null },
     lang: "zh",
-  });
-  assert.equal("message" in body, false);
-  assert.equal("currentDocument" in body, false);
+  };
+  assert.throws(() => buildWorkspaceBody({}, options), /message/i);
+  assert.throws(() => buildWorkspaceBody({}, { ...options, message: "   " }), /message/i);
 });

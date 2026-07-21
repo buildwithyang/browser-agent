@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import {
-  createQuickInsightOperation,
   createUserMessageOperation,
   identifyWorkspaceOperation,
   runWorkspaceOperation,
@@ -37,11 +36,8 @@ const OPERATION_ID = "50000000-0000-4000-8000-000000000001";
 /** Identify one request operation with the UUID sent to the Gateway. */
 function identifiedOperation(overrides = {}) {
   return {
-    kind: "request",
-    trigger: "user_message",
-    actionId: "analyze",
+    kind: "user_message",
     message: "这个岗位怎么样？",
-    submittedMessage: "  这个岗位怎么样？  ",
     operationId: OPERATION_ID,
     ...overrides,
   };
@@ -123,7 +119,7 @@ test("failed stream preserves submitted input and never applies partial output",
 
   assert.equal(applyCalls, 0);
   assert.equal(snapshots.at(-1).markdown, "partial private model output");
-  assert.equal(identifiedOperation().submittedMessage, "  这个岗位怎么样？  ");
+  assert.equal(identifiedOperation().message, "这个岗位怎么样？");
 });
 
 test("operation rejects a stream identity mismatch before applying completion", async () => {
@@ -227,60 +223,9 @@ test("an already-aborted queued generation starts no operation boundary", async 
   assert.equal(loadCalls, 0);
 });
 
-test("executable Quick Insight Actions map to one quick_insight_action request", () => {
-  const mappings = [
-    ["analyze", "analyze"],
-    ["tailor_resume", "tailor_resume"],
-    ["write_cover_letter", "write_cover_letter"],
-    ["generate_cover_letter", "write_cover_letter"],
-  ];
-
-  for (const [input, actionId] of mappings) {
-    assert.deepEqual(createQuickInsightOperation(input), {
-      kind: "request",
-      trigger: "quick_insight_action",
-      actionId,
-    });
-  }
-});
-
-test("unknown Quick Insight Actions are rejected before opening Workspace", () => {
-  assert.throws(
-    () => createQuickInsightOperation("unknown_action"),
-    /Unsupported Quick Insight Action/
-  );
-});
-
-test("Ask More describes an open-only operation", async () => {
-  const operation = createQuickInsightOperation("ask_more");
-  const queue = immediateQueue();
-  let requestCalls = 0;
-
-  const result = await runWorkspaceOperation(operation, {
-    queue,
-    key: "workspace-a",
-    loadLatest: async () => ({ histories: [] }),
-    collectPageContext: async () => ({ url: "https://x/job/1" }),
-    buildRequest: () => ({}),
-    executeRequest: async () => {
-      requestCalls += 1;
-    },
-    applyResponse: () => null,
-  });
-
-  assert.deepEqual(operation, {
-    kind: "open_only",
-    trigger: null,
-    actionId: "ask_more",
-  });
-  assert.equal(result, null);
-  assert.equal(requestCalls, 0);
-  assert.deepEqual(queue.runCalls, []);
-});
-
 test("operation reloads complete latest state inside the resource queue", async () => {
   const operation = identifyWorkspaceOperation(
-    createQuickInsightOperation("tailor_resume"),
+    createUserMessageOperation("Tailor my resume."),
     OPERATION_ID
   );
   const queue = immediateQueue();
@@ -344,7 +289,7 @@ test("operation reloads complete latest state inside the resource queue", async 
 
 test("composer operation uses user_message through the same executor", async () => {
   const operation = identifyWorkspaceOperation(
-    createUserMessageOperation("analyze", "What should I improve?"),
+    createUserMessageOperation("What should I improve?"),
     OPERATION_ID
   );
   const queue = immediateQueue();
@@ -357,8 +302,6 @@ test("composer operation uses user_message through the same executor", async () 
     collectPageContext: async () => ({ url: "https://x/job/1" }),
     buildRequest: (_pageContext, _state, command) => ({
       operationId: command.operationId,
-      trigger: command.trigger,
-      actionId: command.actionId,
       message: command.message,
     }),
     executeRequest: async function* (body) {
@@ -370,19 +313,20 @@ test("composer operation uses user_message through the same executor", async () 
   });
 
   assert.deepEqual(operation, {
-    kind: "request",
-    trigger: "user_message",
-    actionId: "analyze",
+    kind: "user_message",
     message: "What should I improve?",
-    submittedMessage: "What should I improve?",
     operationId: OPERATION_ID,
   });
   assert.deepEqual(requestBody, {
     operationId: OPERATION_ID,
-    trigger: "user_message",
-    actionId: "analyze",
     message: "What should I improve?",
   });
+});
+
+test("composer operation rejects an empty edited message", () => {
+  assert.throws(() => createUserMessageOperation(""), /required/i);
+  assert.throws(() => createUserMessageOperation("   "), /required/i);
+  assert.throws(() => createUserMessageOperation({ message: "not a string" }), /required/i);
 });
 
 test("Workspace errors produce stable update-required or retryable events", () => {
@@ -390,13 +334,13 @@ test("Workspace errors produce stable update-required or retryable events", () =
     name: "ExtensionUpdateRequiredError",
     status: 426,
     updateUrl: "https://chromewebstore.google.com/detail/agent-bridge/id",
-    requiredVersion: 3,
+    requiredVersion: 4,
   });
   assert.deepEqual(workspaceOperationErrorEvent(update, 7), {
     type: "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED",
     tabId: 7,
     updateUrl: update.updateUrl,
-    requiredVersion: 3,
+    requiredVersion: 4,
   });
 
   assert.deepEqual(workspaceOperationErrorEvent(new Error("Bearer secret private prompt"), 7), {
@@ -413,7 +357,7 @@ test("Workspace errors produce stable update-required or retryable events", () =
 test("background contains one shared operation request pipeline", async () => {
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
   assert.match(source, /runWorkspaceOperation/);
-  assert.match(source, /runQuickInsightAction/);
+  assert.doesNotMatch(source, /runQuickInsightAction/);
   assert.match(source, /createUserMessageOperation/);
   assert.equal((source.match(/taskUrl\(DEFAULT_GATEWAY, "workspace"\)/g) || []).length, 1);
 });

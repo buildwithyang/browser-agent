@@ -4,7 +4,10 @@ import { EXTENSION_PROTOCOL_VERSION } from "./config.js";
 export const ANONYMOUS_WORKSPACE_OWNER = "anonymous";
 
 /** The local Workspace schema version, independent from Extension release versions. */
-export const WORKSPACE_SCHEMA_VERSION = 2;
+export const WORKSPACE_SCHEMA_VERSION = 3;
+export const MAX_WORKSPACE_TURNS = 10;
+export const MAX_FRESH_WORKSPACE_HISTORIES = 20;
+export const MAX_WORKSPACE_HISTORIES = 31;
 
 const WORKSPACE_STORAGE_PREFIX = `agent-bridge:workspace:v${WORKSPACE_SCHEMA_VERSION}`;
 const USER_HISTORY_CONTENT_MAX_CHARS = 10_000;
@@ -12,17 +15,10 @@ const DOCUMENT_TEXT_MAX_CHARS = 100_000;
 const CV_ATTACHMENT_CONTENT_MAX_CHARS = 4_096;
 const TITLE_MAX_CHARS = 500;
 const ARTIFACT_VERSION_MAX = 2_147_483_647;
-const MAX_RESPONSE_HISTORIES = 11;
-const ACTION_IDS = new Set([
-  "analyze",
-  "tailor_resume",
-  "write_cover_letter",
-  "ask_more",
-]);
 const ARTIFACT_TYPES = new Set(["cv", "cover_letter"]);
 const RESULT_TYPES = new Set(["reply", "create_artifact", "update_artifact"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const LEGACY_WORKSPACE_STORAGE_PREFIX = "agent-bridge:workspace:v1";
+const LEGACY_WORKSPACE_STORAGE_PREFIX = "agent-bridge:workspace:v2";
 
 /** Return a stable owner id without deriving identity from a bearer token. */
 function normalizedOwnerId(ownerId) {
@@ -52,20 +48,20 @@ function requireExactKeys(value, keys, label) {
   );
 }
 
-/** Return only the valid action ids from a backend-declared Action collection. */
-function actionIds(actions) {
-  if (!Array.isArray(actions)) return [];
-  return actions
-    .map((action) => (action && typeof action.id === "string" ? action.id : null))
-    .filter(Boolean);
-}
-
-/** Select a valid Action, preferring an existing choice over the backend default. */
-function selectActionId(actions, selectedActionId, defaultActionId) {
-  const ids = actionIds(actions);
-  if (ids.includes(selectedActionId)) return selectedActionId;
-  if (ids.includes(defaultActionId)) return defaultActionId;
-  return ids[0] || null;
+/** Validate one server-declared editable Prompt Shortcut. */
+export function validatePromptShortcut(shortcut) {
+  requireExactKeys(shortcut, ["id", "title", "prompt"], "Prompt Shortcut");
+  requireSchema(typeof shortcut.id === "string" && !!shortcut.id.trim(), "Shortcut id is invalid");
+  requireSchema(
+    typeof shortcut.title === "string" && shortcut.title.length >= 1
+      && shortcut.title.length <= TITLE_MAX_CHARS,
+    "Shortcut title is invalid"
+  );
+  requireSchema(
+    typeof shortcut.prompt === "string" && shortcut.prompt.length <= USER_HISTORY_CONTENT_MAX_CHARS,
+    "Shortcut prompt is invalid"
+  );
+  return true;
 }
 
 /** Return whether a string is one canonical JSON UUID value. */
@@ -141,7 +137,7 @@ function validateAttachment(value) {
 function validateHistoryMessage(message) {
   requireExactKeys(
     message,
-    ["id", "role", "content", "action_id", "created_at", "attachments"],
+    ["id", "role", "content", "created_at", "attachments"],
     "Workspace message"
   );
   requireSchema(isUuid(message.id), "Workspace message id must be a UUID");
@@ -161,10 +157,6 @@ function validateHistoryMessage(message) {
       "Assistant Workspace message content is invalid"
     );
   }
-  requireSchema(
-    message.action_id === null || ACTION_IDS.has(message.action_id),
-    "Workspace message Action is invalid"
-  );
   requireSchema(isUtcTimestamp(message.created_at), "Workspace message created_at must be UTC");
   requireSchema(Array.isArray(message.attachments), "Workspace message attachments must be an array");
   requireSchema(message.attachments.length <= 1, "Workspace message has too many Attachments");
@@ -251,12 +243,12 @@ function validateExecutionMeta(meta) {
   );
 }
 
-/** Validate the complete storage-schema-v2 Workspace graph without mutating it. */
+/** Validate the complete storage-schema-v3 Workspace graph without mutating it. */
 export function validateWorkspaceState(histories, artifacts) {
   requireSchema(Array.isArray(histories), "Workspace histories must be an array");
   requireSchema(
-    histories.length <= MAX_RESPONSE_HISTORIES,
-    `Workspace histories must contain at most ${MAX_RESPONSE_HISTORIES} messages`
+    histories.length <= MAX_WORKSPACE_HISTORIES,
+    `Workspace histories must contain at most ${MAX_WORKSPACE_HISTORIES} messages`
   );
   requireExactKeys(artifacts, ["cv", "cover_letter"], "Workspace Artifacts");
 
@@ -324,7 +316,7 @@ export function workspaceStorageKey(ownerId, resourceUrl) {
   ].join(":");
 }
 
-/** Return the exact owner/resource key used by the legacy local Workspace schema. */
+/** Return the exact owner/resource key used by the protocol-v2 local Workspace schema. */
 export function legacyWorkspaceStorageKey(ownerId, resourceUrl) {
   if (typeof resourceUrl !== "string" || !resourceUrl.trim()) {
     throw new TypeError("resourceUrl must be a non-empty string");
@@ -345,57 +337,37 @@ function localArtifacts(value) {
   };
 }
 
-/** Create the privacy-bounded local Workspace schema-v2 state. */
+/** Create the privacy-bounded local Workspace schema-v3 state. */
 export function createWorkspace(seed = {}) {
-  const actions = Array.isArray(seed.actions) ? [...seed.actions] : [];
+  const shortcuts = Array.isArray(seed.shortcuts) ? seed.shortcuts.map((shortcut) => ({ ...shortcut })) : [];
+  shortcuts.forEach(validatePromptShortcut);
   return {
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     resourceUrl: typeof seed.resourceUrl === "string" ? seed.resourceUrl : "",
     pageTitle: typeof seed.pageTitle === "string" ? seed.pageTitle : "",
     quickInsight: seed.quickInsight ?? null,
-    actions,
-    selectedActionId: selectActionId(
-      actions,
-      seed.selectedActionId,
-      seed.defaultActionId ?? seed.default_action_id
-    ),
+    shortcuts,
     histories: Array.isArray(seed.histories) ? [...seed.histories] : [],
     artifacts: localArtifacts(seed.artifacts),
     updatedAt: seed.updatedAt ?? null,
   };
 }
 
-/** Convert one v1 local state without manufacturing IDs, timestamps, or Attachments. */
-export function migrateWorkspaceV1(seed = {}) {
-  const histories = [];
-  const messageIds = new Set();
-  for (const message of Array.isArray(seed.histories) ? seed.histories : []) {
-    if (!isObject(message)) continue;
-    const candidate = {
-      ...message,
-      attachments: Object.prototype.hasOwnProperty.call(message, "attachments")
-        ? message.attachments
-        : [],
-    };
-    try {
-      validateHistoryMessage(candidate);
-    } catch {
-      continue;
-    }
-    // v1 has no Artifact graph, so only Attachment-free messages can remain valid.
-    if (candidate.attachments.length || messageIds.has(candidate.id)) continue;
-    messageIds.add(candidate.id);
-    histories.push(candidate);
-  }
+/** Convert one valid v2 local state while removing its Action-era fields. */
+export function migrateWorkspaceV2(seed = {}) {
+  requireSchema(seed.schemaVersion === 2, "Only Workspace schema v2 can be migrated");
+  const histories = Array.isArray(seed.histories)
+    ? seed.histories.map(({ action_id: _removedActionId, ...message }) => ({ ...message }))
+    : [];
+  const artifacts = localArtifacts(seed.artifacts);
+  validateWorkspaceState(histories, artifacts);
   return createWorkspace({
     resourceUrl: seed.resourceUrl,
     pageTitle: seed.pageTitle,
     quickInsight: seed.quickInsight,
-    actions: seed.actions,
-    selectedActionId: seed.selectedActionId,
-    defaultActionId: seed.defaultActionId ?? seed.default_action_id,
+    shortcuts: [],
     histories,
-    artifacts: { cv: null, cover_letter: null },
+    artifacts,
     updatedAt: seed.updatedAt,
   });
 }
@@ -407,7 +379,6 @@ export function applyWorkspaceResponse(state, response) {
     response,
     [
       "resource_url",
-      "selected_action_id",
       "result_type",
       "histories",
       "artifacts",
@@ -424,10 +395,6 @@ export function applyWorkspaceResponse(state, response) {
     !current.resourceUrl || response.resource_url === current.resourceUrl,
     "Workspace response resource URL does not match the current Workspace"
   );
-  requireSchema(
-    ACTION_IDS.has(response.selected_action_id),
-    "Workspace response selected Action is invalid"
-  );
   requireSchema(RESULT_TYPES.has(response.result_type), "Workspace response result type is invalid");
   requireSchema(
     response.protocol_version === EXTENSION_PROTOCOL_VERSION,
@@ -440,36 +407,26 @@ export function applyWorkspaceResponse(state, response) {
   return {
     ...current,
     resourceUrl: response.resource_url,
-    selectedActionId: response.selected_action_id,
     histories: [...response.histories],
     artifacts: localArtifacts(response.artifacts),
     updatedAt: response.meta.created_at,
   };
 }
 
-/** Return whether one valid v2 state can append a user message within the input cap. */
+/** Count canonical user messages independently from Assistant output records. */
+export function countUserTurns(histories = []) {
+  return Array.isArray(histories)
+    ? histories.reduce((count, message) => count + (message?.role === "user" ? 1 : 0), 0)
+    : 0;
+}
+
+/** Return whether one valid v3 state can append another user message. */
 export function canSendUserMessage(state) {
-  if (!state || state.schemaVersion !== WORKSPACE_SCHEMA_VERSION) return false;
-  if (!Array.isArray(state.histories) || state.histories.length > 9) return false;
-  try {
-    return validateWorkspaceState(state.histories, state.artifacts);
-  } catch {
-    return false;
-  }
+  return Array.isArray(state?.histories)
+    && countUserTurns(state.histories) < MAX_WORKSPACE_TURNS;
 }
 
-/** Return whether one valid v2 state can run a Quick Insight Action within the input cap. */
-export function canRunQuickInsightAction(state) {
-  if (!state || state.schemaVersion !== WORKSPACE_SCHEMA_VERSION) return false;
-  if (!Array.isArray(state.histories) || state.histories.length > 10) return false;
-  try {
-    return validateWorkspaceState(state.histories, state.artifacts);
-  } catch {
-    return false;
-  }
-}
-
-/** Keep the current Side Panel API mapped to user-message semantics until its UI migration. */
+/** Preserve the compact Side Panel send-guard API. */
 export function canSend(state) {
   return canSendUserMessage(state);
 }

@@ -86,7 +86,7 @@ function controlledStreamResponse(signal, { ignoreAbort = false } = {}) {
       status: 200,
       headers: {
         "Content-Type": "application/x-ndjson",
-        "X-Agent-Bridge-Protocol-Version": "3",
+        "X-Agent-Bridge-Protocol-Version": "4",
       },
     }),
     /** Push one complete wire event into the controlled response. */
@@ -143,13 +143,11 @@ function firstArtifactResponse() {
   };
   return {
     resource_url: RESOURCE_URL,
-    selected_action_id: "write_cover_letter",
     result_type: "create_artifact",
     histories: [{
       id: "30000000-0000-4000-8000-000000000001",
       role: "assistant",
       content: "Created the first draft.",
-      action_id: "write_cover_letter",
       created_at: "2026-07-20T10:00:00Z",
       attachments: [attachment],
     }],
@@ -174,7 +172,7 @@ function firstArtifactResponse() {
       finished_at: "2026-07-20T10:00:00Z",
       duration_ms: 1000,
     },
-    protocol_version: 3,
+    protocol_version: 4,
   };
 }
 
@@ -227,8 +225,11 @@ test("next SEND carries the complete Artifact state returned by the prior respon
   const state = applyWorkspaceResponse(
     createWorkspace({
       resourceUrl: RESOURCE_URL,
-      actions: [{ id: "write_cover_letter", title: "Write cover letter" }],
-      selectedActionId: "write_cover_letter",
+      shortcuts: [{
+        id: "write_cover_letter",
+        title: "Write cover letter",
+        prompt: "Write a cover letter.",
+      }],
     }),
     firstArtifactResponse()
   );
@@ -237,7 +238,6 @@ test("next SEND carries the complete Artifact state returned by the prior respon
     { url: RESOURCE_URL, title: "Job", selectedText: "JD" },
     {
       resourceUrl: RESOURCE_URL,
-      actionId: "write_cover_letter",
       state,
       message: "Make it shorter",
       lang: "en",
@@ -245,7 +245,8 @@ test("next SEND carries the complete Artifact state returned by the prior respon
     }
   );
 
-  assert.equal(body.trigger, "user_message");
+  assert.equal("trigger" in body, false);
+  assert.equal("actionId" in body, false);
   assert.deepEqual(body.histories, state.histories);
   assert.deepEqual(body.artifacts, state.artifacts);
   assert.deepEqual(
@@ -260,7 +261,7 @@ test("next SEND carries the complete Artifact state returned by the prior respon
     source.indexOf("function notifyWorkspaceUpdated")
   );
   assert.match(operationPipeline, /buildUserMessageWorkspaceBody/);
-  assert.match(operationPipeline, /buildWorkspaceBody/);
+  assert.doesNotMatch(operationPipeline, /buildWorkspaceBody/);
   assert.match(operationPipeline, /runWorkspaceOperation/);
   assert.doesNotMatch(operationPipeline, /currentDocument/);
 });
@@ -302,8 +303,11 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const storageKey = workspaceStorageKey("user-a", RESOURCE_URL);
   const initialState = createWorkspace({
     resourceUrl: RESOURCE_URL,
-    actions: [{ id: "write_cover_letter", title: "Write cover letter" }],
-    selectedActionId: "write_cover_letter",
+    shortcuts: [{
+      id: "write_cover_letter",
+      title: "Write cover letter",
+      prompt: "Write a cover letter.",
+    }],
   });
   const local = fakeStorageArea({
     authToken: "token-a",
@@ -393,7 +397,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const send = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "  Keep my original input  ",
   });
   await waitFor(() => fetchCalls.length === 1, "Workspace fetch did not start");
@@ -429,7 +432,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   });
   assert.equal(pending.pendingStream.operationId, request.operationId);
   assert.equal(pending.pendingStream.markdown, "Draft");
-  assert.equal(pending.pendingStream.submittedMessage, "  Keep my original input  ");
+  assert.equal(pending.pendingStream.submittedMessage, "Keep my original input");
   assert.equal(local.setCalls.length, 0, "delta must remain memory-only");
 
   streams[0].emit({
@@ -555,7 +558,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   emitArtifactCompletion(
     streams[4],
     invalidRequest.operationId,
-    { protocol_version: 3 },
+    { protocol_version: 4 },
     "2026-07-20T10:03:00Z"
   );
   streams[4].close();

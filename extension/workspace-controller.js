@@ -2,7 +2,8 @@ import {
   WORKSPACE_SCHEMA_VERSION,
   createWorkspace,
   legacyWorkspaceStorageKey,
-  migrateWorkspaceV1,
+  migrateWorkspaceV2,
+  validatePromptShortcut,
   validateWorkspaceState,
   workspaceStorageKey,
 } from "./workspace.js";
@@ -14,7 +15,8 @@ import {
 
 const ACTIVE_WORKSPACE_PREFIX = "agent-bridge:active-workspace:v1";
 const INITIAL_SELECTION_PREFIX = "agent-bridge:initial-selection:v1";
-const LEGACY_WORKSPACE_PREFIX = "agent-bridge:workspace:v1:";
+const WORKSPACE_PREFILL_PREFIX = "agent-bridge:workspace-prefill";
+const LEGACY_WORKSPACE_PREFIX = "agent-bridge:workspace:v2:";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Error raised when the gateway returns a syntactically valid non-success response. */
@@ -222,12 +224,43 @@ export function initialSelectionKey(tabId) {
   return `${INITIAL_SELECTION_PREFIX}:${tabId}`;
 }
 
+/** Return the session-storage key for one tab's pending composer draft. */
+export function workspacePrefillKey(tabId) {
+  return `${WORKSPACE_PREFILL_PREFIX}:${tabId}`;
+}
+
+/** Persist one server-declared draft until the Side Panel consumes it. */
+export async function storeWorkspacePrefill(
+  tabId,
+  shortcut,
+  sessionStore = chrome.storage.session
+) {
+  validatePromptShortcut(shortcut);
+  await sessionStore.set({ [workspacePrefillKey(tabId)]: { ...shortcut } });
+}
+
+/** Atomically read and delete one pending composer draft for a tab. */
+export async function consumeWorkspacePrefill(
+  tabId,
+  sessionStore = chrome.storage.session
+) {
+  const key = workspacePrefillKey(tabId);
+  const values = await sessionStore.get(key);
+  const shortcut = values[key] ?? null;
+  if (shortcut !== null) {
+    await sessionStore.remove(key);
+    validatePromptShortcut(shortcut);
+  }
+  return shortcut;
+}
+
 /** Remove every tab-scoped Workspace mapping and saved initial selection. */
 export async function clearWorkspaceSessionNamespace(sessionStore) {
   const values = await sessionStore.get(null);
   const keys = Object.keys(values || {}).filter(
     (key) => key.startsWith(`${ACTIVE_WORKSPACE_PREFIX}:`)
       || key.startsWith(`${INITIAL_SELECTION_PREFIX}:`)
+      || key.startsWith(`${WORKSPACE_PREFILL_PREFIX}:`)
   );
   if (keys.length) await sessionStore.remove(keys);
 }
@@ -269,6 +302,23 @@ export async function loadOwnerScopedWorkspace(
     return null;
   }
   const pointsToLegacy = mapping.storageKey.startsWith(LEGACY_WORKSPACE_PREFIX);
+  const pointsToCurrent = mapping.storageKey.startsWith("agent-bridge:workspace:v3:");
+  if (!pointsToLegacy && !pointsToCurrent) {
+    await sessionStore.remove(mappingKey);
+    return null;
+  }
+  if (pointsToCurrent) {
+    let expectedStorageKey = null;
+    try {
+      expectedStorageKey = workspaceStorageKey(ownerId, mapping.resourceUrl);
+    } catch {
+      // The invalid mapping is discarded below without reading arbitrary local state.
+    }
+    if (mapping.storageKey !== expectedStorageKey) {
+      await sessionStore.remove(mappingKey);
+      return null;
+    }
+  }
   if (pointsToLegacy) {
     let expectedLegacyKey = null;
     try {
@@ -282,7 +332,19 @@ export async function loadOwnerScopedWorkspace(
   const state = stored[mapping.storageKey];
   if (!state) return null;
   if (!pointsToLegacy) {
-    return { mapping, state, lang: mapping.lang || "en" };
+    try {
+      const current = createWorkspace(state);
+      if (state.schemaVersion !== WORKSPACE_SCHEMA_VERSION) throw new TypeError("schema");
+      if (current.resourceUrl !== mapping.resourceUrl) throw new TypeError("resource");
+      validateWorkspaceState(current.histories, current.artifacts);
+      return { mapping, state: current, lang: mapping.lang || "en" };
+    } catch {
+      await Promise.all([
+        sessionStore.remove(mappingKey),
+        workspaceStore.remove(mapping.storageKey),
+      ]);
+      return null;
+    }
   }
   return migrateOwnerScopedWorkspace({
     mappingKey,
@@ -293,7 +355,7 @@ export async function loadOwnerScopedWorkspace(
   });
 }
 
-/** Safely migrate an active v1 record before removing its only recoverable copy. */
+/** Safely migrate an active v2 record before removing its only recoverable copy. */
 async function migrateOwnerScopedWorkspace({
   mappingKey,
   mapping,
@@ -302,7 +364,16 @@ async function migrateOwnerScopedWorkspace({
   workspaceStore,
 }) {
   const resourceUrl = mapping.resourceUrl || state.resourceUrl;
-  const nextState = migrateWorkspaceV1({ ...state, resourceUrl });
+  let nextState;
+  try {
+    nextState = migrateWorkspaceV2({ ...state, resourceUrl });
+  } catch {
+    await Promise.all([
+      sessionStore.remove(mappingKey),
+      workspaceStore.remove(mapping.storageKey),
+    ]);
+    return null;
+  }
   const nextStorageKey = workspaceStorageKey(mapping.ownerId, resourceUrl);
   const nextMapping = {
     ...mapping,
@@ -312,12 +383,12 @@ async function migrateOwnerScopedWorkspace({
   let mappingWriteAttempted = false;
 
   try {
-    // Keep v1 intact until v2 has survived both Chrome serialization and a fresh read.
+    // Keep v2 intact until v3 has survived both Chrome serialization and a fresh read.
     await workspaceStore.set({ [nextStorageKey]: nextState });
     const confirmedData = await workspaceStore.get(nextStorageKey);
     const confirmed = confirmedData[nextStorageKey];
     if (!confirmed || confirmed.schemaVersion !== WORKSPACE_SCHEMA_VERSION) {
-      throw new Error("Workspace v2 migration verification failed");
+      throw new Error("Workspace v3 migration verification failed");
     }
     validateWorkspaceState(confirmed.histories, confirmed.artifacts);
 
@@ -377,22 +448,13 @@ export async function loadAfterPendingSeed(pendingSeed, loadWorkspace) {
 /** Refresh Quick Insight metadata without discarding a Workspace conversation or Artifacts. */
 export function mergeWorkspaceSeed(existing, seed = {}) {
   const current = createWorkspace(existing || {});
-  const actions = Array.isArray(seed.actions) ? seed.actions : [];
-  const actionIds = new Set(actions.map((action) => action?.id).filter(Boolean));
-  const priorSelectedActionId = existing?.selectedActionId || current.selectedActionId;
-  const selectedActionId = actionIds.has(seed.actionId)
-    ? seed.actionId
-    : actionIds.has(priorSelectedActionId)
-      ? priorSelectedActionId
-      : seed.defaultActionId;
+  const shortcuts = Array.isArray(seed.shortcuts) ? seed.shortcuts : [];
 
   return createWorkspace({
     resourceUrl: seed.resourceUrl || current.resourceUrl,
     pageTitle: typeof seed.pageTitle === "string" ? seed.pageTitle : current.pageTitle,
     quickInsight: seed.quickInsight ?? current.quickInsight,
-    actions,
-    selectedActionId,
-    defaultActionId: seed.defaultActionId,
+    shortcuts,
     histories: current.histories,
     artifacts: current.artifacts,
     updatedAt: current.updatedAt,

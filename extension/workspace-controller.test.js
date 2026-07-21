@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import * as controller from "./workspace-controller.js";
-import { workspaceStorageKey } from "./workspace.js";
+import { createWorkspace, workspaceStorageKey } from "./workspace.js";
 import {
   EXPIRES_KEY,
   TOKEN_KEY,
@@ -62,7 +62,7 @@ function fakeStorageArea(initial = {}) {
 }
 
 /** Build one Fetch Response-shaped protocol fixture. */
-function gatewayResponse({ status = 200, body = {}, protocol = "3", jsonError = null } = {}) {
+function gatewayResponse({ status = 200, body = {}, protocol = "4", jsonError = null } = {}) {
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -230,59 +230,35 @@ test("same operationId replacement is isolated by internal generation identity",
 
 test("Workspace seed refreshes page metadata while preserving canonical conversation", () => {
   const existing = {
+    schemaVersion: 3,
     resourceUrl: "https://x/job/1",
     pageTitle: "Old title",
     quickInsight: { title: "Old insight" },
-    actions: [{ id: "analyze", title: "Old analyze" }],
-    selectedActionId: "tailor_resume",
-    histories: [{ role: "assistant", content: "Keep me" }],
+    shortcuts: [{ id: "analyze", title: "Old analyze", prompt: "Old prompt" }],
+    histories: [],
     artifacts: { cv: null, cover_letter: null },
   };
   const next = mergeWorkspaceSeed(existing, {
     resourceUrl: "https://x/job/1",
     pageTitle: "Fresh title",
     quickInsight: { title: "Fresh insight" },
-    actions: [
-      { id: "analyze", title: "Analyze" },
-      { id: "tailor_resume", title: "Tailor resume" },
+    shortcuts: [
+      { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+      { id: "tailor_resume", title: "Tailor resume", prompt: "Tailor my resume." },
     ],
-    defaultActionId: "analyze",
   });
 
   assert.equal(next.pageTitle, "Fresh title");
   assert.equal(next.quickInsight.title, "Fresh insight");
-  assert.equal(next.selectedActionId, "tailor_resume");
+  assert.deepEqual(next.shortcuts, [
+    { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+    { id: "tailor_resume", title: "Tailor resume", prompt: "Tailor my resume." },
+  ]);
   assert.deepEqual(next.histories, existing.histories);
   assert.deepEqual(next.artifacts, existing.artifacts);
   assert.equal("currentDocument" in next, false);
   assert.equal("pageText" in next, false);
   assert.equal("selectedText" in next, false);
-});
-
-test("explicit Quick Insight Action overrides an existing selected Action", () => {
-  const next = mergeWorkspaceSeed(
-    {
-      resourceUrl: "https://x/job/1",
-      actions: [
-        { id: "analyze", title: "Analyze" },
-        { id: "write_cover_letter", title: "Write cover letter" },
-      ],
-      selectedActionId: "analyze",
-      histories: [{ role: "assistant", content: "Keep me" }],
-    },
-    {
-      resourceUrl: "https://x/job/1",
-      actions: [
-        { id: "analyze", title: "Analyze" },
-        { id: "write_cover_letter", title: "Write cover letter" },
-      ],
-      actionId: "write_cover_letter",
-      defaultActionId: "analyze",
-    }
-  );
-
-  assert.equal(next.selectedActionId, "write_cover_letter");
-  assert.equal(next.histories.length, 1);
 });
 
 test("user B cannot load a tab mapping owned by user A", async () => {
@@ -310,11 +286,35 @@ test("user B cannot load a tab mapping owned by user A", async () => {
   assert.deepEqual(workspaceStore.getCalls, []);
 });
 
-test("v1 mapping key with another encoded owner is never read or migrated", async () => {
+test("current mapping cannot read another resource in the same owner namespace", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const mappingKey = activeWorkspaceKey(16);
+  const otherKey = workspaceStorageKey("user-a", "https://x/job/2");
+  const sessionStore = fakeStorageArea({
+    [mappingKey]: {
+      ownerId: "user-a",
+      storageKey: otherKey,
+      resourceUrl: "https://x/job/1",
+    },
+  });
+  const workspaceStore = fakeStorageArea({ [otherKey]: createWorkspace({
+    resourceUrl: "https://x/job/2",
+  }) });
+
+  const active = await loadOwnerScopedWorkspace(16, {
+    ownerId: "user-a",
+    sessionStore,
+    workspaceStore,
+  });
+
+  assert.equal(active, null);
+  assert.deepEqual(workspaceStore.getCalls, []);
+});
+
+test("unsupported v1 state is discarded without recursive migration", async () => {
   const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
   const mappingKey = activeWorkspaceKey(10);
-  const storageKey =
-    "agent-bridge:workspace:v1:user-b:https%3A%2F%2Fx%2Fjob%2F1";
+  const storageKey = "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
   const mapping = {
     ownerId: "user-a",
     storageKey,
@@ -332,61 +332,38 @@ test("v1 mapping key with another encoded owner is never read or migrated", asyn
   assert.equal(active, null);
   assert.deepEqual(workspaceStore.getCalls, []);
   assert.deepEqual(workspaceStore.removeCalls, []);
-  assert.deepEqual(sessionStore.data[mappingKey], mapping);
+  assert.equal(sessionStore.data[mappingKey], undefined);
 });
 
-test("v1 mapping key with another encoded resource is never read or migrated", async () => {
-  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
-  const mappingKey = activeWorkspaceKey(11);
-  const storageKey =
-    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F2";
-  const mapping = {
-    ownerId: "user-a",
-    storageKey,
-    resourceUrl: "https://x/job/1",
-  };
-  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
-  const workspaceStore = fakeStorageArea({ [storageKey]: { histories: [] } });
-
-  const active = await loadOwnerScopedWorkspace(11, {
-    ownerId: "user-a",
-    sessionStore,
-    workspaceStore,
-  });
-
-  assert.equal(active, null);
-  assert.deepEqual(workspaceStore.getCalls, []);
-  assert.deepEqual(workspaceStore.removeCalls, []);
-  assert.deepEqual(sessionStore.data[mappingKey], mapping);
-});
-
-test("owner-scoped load migrates v1 only after v2 write, re-read, and mapping update", async () => {
+test("owner-scoped load migrates valid v2 state to v3 and strips Action fields", async () => {
   const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
   const mappingKey = activeWorkspaceKey(8);
-  const v1Key = "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
+  const v2Key = "agent-bridge:workspace:v2:user-a:https%3A%2F%2Fx%2Fjob%2F1";
   const validLegacyMessage = {
     id: "30000000-0000-4000-8000-000000000001",
-    role: "assistant",
-    content: "Keep **opaque Markdown**",
+    role: "user",
+    content: "Keep this turn",
     action_id: "analyze",
     created_at: "2026-07-20T10:00:00Z",
+    attachments: [],
   };
   const oldMapping = {
     ownerId: "user-a",
-    storageKey: v1Key,
+    storageKey: v2Key,
     resourceUrl: "https://x/job/1",
     lang: "en",
   };
   const sessionStore = fakeStorageArea({ [mappingKey]: oldMapping });
   const workspaceStore = fakeStorageArea({
-    [v1Key]: {
+    [v2Key]: {
+      schemaVersion: 2,
       resourceUrl: "https://x/job/1",
       pageTitle: "Job",
       quickInsight: { title: "Insight" },
       actions: [{ id: "analyze", title: "Analyze" }],
       selectedActionId: "analyze",
-      histories: [validLegacyMessage, { role: "assistant", content: "drop invalid" }],
-      currentDocument: { kind: "resume", text: "do not migrate" },
+      histories: [validLegacyMessage],
+      artifacts: { cv: null, cover_letter: null },
       updatedAt: "2026-07-19T00:00:00Z",
     },
   });
@@ -397,180 +374,52 @@ test("owner-scoped load migrates v1 only after v2 write, re-read, and mapping up
     workspaceStore,
   });
 
-  assert.match(active.mapping.storageKey, /^agent-bridge:workspace:v2:/);
-  assert.equal(active.state.schemaVersion, 2);
-  assert.deepEqual(active.state.histories, [{ ...validLegacyMessage, attachments: [] }]);
+  assert.match(active.mapping.storageKey, /^agent-bridge:workspace:v3:/);
+  assert.equal(active.state.schemaVersion, 3);
+  const { action_id: _removedActionId, ...migratedMessage } = validLegacyMessage;
+  assert.deepEqual(active.state.histories, [migratedMessage]);
   assert.deepEqual(active.state.artifacts, { cv: null, cover_letter: null });
   assert.equal("currentDocument" in active.state, false);
   assert.deepEqual(active.state.quickInsight, { title: "Insight" });
-  assert.deepEqual(active.state.actions, [{ id: "analyze", title: "Analyze" }]);
-  assert.equal(active.state.selectedActionId, "analyze");
-  assert.equal(workspaceStore.data[v1Key], undefined);
+  assert.deepEqual(active.state.shortcuts, []);
+  assert.equal("actions" in active.state, false);
+  assert.equal("selectedActionId" in active.state, false);
+  assert.equal(workspaceStore.data[v2Key], undefined);
   assert.deepEqual(sessionStore.data[mappingKey], active.mapping);
-  assert.deepEqual(workspaceStore.getCalls, [v1Key, active.mapping.storageKey]);
-  assert.deepEqual(workspaceStore.removeCalls, [[v1Key]]);
+  assert.deepEqual(workspaceStore.getCalls, [v2Key, active.mapping.storageKey]);
+  assert.deepEqual(workspaceStore.removeCalls, [[v2Key]]);
 });
 
-test("failed v2 migration write preserves v1 value and old tab mapping", async () => {
+test("malformed v2 state is discarded rather than partially migrated", async () => {
   const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
   const mappingKey = activeWorkspaceKey(9);
-  const v1Key =
-    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
+  const v2Key = "agent-bridge:workspace:v2:user-a:https%3A%2F%2Fx%2Fjob%2F1";
   const oldMapping = {
     ownerId: "user-a",
-    storageKey: v1Key,
+    storageKey: v2Key,
     resourceUrl: "https://x/job/1",
   };
   const oldState = {
+    schemaVersion: 2,
     resourceUrl: "https://x/job/1",
     actions: [],
-    histories: [],
-    currentDocument: null,
+    histories: [{ role: "assistant", content: "missing required wire fields" }],
+    artifacts: { cv: null, cover_letter: null },
   };
   const sessionStore = fakeStorageArea({ [mappingKey]: oldMapping });
-  const workspaceStore = fakeStorageArea({ [v1Key]: oldState });
-  workspaceStore.set = async () => {
-    throw new Error("quota exceeded");
-  };
+  const workspaceStore = fakeStorageArea({ [v2Key]: oldState });
 
-  await assert.rejects(
-    loadOwnerScopedWorkspace(9, {
-      ownerId: "user-a",
-      sessionStore,
-      workspaceStore,
-    }),
-    /quota exceeded/
-  );
+  const active = await loadOwnerScopedWorkspace(9, {
+    ownerId: "user-a",
+    sessionStore,
+    workspaceStore,
+  });
 
-  assert.deepEqual(workspaceStore.data[v1Key], oldState);
-  assert.deepEqual(sessionStore.data[mappingKey], oldMapping);
-  assert.deepEqual(workspaceStore.removeCalls, []);
+  assert.equal(active, null);
+  assert.equal(workspaceStore.data[v2Key], undefined);
+  assert.equal(sessionStore.data[mappingKey], undefined);
+  assert.deepEqual(workspaceStore.removeCalls, [[v2Key]]);
   assert.deepEqual(sessionStore.setCalls, []);
-});
-
-test("failed v2 migration re-read preserves v1 value and old tab mapping", async () => {
-  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
-  const mappingKey = activeWorkspaceKey(12);
-  const resourceUrl = "https://x/job/1";
-  const v1Key =
-    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
-  const v2Key = workspaceStorageKey("user-a", resourceUrl);
-  const mapping = { ownerId: "user-a", storageKey: v1Key, resourceUrl };
-  const state = { resourceUrl, actions: [], histories: [], currentDocument: null };
-  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
-  const workspaceStore = fakeStorageArea({ [v1Key]: state });
-  const originalGet = workspaceStore.get.bind(workspaceStore);
-  workspaceStore.get = async (query) => (
-    query === v2Key ? { [v2Key]: undefined } : originalGet(query)
-  );
-
-  await assert.rejects(
-    loadOwnerScopedWorkspace(12, {
-      ownerId: "user-a",
-      sessionStore,
-      workspaceStore,
-    }),
-    /verification failed/
-  );
-
-  assert.deepEqual(workspaceStore.data[v1Key], state);
-  assert.deepEqual(sessionStore.data[mappingKey], mapping);
-  assert.deepEqual(workspaceStore.removeCalls, []);
-});
-
-test("failed tab-mapping write restores the old mapping and keeps v1", async () => {
-  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
-  const mappingKey = activeWorkspaceKey(13);
-  const resourceUrl = "https://x/job/1";
-  const v1Key =
-    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
-  const mapping = { ownerId: "user-a", storageKey: v1Key, resourceUrl };
-  const state = { resourceUrl, actions: [], histories: [], currentDocument: null };
-  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
-  const originalSet = sessionStore.set.bind(sessionStore);
-  let setCount = 0;
-  sessionStore.set = async (values) => {
-    setCount += 1;
-    if (setCount === 1) throw new Error("mapping write failed");
-    return originalSet(values);
-  };
-  const workspaceStore = fakeStorageArea({ [v1Key]: state });
-
-  await assert.rejects(
-    loadOwnerScopedWorkspace(13, {
-      ownerId: "user-a",
-      sessionStore,
-      workspaceStore,
-    }),
-    /mapping write failed/
-  );
-
-  assert.deepEqual(workspaceStore.data[v1Key], state);
-  assert.deepEqual(sessionStore.data[mappingKey], mapping);
-  assert.deepEqual(workspaceStore.removeCalls, []);
-});
-
-test("failed v1 removal restores the old mapping and keeps v1", async () => {
-  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
-  const mappingKey = activeWorkspaceKey(14);
-  const resourceUrl = "https://x/job/1";
-  const v1Key =
-    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
-  const mapping = { ownerId: "user-a", storageKey: v1Key, resourceUrl };
-  const state = { resourceUrl, actions: [], histories: [], currentDocument: null };
-  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
-  const workspaceStore = fakeStorageArea({ [v1Key]: state });
-  workspaceStore.remove = async () => {
-    throw new Error("v1 removal failed");
-  };
-
-  await assert.rejects(
-    loadOwnerScopedWorkspace(14, {
-      ownerId: "user-a",
-      sessionStore,
-      workspaceStore,
-    }),
-    /v1 removal failed/
-  );
-
-  assert.deepEqual(workspaceStore.data[v1Key], state);
-  assert.deepEqual(sessionStore.data[mappingKey], mapping);
-});
-
-test("mapping rollback failure is reported explicitly instead of being swallowed", async () => {
-  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
-  const mappingKey = activeWorkspaceKey(15);
-  const resourceUrl = "https://x/job/1";
-  const v1Key =
-    "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
-  const mapping = { ownerId: "user-a", storageKey: v1Key, resourceUrl };
-  const state = { resourceUrl, actions: [], histories: [], currentDocument: null };
-  const sessionStore = fakeStorageArea({ [mappingKey]: mapping });
-  const originalSet = sessionStore.set.bind(sessionStore);
-  let setCount = 0;
-  sessionStore.set = async (values) => {
-    setCount += 1;
-    if (setCount === 2) throw new Error("rollback failed");
-    return originalSet(values);
-  };
-  const workspaceStore = fakeStorageArea({ [v1Key]: state });
-  workspaceStore.remove = async () => {
-    throw new Error("v1 removal failed");
-  };
-
-  await assert.rejects(
-    loadOwnerScopedWorkspace(15, {
-      ownerId: "user-a",
-      sessionStore,
-      workspaceStore,
-    }),
-    (error) =>
-      error instanceof AggregateError
-      && /rollback failed/i.test(error.message)
-      && error.errors.some((item) => item.message === "v1 removal failed")
-      && error.errors.some((item) => item.message === "rollback failed")
-  );
-  assert.deepEqual(workspaceStore.data[v1Key], state);
 });
 
 test("401 cleanup removes all Workspace session namespaces but keeps local records", async () => {
@@ -787,6 +636,49 @@ test("session keys isolate active Workspace and initial selection by tab", () =>
   assert.notEqual(initialSelectionKey(3), initialSelectionKey(4));
 });
 
+test("Workspace prefill is isolated per tab and consumed only once", async () => {
+  const workspacePrefillKey = requiredExport("workspacePrefillKey");
+  const storeWorkspacePrefill = requiredExport("storeWorkspacePrefill");
+  const consumeWorkspacePrefill = requiredExport("consumeWorkspacePrefill");
+  const sessionStore = fakeStorageArea();
+  const analyze = { id: "analyze", title: "Analyze", prompt: "Analyze this role." };
+  const askMore = { id: "ask_more", title: "Ask More", prompt: "" };
+
+  await storeWorkspacePrefill(3, analyze, sessionStore);
+  await storeWorkspacePrefill(4, askMore, sessionStore);
+
+  assert.notEqual(workspacePrefillKey(3), workspacePrefillKey(4));
+  assert.deepEqual(await consumeWorkspacePrefill(3, sessionStore), analyze);
+  assert.equal(await consumeWorkspacePrefill(3, sessionStore), null);
+  assert.deepEqual(await consumeWorkspacePrefill(4, sessionStore), askMore);
+  assert.deepEqual(sessionStore.data, {});
+});
+
+test("malformed Workspace prefill is discarded after its first read", async () => {
+  const workspacePrefillKey = requiredExport("workspacePrefillKey");
+  const consumeWorkspacePrefill = requiredExport("consumeWorkspacePrefill");
+  const sessionStore = fakeStorageArea({
+    [workspacePrefillKey(3)]: { id: "analyze", title: "Analyze" },
+  });
+
+  await assert.rejects(() => consumeWorkspacePrefill(3, sessionStore), /exactly/i);
+  assert.equal(await consumeWorkspacePrefill(3, sessionStore), null);
+});
+
+test("Workspace session cleanup removes pending prefills", async () => {
+  const workspacePrefillKey = requiredExport("workspacePrefillKey");
+  const clearWorkspaceSessionNamespace = requiredExport("clearWorkspaceSessionNamespace");
+  const sessionStore = fakeStorageArea({
+    [activeWorkspaceKey(3)]: { storageKey: "workspace" },
+    [workspacePrefillKey(3)]: { id: "ask_more", title: "Ask More", prompt: "" },
+    unrelated: "keep",
+  });
+
+  await clearWorkspaceSessionNamespace(sessionStore);
+
+  assert.deepEqual(sessionStore.data, { unrelated: "keep" });
+});
+
 test("gateway non-2xx responses reject with status and detail", async () => {
   await assert.rejects(
     readGatewayResponse(gatewayResponse({
@@ -801,7 +693,7 @@ test("gateway non-2xx responses reject with status and detail", async () => {
 });
 
 test("gateway success returns parsed versioned JSON", async () => {
-  const body = { protocol_version: 3, histories: [], artifacts: {} };
+  const body = { protocol_version: 4, histories: [], artifacts: {} };
   assert.equal(
     await readGatewayResponse(gatewayResponse({ body })),
     body
@@ -851,13 +743,13 @@ test("426 carries the server-required version and update destination", async () 
       status: 426,
       body: {
         code: "extension_update_required",
-        required_protocol_version: 3,
+        required_protocol_version: 4,
         update_url: updateUrl,
       },
     })),
     (error) =>
       error instanceof ExtensionUpdateRequiredError
-      && error.requiredVersion === 3
+      && error.requiredVersion === 4
       && error.updateUrl === updateUrl
       && error.status === 426
       && shouldClearToken(error.status) === false
@@ -883,12 +775,12 @@ test("missing or unequal protocol Header rejects before a 401 can clear auth", a
 
 test("success requires an equal top-level protocol version", async () => {
   const ExtensionUpdateRequiredError = requiredExport("ExtensionUpdateRequiredError");
-  for (const body of [{}, { protocol_version: 2 }, { protocol_version: "3" }]) {
+  for (const body of [{}, { protocol_version: 2 }, { protocol_version: "4" }]) {
     await assert.rejects(
       readGatewayResponse(gatewayResponse({ body })),
       (error) =>
         error instanceof ExtensionUpdateRequiredError
-        && error.requiredVersion === 3
+        && error.requiredVersion === 4
         && error.updateUrl === DEFAULT_EXTENSION_UPDATE_URL
     );
   }

@@ -1,10 +1,3 @@
-const QUICK_INSIGHT_ACTION_IDS = new Map([
-  ["analyze", "analyze"],
-  ["tailor_resume", "tailor_resume"],
-  ["write_cover_letter", "write_cover_letter"],
-  // Accept the product-label alias while emitting the Gateway's stable Action ID.
-  ["generate_cover_letter", "write_cover_letter"],
-]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Error raised when a validated stream terminates without a canonical response. */
@@ -28,55 +21,17 @@ export class WorkspaceOperationStaleError extends Error {
   }
 }
 
-/** Return a non-empty Action ID or throw one stable command-validation error. */
-function requiredActionId(actionId) {
-  if (typeof actionId !== "string" || !actionId.trim()) {
-    throw new TypeError("Workspace Action ID is required");
-  }
-  return actionId.trim();
-}
-
-/** Describe one Quick Insight Action Workspace operation without performing side effects. */
-export function createQuickInsightOperation(actionId) {
-  const commandActionId = requiredActionId(actionId);
-  if (commandActionId === "ask_more") {
-    return Object.freeze({
-      kind: "open_only",
-      trigger: null,
-      actionId: commandActionId,
-    });
-  }
-  const gatewayActionId = QUICK_INSIGHT_ACTION_IDS.get(commandActionId);
-  if (!gatewayActionId) {
-    throw new TypeError(`Unsupported Quick Insight Action: ${commandActionId}`);
-  }
-  return Object.freeze({
-    kind: "request",
-    trigger: "quick_insight_action",
-    actionId: gatewayActionId,
-  });
-}
-
 /** Describe one validated composer Workspace operation without performing side effects. */
-export function createUserMessageOperation(actionId, message, operationId = null) {
-  const submittedMessage = typeof message === "string" ? message : "";
-  const userMessage = submittedMessage.trim();
-  if (!userMessage) throw new TypeError("Message cannot be empty");
-  const operation = {
-    kind: "request",
-    trigger: "user_message",
-    actionId: requiredActionId(actionId),
-    message: userMessage,
-    submittedMessage,
-  };
-  if (operationId !== null) operation.operationId = operationId;
-  return Object.freeze(operation);
+export function createUserMessageOperation(message) {
+  const normalized = typeof message === "string" ? message.trim() : "";
+  if (!normalized) throw new TypeError("Workspace message is required");
+  return Object.freeze({ kind: "user_message", message: normalized });
 }
 
 /** Bind one request Command to the exact Extension-generated UUID used on the wire. */
 export function identifyWorkspaceOperation(operation, operationId) {
-  if (!operation || operation.kind !== "request") {
-    throw new TypeError("Only request operations can be identified");
+  if (!operation || operation.kind !== "user_message") {
+    throw new TypeError("Only user-message operations can be identified");
   }
   if (typeof operationId !== "string" || !UUID_PATTERN.test(operationId)) {
     throw new TypeError("Workspace operationId must be a UUID");
@@ -156,8 +111,9 @@ async function* abortableWorkspaceStream(stream, signal) {
 
 /** Run one request Command as a strict event stream inside its keyed queue. */
 export async function runWorkspaceOperation(operation, dependencies) {
-  if (!operation || operation.kind === "open_only") return null;
-  if (operation.kind !== "request") throw new TypeError("Unknown Workspace operation kind");
+  if (!operation || operation.kind !== "user_message") {
+    throw new TypeError("Unknown Workspace operation kind");
+  }
   const {
     queue,
     key,

@@ -1,5 +1,5 @@
 import { renderMarkdown } from "./markdown.js";
-import { canSendUserMessage } from "./workspace.js";
+import { canSendUserMessage, countUserTurns } from "./workspace.js";
 
 export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
@@ -12,15 +12,16 @@ const COPY = {
     workspace: "Shared Workspace",
     noPage: "No active page",
     offlineTitle: "No active Workspace",
-    offline: "Open a Quick Insight Action on a page to start this conversation.",
+    offline: "Open Quick Insight on a page to start this conversation.",
     emptyTitle: "Start with a clear task",
-    noHistory: "Choose an Action below, then say what you want to understand or change.",
+    noHistory: "Choose a shortcut below, then edit or send its prompt.",
     loadingWorkspace: "Loading Workspace",
     loadingWorkspaceBody: "Restoring the conversation for this page…",
     loading: "Working",
     streamFailed: "Generation failed. Your input was restored.",
     next: "Next instruction",
     placeholder: "Ask a question or direct the next revision…",
+    limitPlaceholder: "This Workspace supports up to 10 turns.",
     hint: "Enter to send · Shift + Enter for a new line",
     send: "Send",
     limit: "Message limit reached. Start a new Workspace from Quick Insight.",
@@ -41,15 +42,16 @@ const COPY = {
     workspace: "共享对话",
     noPage: "没有活动页面",
     offlineTitle: "尚未打开 Workspace",
-    offline: "请先在网页的 Quick Insight 中选择一个 Action，开始对话。",
+    offline: "请先在网页中打开 Quick Insight，开始对话。",
     emptyTitle: "从一个明确的任务开始",
-    noHistory: "选择下方 Action，然后说明你想知道或修改什么。",
+    noHistory: "选择下方快捷提示，然后编辑或发送提示词。",
     loadingWorkspace: "正在加载 Workspace",
     loadingWorkspaceBody: "正在恢复当前页面的对话…",
     loading: "处理中",
     streamFailed: "生成失败，已恢复你的输入。",
     next: "下一步指令",
     placeholder: "继续提问，或说明下一轮修改要求…",
+    limitPlaceholder: "当前最多支持10轮聊天",
     hint: "Enter 发送 · Shift + Enter 换行",
     send: "发送",
     limit: "已达到消息上限。请从 Quick Insight 开始新的 Workspace。",
@@ -101,13 +103,9 @@ function matchScore(quickInsight) {
 export function workspaceView(state = {}, lang = "browser", uiLanguage = "en") {
   const locale = resolveUiLang(lang, uiLanguage);
   const strings = COPY[locale];
-  const actions = Array.isArray(state.actions)
-    ? state.actions.filter((action) => action && typeof action.id === "string")
+  const shortcuts = Array.isArray(state.shortcuts)
+    ? state.shortcuts.filter((shortcut) => shortcut && typeof shortcut.id === "string")
     : [];
-  const actionIds = new Set(actions.map((action) => action.id));
-  const selectedActionId = actionIds.has(state.selectedActionId)
-    ? state.selectedActionId
-    : actions[0]?.id || null;
   const histories = Array.isArray(state.histories) ? [...state.histories] : [];
   const sendAllowed = canSendUserMessage(state);
   return {
@@ -116,8 +114,7 @@ export function workspaceView(state = {}, lang = "browser", uiLanguage = "en") {
     pageTitle: state.pageTitle || strings.workspace,
     resourceUrl: state.resourceUrl || "",
     matchScore: matchScore(state.quickInsight),
-    actions,
-    selectedActionId,
+    shortcuts,
     histories,
     canSend: sendAllowed,
     limitText: sendAllowed ? "" : strings.limit,
@@ -615,29 +612,30 @@ function isUpdateRequired(error) {
     || error?.type === "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED";
 }
 
-/** Render backend-declared Action chips while keeping shared history untouched. */
-function renderActions(elements, model, view) {
-  elements.actionChips.replaceChildren();
-  const actionsDisabled = model.loading || !view.canSend || isUpdateRequired(model.error);
-  view.actions.forEach((action) => {
+/** Replace the editable draft with one server-declared Shortcut prompt. */
+export function applyPromptShortcut(shortcut, elements, model, view) {
+  if (!view.canSend || model.loading) return;
+  elements.messageInput.value = shortcut.prompt;
+  elements.messageInput.focus();
+  updateComposer(elements, model, view);
+}
+
+/** Render stateless backend-declared Prompt Shortcut chips. */
+function renderShortcuts(elements, model, view) {
+  elements.shortcutChips.replaceChildren();
+  const shortcutsDisabled = model.loading || !view.canSend || isUpdateRequired(model.error);
+  view.shortcuts.forEach((shortcut) => {
     const button = textElement(
       elements.documentRef,
       "button",
-      "action-chip",
-      action.title || action.id
+      "shortcut-chip",
+      shortcut.title || shortcut.id
     );
     button.type = "button";
-    button.dataset.actionId = action.id;
-    button.setAttribute("aria-pressed", String(action.id === model.selectedActionId));
-    button.disabled = actionsDisabled;
-    button.addEventListener("click", () => {
-      model.selectedActionId = action.id;
-      elements.actionChips.querySelectorAll(".action-chip").forEach((chip) => {
-        chip.setAttribute("aria-pressed", String(chip.dataset.actionId === action.id));
-      });
-      updateComposer(elements, model, view);
-    });
-    elements.actionChips.append(button);
+    button.dataset.shortcutId = shortcut.id;
+    button.disabled = shortcutsDisabled;
+    button.addEventListener("click", () => applyPromptShortcut(shortcut, elements, model, view));
+    elements.shortcutChips.append(button);
   });
 }
 
@@ -693,6 +691,8 @@ function renderComposerError(elements, model, view) {
 function updateComposer(elements, model, view) {
   const hasMessage = !!elements.messageInput.value.trim();
   const connected = !!model.state;
+  const canonicalTurns = countUserTurns(view.histories);
+  const visibleTurns = canonicalTurns + (model.pendingTurn?.status === "pending" ? 1 : 0);
   const updateRequired = isUpdateRequired(normalizedComposerError(model.error, view.strings));
   let hint = view.strings.hint;
   if (!connected) hint = view.strings.offline;
@@ -704,12 +704,14 @@ function updateComposer(elements, model, view) {
     || model.loading
     || !view.canSend
     || updateRequired
-    || !model.selectedActionId
     || !hasMessage;
   elements.composerLabel.textContent = view.strings.next;
-  elements.messageInput.placeholder = view.strings.placeholder;
+  elements.messageInput.placeholder = view.canSend
+    ? view.strings.placeholder
+    : view.strings.limitPlaceholder;
   elements.composerHint.textContent = hint;
-  elements.turnMeter.textContent = `${view.histories.length} / 10`;
+  elements.composerHint.hidden = connected && !view.canSend;
+  elements.turnMeter.textContent = `${visibleTurns} / 10`;
   elements.sendLabel.textContent = model.loading ? `${view.strings.loading}…` : view.strings.send;
   renderComposerError(elements, model, view);
 }
@@ -717,12 +719,10 @@ function updateComposer(elements, model, view) {
 /** Render every Side Panel region from the latest canonical Workspace state. */
 function render(elements, model, dependencies = {}) {
   const view = workspaceView(model.state || {}, model.lang, model.uiLanguage);
-  const actionIds = new Set(view.actions.map((action) => action.id));
-  if (!actionIds.has(model.selectedActionId)) model.selectedActionId = view.selectedActionId;
   elements.documentRef.documentElement.lang = view.lang;
   renderHeader(elements, view);
   renderTimeline(elements, model, view, dependencies);
-  renderActions(elements, model, view);
+  renderShortcuts(elements, model, view);
   updateComposer(elements, model, view);
 
   const priorCount = Number.isInteger(model.renderedHistoryCount)
@@ -745,7 +745,7 @@ function sidePanelElements(documentRef) {
     sourceLink: documentRef.getElementById("source-link"),
     sourceHost: documentRef.getElementById("source-host"),
     timeline: documentRef.getElementById("timeline"),
-    actionChips: documentRef.getElementById("action-chips"),
+    shortcutChips: documentRef.getElementById("shortcut-chips"),
     composerLabel: documentRef.getElementById("composer-label"),
     messageForm: documentRef.getElementById("message-form"),
     messageInput: documentRef.getElementById("message-input"),
@@ -764,7 +764,6 @@ function clearWorkspaceTransient(elements, model, dependencies = {}) {
   model.pendingTurn = null;
   model.settledLocalOperation = null;
   model.state = null;
-  model.selectedActionId = null;
   model.renderedHistoryCount = -1;
   model.error = null;
 }
@@ -973,9 +972,8 @@ export function renderSidePanel(documentRef, model, dependencies = {}) {
 export async function submitMessage(elements, model, dependencies = {}) {
   const submittedMessage = elements.messageInput.value;
   const message = submittedMessage.trim();
-  if (!message || !model.tabId || !model.selectedActionId || model.loading) return;
+  if (!message || !model.tabId || model.loading) return;
   const requestTabId = model.tabId;
-  const requestActionId = model.selectedActionId;
   const view = workspaceView(model.state || {}, model.lang, model.uiLanguage);
   if (!view.canSend) return;
 
@@ -1012,7 +1010,6 @@ export async function submitMessage(elements, model, dependencies = {}) {
     const response = await sendRuntimeWith(dependencies, {
       type: WORKSPACE_SEND,
       tabId: requestTabId,
-      actionId: requestActionId,
       message: submittedMessage,
       operationId,
     });
@@ -1039,7 +1036,6 @@ export async function submitMessage(elements, model, dependencies = {}) {
     model.pendingTurn = null;
     model.state = response.state;
     model.lang = response.lang || model.lang;
-    model.selectedActionId = response.state?.selectedActionId || model.selectedActionId;
   } catch (error) {
     settledOperation = settleSendOperation(model, operation);
     if (!settledOperation) return;
@@ -1112,7 +1108,10 @@ export async function loadWorkspaceForTab(
       }
       model.state = response.state;
       model.lang = response.lang || "browser";
-      model.selectedActionId = response.state?.selectedActionId || null;
+      const responseView = workspaceView(response.state || {}, model.lang, model.uiLanguage);
+      if (response.prefill && responseView.canSend) {
+        elements.messageInput.value = response.prefill.prompt;
+      }
       if (
         model.pendingTurn
         && model.pendingTurn.resourceUrl !== response.state?.resourceUrl
@@ -1162,7 +1161,6 @@ async function initSidePanel() {
     state: null,
     lang: "browser",
     uiLanguage: chrome.i18n.getUILanguage() || "en",
-    selectedActionId: null,
     renderedHistoryCount: -1,
     operationGeneration: 0,
     latestLoadGeneration: null,
@@ -1184,6 +1182,7 @@ async function initSidePanel() {
     );
   });
   elements.messageInput.addEventListener("keydown", (event) => {
+    if (!workspaceView(model.state || {}, model.lang, model.uiLanguage).canSend) return;
     handleComposerKeydown(event, elements.messageForm);
   });
   elements.messageForm.addEventListener("submit", (event) => {

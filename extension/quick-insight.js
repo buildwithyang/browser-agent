@@ -1,11 +1,8 @@
-import {
-  createQuickInsightOperation,
-  workspaceOperationErrorEvent,
-} from "./workspace-operation.js";
+import { workspaceOperationErrorEvent } from "./workspace-operation.js";
 import { applyForCurrentOwner } from "./workspace-controller.js";
 
 /** Normalize a typed Quick Insight response for the existing overlay renderer. */
-export function quickInsightView(insight = {}, actions = []) {
+export function quickInsightView(insight = {}, shortcuts = []) {
   const cards = Array.isArray(insight.cards) ? insight.cards : [];
   const decision = cards.find((card) => card.type === "score") || {};
   const details = cards.find((card) => card.id === "job_overview") || {};
@@ -29,16 +26,8 @@ export function quickInsightView(insight = {}, actions = []) {
     },
     topStrength: plainText(textCard("top_strength").body_html),
     topGap: plainText(textCard("top_gap").body_html),
-    actions,
+    shortcuts,
   };
-}
-
-/** Seed/open first, then execute only Quick Insight Commands that require a request. */
-export async function runQuickInsightAction(actionId, dependencies) {
-  const operation = createQuickInsightOperation(actionId);
-  const opened = await dependencies.openWorkspace(operation);
-  if (operation.kind === "open_only") return opened;
-  return dependencies.executeOperation(operation, opened);
 }
 
 /** Build Action error presentation data for the Quick Insight overlay. */

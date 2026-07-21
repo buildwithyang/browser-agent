@@ -11,11 +11,10 @@ import {
 const {
   quickInsightActionErrorView,
   quickInsightView,
-  runQuickInsightAction,
 } = quickInsight;
 
 /** Build one response-shaped Gateway fixture for protocol-boundary tests. */
-function gatewayResponse({ status = 200, protocol = "3", body = {} } = {}) {
+function gatewayResponse({ status = 200, protocol = "4", body = {} } = {}) {
   return {
     status,
     ok: status >= 200 && status < 300,
@@ -69,37 +68,11 @@ test("summary card becomes summary HTML", () => {
     { title: "Page Summary", cards: [
       { type: "text", id: "summary", title: "Summary", body_html: "<p>Summary</p>" }
     ] },
-    [{ id: "ask_more", title: "Ask more" }]
+    [{ id: "ask_more", title: "Ask more", prompt: "" }]
   );
   assert.equal(view.type, "summary");
   assert.equal(view.summaryHtml, "<p>Summary</p>");
-  assert.equal(view.actions[0].title, "Ask more");
-});
-
-test("Quick Insight opens and seeds before its asynchronous Action request", async () => {
-  const events = [];
-  const result = await runQuickInsightAction("analyze", {
-    openWorkspace: async () => {
-      events.push("open-and-seed");
-      return { state: { histories: [] }, lang: "en" };
-    },
-    executeOperation: async () => {
-      events.push("request");
-      return { state: { histories: [{ role: "assistant" }] }, lang: "en" };
-    },
-  });
-
-  assert.deepEqual(events, ["open-and-seed", "request"]);
-  assert.deepEqual(result.state.histories, [{ role: "assistant" }]);
-});
-
-test("Ask More only opens and focuses the shared Workspace", async () => {
-  const events = [];
-  await runQuickInsightAction("ask_more", {
-    openWorkspace: async () => events.push("open-and-seed"),
-    executeOperation: async () => events.push("request"),
-  });
-  assert.deepEqual(events, ["open-and-seed"]);
+  assert.equal(view.shortcuts[0].title, "Ask more");
 });
 
 test("upgrade-required Action errors present the Extension store link", () => {
@@ -108,7 +81,7 @@ test("upgrade-required Action errors present the Extension store link", () => {
     quickInsightActionErrorView({
       type: "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED",
       updateUrl,
-      requiredVersion: 3,
+      requiredVersion: 4,
     }, "en"),
     {
       message: "Update Agent Bridge to continue.",
@@ -133,7 +106,7 @@ test("initial Quick Insight 426 presents a localized Web Store update link", asy
   const view = await initialRequestErrorView(gatewayResponse({
     status: 426,
     body: {
-      required_protocol_version: 3,
+      required_protocol_version: 4,
       update_url: updateUrl,
       message: "Upgrade required",
     },
@@ -231,15 +204,19 @@ test("initial Quick Insight renders the structured update presentation", async (
   assert.match(source, /updateLink\.rel\s*=\s*payload\.updateRel/);
 });
 
-test("background renders normalized insight actions", async () => {
+test("background renders normalized insight shortcuts", async () => {
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
-  assert.match(source, /renderActions\(body, payload\.insightView\.actions\)/);
+  assert.match(source, /renderShortcuts\(body, payload\.insightView\.shortcuts\)/);
 });
 
-test("Quick Insight actions open the shared Workspace", async () => {
+test("Quick Insight shortcut opens and prefills without executing Workspace", async () => {
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
   assert.match(source, /type:\s*"AGENT_BRIDGE_OPEN_WORKSPACE"/);
-  assert.match(source, /actionId: message\.actionId/);
+  assert.match(source, /shortcut,/);
+  assert.match(source, /shortcuts: payload\.shortcuts/);
+  assert.match(source, /quickInsight: payload\.insight/);
+  assert.doesNotMatch(source, /quick_insight_action/);
+  assert.doesNotMatch(source, /runQuickInsightAction/);
   assert.match(source, /chrome\.sidePanel\.open\(\{ tabId \}\)/);
   assert.match(
     source,
@@ -247,6 +224,8 @@ test("Quick Insight actions open the shared Workspace", async () => {
   );
   assert.match(source, /type:\s*"AGENT_BRIDGE_WORKSPACE_UPDATED",\s*tabId/s);
   assert.match(source, /workspaceSeedQueue\.run\(tabId/);
+  assert.match(source, /workspaceSeedQueue\.run\(\s*message\.tabId/);
+  assert.match(source, /consumeWorkspacePrefill\(message\.tabId/);
   assert.match(source, /workspaceOperationQueue/);
   assert.match(source, /AGENT_BRIDGE_WORKSPACE_RESET/);
   assert.equal(source.includes(["AGENT_BRIDGE", "CONTINUE"].join("_")), false);
@@ -259,7 +238,7 @@ test("content script supports fresh Workspace context collection", async () => {
   assert.match(source, /AGENT_BRIDGE_COLLECT_CONTEXT/);
 });
 
-test("Quick Insight actions use wrapping content-width tags", async () => {
+test("Quick Insight shortcuts use wrapping content-width tags", async () => {
   const source = await readFile(new URL("./background.js", import.meta.url), "utf8");
   assert.match(
     source,

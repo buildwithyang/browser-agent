@@ -1,7 +1,6 @@
 import {
   buildAuthHeaders,
   buildQuickInsightBody,
-  buildWorkspaceBody,
   buildUserMessageWorkspaceBody,
   buildWorkspaceHeaders,
   taskUrl,
@@ -19,12 +18,10 @@ import {
   presentQuickInsightForCurrentOwner,
   quickInsightRequestErrorView,
   quickInsightView,
-  runQuickInsightAction,
 } from "./quick-insight.js";
 import {
   ANONYMOUS_WORKSPACE_OWNER,
   applyWorkspaceResponse,
-  canRunQuickInsightAction,
   canSendUserMessage,
   workspaceStorageKey,
 } from "./workspace.js";
@@ -39,16 +36,18 @@ import {
   createActiveWorkspaceStream,
   createAuthSnapshot,
   createKeyedQueue,
+  consumeWorkspacePrefill,
   initialSelectionKey,
   finishActiveWorkspaceStream,
   isActiveWorkspaceStream,
-  loadAfterPendingSeed,
   loadOwnerScopedWorkspace,
   mergeWorkspaceSeed,
   pendingWorkspaceStream,
   readGatewayResponse,
   replaceActiveWorkspaceStream,
   restoreInitialSelection,
+  storeWorkspacePrefill,
+  workspacePrefillKey,
   workspaceStreamSnapshot,
 } from "./workspace-controller.js";
 import {
@@ -270,11 +269,11 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
         present: () => {
           showResult(tabId, {
             state: "result",
-            actions: task.actions || [],
+            shortcuts: task.shortcuts || [],
             insight: task.insight || null,
             workspace: task.workspace || null,
             insightView: task.insight
-              ? quickInsightView(task.insight, task.actions || [])
+              ? quickInsightView(task.insight, task.shortcuts || [])
               : null,
             quickInsightActionErrors: {
               retry: quickInsightActionErrorView(null, lang),
@@ -327,7 +326,7 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
     });
 }
 
-/** Seed or refresh the owner-scoped Workspace selected by a Quick Insight Action. */
+/** Seed or refresh one owner-scoped Workspace and optional one-shot Shortcut draft. */
 async function seedWorkspace(tabId, message) {
   const descriptor = message.workspace || {};
   const resourceUrl = descriptor.resource_url || descriptor.resourceUrl || message.source || "";
@@ -335,15 +334,21 @@ async function seedWorkspace(tabId, message) {
   const authSnapshot = await readAuthSnapshot();
   const storageKey = workspaceStorageKey(authSnapshot.ownerId, resourceUrl);
   const stored = await chrome.storage.local.get(storageKey);
+  const shortcuts = Array.isArray(message.shortcuts) ? message.shortcuts : [];
+  const selectedShortcut = message.shortcut == null
+    ? null
+    : shortcuts.find((shortcut) => shortcut?.id === message.shortcut?.id
+      && shortcut.prompt === message.shortcut?.prompt) || null;
+  if (message.shortcut != null && !selectedShortcut) {
+    throw new TypeError("Selected Prompt Shortcut is not in the server catalogue");
+  }
   const state = mergeWorkspaceSeed(stored[storageKey], {
     resourceUrl,
     pageTitle: message.pageTitle || "",
-    quickInsight: message.insight || null,
-    actions: message.actions || [],
-    actionId: message.actionId,
-    defaultActionId: descriptor.default_action_id || descriptor.defaultActionId,
+    quickInsight: message.quickInsight || null,
+    shortcuts,
   });
-  await Promise.all([
+  const writes = [
     chrome.storage.local.set({ [storageKey]: state }),
     chrome.storage.session.set({
       [activeWorkspaceKey(tabId)]: {
@@ -353,7 +358,11 @@ async function seedWorkspace(tabId, message) {
         lang: message.lang || "en",
       },
     }),
-  ]);
+  ];
+  if (selectedShortcut) {
+    writes.push(storeWorkspacePrefill(tabId, selectedShortcut, chrome.storage.session));
+  }
+  await Promise.all(writes);
   return { state, lang: message.lang || "en" };
 }
 
@@ -380,24 +389,12 @@ async function collectPageContext(tabId) {
   return restoreInitialSelection(fresh, selectionData[selectionKey]);
 }
 
-/** Build one trigger-specific request from the latest complete Workspace state. */
+/** Build one message-only request from the latest complete Workspace state. */
 function buildOperationRequest(pageContext, active, operation) {
-  if (operation.trigger === "user_message") {
-    return buildUserMessageWorkspaceBody(pageContext, {
-      resourceUrl: active.mapping.resourceUrl,
-      actionId: operation.actionId,
-      state: active.state,
-      message: operation.message,
-      lang: active.lang,
-      operationId: operation.operationId,
-    });
-  }
-  return buildWorkspaceBody(pageContext, {
-    trigger: "quick_insight_action",
+  return buildUserMessageWorkspaceBody(pageContext, {
     resourceUrl: active.mapping.resourceUrl,
-    actionId: operation.actionId,
-    histories: active.state.histories,
-    artifacts: active.state.artifacts,
+    state: active.state,
+    message: operation.message,
     lang: active.lang,
     operationId: operation.operationId,
   });
@@ -427,7 +424,7 @@ async function executeWorkspaceOperation(tabId, operation, authSnapshot) {
     operationId: identifiedOperation.operationId,
     tabId,
     resourceUrl: active.mapping.resourceUrl,
-    submittedMessage: identifiedOperation.submittedMessage,
+    submittedMessage: identifiedOperation.message,
     controller: new AbortController(),
   });
   // Replacement happens before queue entry so a newer same-resource command cancels old I/O now.
@@ -458,10 +455,9 @@ async function executeWorkspaceOperation(tabId, operation, authSnapshot) {
         ) {
           throw new WorkspaceOperationStaleError();
         }
-        const allowed = identifiedOperation.trigger === "user_message"
-          ? canSendUserMessage(latest.state)
-          : canRunQuickInsightAction(latest.state);
-        if (!allowed) throw new Error("Workspace message limit reached");
+        if (!canSendUserMessage(latest.state)) {
+          throw new Error("Workspace message limit reached");
+        }
         return latest;
       },
       collectPageContext: () => collectPageContext(tabId),
@@ -563,7 +559,7 @@ async function handleWorkspaceOperationError(tabId, error, authSnapshot) {
   return event;
 }
 
-/** Open and seed inside the user gesture before optionally queueing the selected Command. */
+/** Open and seed inside the user gesture without executing the selected Shortcut. */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== OPEN_WORKSPACE || !sender.tab?.id) return undefined;
   const tabId = sender.tab.id;
@@ -574,37 +570,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     enabled: true,
   });
   const openPromise = chrome.sidePanel.open({ tabId });
-  let requestAuthSnapshot = null;
-
-  runQuickInsightAction(message.actionId, {
-    openWorkspace: async (operation) => {
-      const seedPromise = workspaceSeedQueue.run(tabId, async () => seedWorkspace(tabId, {
-        actionId: operation.actionId,
-        workspace: message.workspace,
-        insight: message.insight,
-        actions: message.actions,
-        pageTitle: message.pageTitle,
-        source: message.source,
-        lang: message.lang,
-      }));
-      const [, , workspace] = await Promise.all([
-        optionsPromise,
-        openPromise,
-        seedPromise,
-      ]);
+  const seedPromise = workspaceSeedQueue.run(tabId, async () => seedWorkspace(tabId, {
+    shortcut: message.shortcut,
+    workspace: message.workspace,
+    quickInsight: message.quickInsight,
+    shortcuts: message.shortcuts,
+    pageTitle: message.pageTitle,
+    source: message.source,
+    lang: message.lang,
+  }));
+  Promise.all([optionsPromise, openPromise, seedPromise])
+    .then(([, , workspace]) => {
       notifyWorkspaceUpdated(tabId);
       return workspace;
-    },
-    executeOperation: async (operation) => {
-      requestAuthSnapshot = await readAuthSnapshot();
-      const workspace = await executeWorkspaceOperation(tabId, operation, requestAuthSnapshot);
-      notifyWorkspaceUpdated(tabId);
-      return workspace;
-    },
-  })
+    })
     .then((workspace) => sendResponse({ ok: true, ...workspace }))
     .catch(async (error) => {
-      const event = await handleWorkspaceOperationError(tabId, error, requestAuthSnapshot);
+      const event = await handleWorkspaceOperationError(tabId, error, null);
       sendResponse({ ok: false, ...event });
     });
   return true;
@@ -613,19 +595,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 /** Serve Side Panel reads from the active session mapping. */
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== WORKSPACE_GET || !message.tabId) return undefined;
-  loadAfterPendingSeed(
-    workspaceSeedQueue.pending(message.tabId),
-    () => loadActiveWorkspace(message.tabId)
+  workspaceSeedQueue.run(
+    message.tabId,
+    async () => ({
+      active: await loadActiveWorkspace(message.tabId),
+      prefill: await consumeWorkspacePrefill(message.tabId, chrome.storage.session),
+    })
   )
-    .then((active) => {
+    .then(({ active, prefill }) => {
       if (!active) {
-        sendResponse({ ok: false, error: "Open a Quick Insight Action to start this Workspace." });
+        sendResponse({ ok: false, error: "Open Quick Insight to start this Workspace." });
         return;
       }
       sendResponse({
         ok: true,
         state: active.state,
         lang: active.lang,
+        prefill,
         pendingStream: pendingWorkspaceStream(
           activeWorkspaceStreams,
           active.mapping.storageKey,
@@ -642,11 +628,12 @@ async function dispatchWorkspaceSend(tabId, message, sendResponse) {
   const authSnapshot = await readAuthSnapshot();
   try {
     const operation = createUserMessageOperation(
-      message.actionId,
-      message.message,
-      message.operationId || null
+      message.message
     );
-    const { state, lang } = await executeWorkspaceOperation(tabId, operation, authSnapshot);
+    const identifiedOperation = message.operationId
+      ? identifyWorkspaceOperation(operation, message.operationId)
+      : operation;
+    const { state, lang } = await executeWorkspaceOperation(tabId, identifiedOperation, authSnapshot);
     sendResponse({ ok: true, state, lang });
   } catch (error) {
     const event = await handleWorkspaceOperationError(tabId, error, authSnapshot);
@@ -673,6 +660,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove([
     activeWorkspaceKey(tabId),
     initialSelectionKey(tabId),
+    workspacePrefillKey(tabId),
   ]);
   delete pendingSelection[tabId];
 });
@@ -845,13 +833,13 @@ function renderPanel(payload) {
     });
   };
 
-  const renderActions = (container, actionList) => {
-    if (!actionList || !actionList.length) return;
+  const renderShortcuts = (container, shortcuts) => {
+    if (!shortcuts || !shortcuts.length) return;
     const actionsWrap = el("div", "ab-actions");
-    actionList.forEach((action) => {
+    shortcuts.forEach((shortcut) => {
       const btn = el("button", "ab-action");
       btn.type = "button";
-      btn.textContent = action.title;
+      btn.textContent = shortcut.title;
       const err = el("div", "ab-action-err");
       err.style.display = "none";
       btn.addEventListener("click", () => {
@@ -859,10 +847,10 @@ function renderPanel(payload) {
         chrome.runtime.sendMessage(
           {
             type: "AGENT_BRIDGE_OPEN_WORKSPACE",
-            actionId: action.id,
+            shortcut,
             workspace: payload.workspace,
-            insight: payload.insight,
-            actions: payload.actions,
+            quickInsight: payload.insight,
+            shortcuts: payload.shortcuts,
             pageTitle: payload.pageTitle,
             source: payload.source,
             lang: payload.lang,
@@ -1241,10 +1229,10 @@ function renderPanel(payload) {
     body.append(wrap);
   } else if (payload.insightView) {
     renderQuickInsight(body, payload.insightView, payload.lang);
-    renderActions(body, payload.insightView.actions);
+    renderShortcuts(body, payload.insightView.shortcuts);
   } else if (payload.sections && payload.sections.length) {
     renderSections(body, payload.sections);
-    renderActions(body, payload.actions);
+    renderShortcuts(body, payload.shortcuts);
   } else if (payload.html) {
     body.innerHTML = payload.html; // sanitized by the gateway before it reaches here
     const firstP = body.querySelector("p");

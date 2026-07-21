@@ -6,10 +6,11 @@ import * as workspace from "./workspace.js";
 const {
   ANONYMOUS_WORKSPACE_OWNER,
   applyWorkspaceResponse,
-  canRunQuickInsightAction,
   canSend,
   canSendUserMessage,
+  countUserTurns,
   createWorkspace,
+  migrateWorkspaceV2,
   validateWorkspaceState,
   workspaceStorageKey,
 } = workspace;
@@ -29,14 +30,13 @@ function copy(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-/** Build one complete protocol-v2 HistoryMessage fixture. */
+/** Build one complete protocol-v4 HistoryMessage fixture. */
 function history(index, overrides = {}) {
   const role = overrides.role || (index % 2 === 0 ? "user" : "assistant");
   return {
     id: fixtureId("3", index + 1),
     role,
     content: role === "user" ? "question" : "",
-    action_id: "analyze",
     created_at: "2026-07-20T10:00:00Z",
     attachments: [],
     ...overrides,
@@ -94,7 +94,6 @@ function workspaceResponse(overrides = {}) {
   const state = artifactState();
   return {
     resource_url: RESOURCE_URL,
-    selected_action_id: "write_cover_letter",
     result_type: "update_artifact",
     histories: state.histories,
     artifacts: state.artifacts,
@@ -108,14 +107,14 @@ function workspaceResponse(overrides = {}) {
       finished_at: "2026-07-20T10:00:01Z",
       duration_ms: 1000,
     },
-    protocol_version: 3,
+    protocol_version: 4,
     ...overrides,
   };
 }
 
-test("workspace key encodes schema v2, owner, and resource", () => {
+test("workspace key encodes schema v3, owner, and resource", () => {
   const first = workspaceStorageKey("u1", "https://x/a");
-  assert.match(first, /^agent-bridge:workspace:v2:/);
+  assert.match(first, /^agent-bridge:workspace:v3:/);
   assert.match(first, /u1/);
   assert.match(first, /https%3A%2F%2Fx%2Fa/);
   assert.notEqual(first, workspaceStorageKey("u2", "https://x/a"));
@@ -131,13 +130,12 @@ test("workspace key uses the explicit anonymous owner and rejects blank resource
   assert.throws(() => workspaceStorageKey("u1", "   "), /resourceUrl/);
 });
 
-test("createWorkspace persists only whitelisted schema-v2 fields", () => {
+test("createWorkspace persists only whitelisted schema-v3 fields", () => {
   const state = createWorkspace({
     resourceUrl: RESOURCE_URL,
     pageTitle: "Page",
     quickInsight: { title: "Insight" },
-    actions: [{ id: "analyze", title: "Analyze" }],
-    defaultActionId: "analyze",
+    shortcuts: [{ id: "analyze", title: "Analyze", prompt: "Analyze this role." }],
     histories: [],
     artifacts: { cv: null, cover_letter: null },
     currentDocument: { kind: "note", text: "legacy draft" },
@@ -148,12 +146,11 @@ test("createWorkspace persists only whitelisted schema-v2 fields", () => {
   });
 
   assert.deepEqual(state, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     resourceUrl: RESOURCE_URL,
     pageTitle: "Page",
     quickInsight: { title: "Insight" },
-    actions: [{ id: "analyze", title: "Analyze" }],
-    selectedActionId: "analyze",
+    shortcuts: [{ id: "analyze", title: "Analyze", prompt: "Analyze this role." }],
     histories: [],
     artifacts: { cv: null, cover_letter: null },
     updatedAt: "2026-07-19T00:00:00Z",
@@ -161,20 +158,48 @@ test("createWorkspace persists only whitelisted schema-v2 fields", () => {
   assert.equal("currentDocument" in state, false);
 });
 
-test("createWorkspace preserves a valid selected action before applying defaults", () => {
-  const actions = [
-    { id: "analyze", title: "Analyze" },
+test("migrates v2 workspace to v3 without losing histories or artifacts", () => {
+  const legacyMessage = { ...history(0), action_id: "analyze" };
+  const migrated = migrateWorkspaceV2({
+    schemaVersion: 2,
+    resourceUrl: "https://example.com/role",
+    pageTitle: "Role",
+    quickInsight: { title: "Job Match", cards: [] },
+    actions: [{ id: "analyze", title: "Analyze" }],
+    selectedActionId: "analyze",
+    histories: [legacyMessage],
+    artifacts: { cv: null, cover_letter: null },
+    updatedAt: "2026-07-21T10:00:00.000Z",
+  });
+
+  assert.equal(migrated.schemaVersion, 3);
+  assert.deepEqual(migrated.shortcuts, []);
+  assert.equal(migrated.histories[0].content, "question");
+  assert.equal("action_id" in migrated.histories[0], false);
+  assert.deepEqual(migrated.artifacts, { cv: null, cover_letter: null });
+  assert.equal("actions" in migrated, false);
+  assert.equal("selectedActionId" in migrated, false);
+});
+
+test("Prompt Shortcuts require exactly id title prompt and allow empty Ask More", () => {
+  const askMore = { id: "ask_more", title: "Ask More", prompt: "" };
+  assert.deepEqual(createWorkspace({ shortcuts: [askMore] }).shortcuts, [askMore]);
+  for (const shortcut of [
     { id: "ask_more", title: "Ask More" },
-  ];
-  assert.equal(
-    createWorkspace({ actions, selectedActionId: "ask_more", defaultActionId: "analyze" })
-      .selectedActionId,
-    "ask_more"
-  );
-  assert.equal(
-    createWorkspace({ actions, selectedActionId: "missing", defaultActionId: "analyze" })
-      .selectedActionId,
-    "analyze"
+    { id: "ask_more", title: "Ask More", prompt: "", extra: true },
+    { id: "", title: "Ask More", prompt: "" },
+    { id: "ask_more", title: "", prompt: "" },
+  ]) {
+    assert.throws(() => createWorkspace({ shortcuts: [shortcut] }), /Shortcut/i);
+  }
+});
+
+test("storage validation permits 31 migrated records but rejects a 32nd", () => {
+  const histories = Array.from({ length: 31 }, (_, index) => history(index));
+  assert.equal(validateWorkspaceState(histories, { cv: null, cover_letter: null }), true);
+  assert.throws(
+    () => validateWorkspaceState([...histories, history(31)], { cv: null, cover_letter: null }),
+    /31 messages/
   );
 });
 
@@ -327,36 +352,31 @@ test("v2 validator rejects an Artifact version that differs from its latest Atta
   );
 });
 
-test("message-count guards model the two request-trigger boundaries", () => {
-  const state = (length) => ({
-    schemaVersion: 2,
-    histories: Array.from({ length }, (_, index) => history(index)),
-    artifacts: { cv: null, cover_letter: null },
+test("allows ten user sends regardless of assistant message count", () => {
+  const state = (turns) => ({
+    histories: Array.from({ length: turns * 2 }, (_, index) => history(index)),
   });
 
+  assert.equal(countUserTurns(state(9).histories), 9);
   assert.equal(canSendUserMessage(state(9)), true);
+  assert.equal(countUserTurns(state(10).histories), 10);
   assert.equal(canSendUserMessage(state(10)), false);
-  assert.equal(canRunQuickInsightAction(state(10)), true);
-  assert.equal(canRunQuickInsightAction(state(11)), false);
-  assert.equal(canSend(state(9)), true, "legacy UI alias follows user-message semantics");
+  assert.equal(canSend(state(9)), true);
 });
 
-test("message-count guards fail closed when any nested state is invalid", () => {
-  const invalid = {
-    schemaVersion: 2,
-    histories: [history(0, { created_at: "2026-07-20T14:00:00+04:00" })],
-    artifacts: { cv: null, cover_letter: null },
-  };
-  assert.equal(canSendUserMessage(invalid), false);
-  assert.equal(canRunQuickInsightAction(invalid), false);
+test("message-count guard requires a histories array", () => {
   assert.equal(canSendUserMessage({}), false);
+  assert.equal(canSendUserMessage(null), false);
 });
 
 test("response atomically replaces complete histories and Artifacts", () => {
   const current = createWorkspace({
     resourceUrl: RESOURCE_URL,
-    actions: [{ id: "write_cover_letter", title: "Write cover letter" }],
-    selectedActionId: "write_cover_letter",
+    shortcuts: [{
+      id: "write_cover_letter",
+      title: "Write cover letter",
+      prompt: "Write a cover letter.",
+    }],
     histories: [],
     artifacts: { cv: null, cover_letter: null },
     updatedAt: "old",
@@ -368,7 +388,7 @@ test("response atomically replaces complete histories and Artifacts", () => {
   assert.deepEqual(next.histories, artifactState().histories);
   assert.deepEqual(next.artifacts, artifactState().artifacts);
   assert.equal(next.resourceUrl, RESOURCE_URL);
-  assert.equal(next.selectedActionId, "write_cover_letter");
+  assert.equal("selectedActionId" in next, false);
   assert.equal(next.updatedAt, "2026-07-20T10:00:01+00:00");
   assert.deepEqual(current, before);
   assert.equal("currentDocument" in next, false);
@@ -377,7 +397,7 @@ test("response atomically replaces complete histories and Artifacts", () => {
 test("invalid complete response leaves the caller's prior object unchanged", () => {
   const current = createWorkspace({
     resourceUrl: RESOURCE_URL,
-    actions: [{ id: "analyze", title: "Analyze" }],
+    shortcuts: [{ id: "analyze", title: "Analyze", prompt: "Analyze this role." }],
     histories: [],
     artifacts: { cv: null, cover_letter: null },
   });
@@ -396,7 +416,6 @@ test("invalid complete response leaves the caller's prior object unchanged", () 
 
   for (const missing of [
     "resource_url",
-    "selected_action_id",
     "result_type",
     "histories",
     "artifacts",

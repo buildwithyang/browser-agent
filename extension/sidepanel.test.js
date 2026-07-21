@@ -21,15 +21,14 @@ function fixtureId(category, index) {
   return `${category}0000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
 }
 
-/** Build one complete protocol-v2 message fixture. */
+/** Build one complete protocol-v4 message fixture. */
 function message(index, overrides = {}) {
   const role = overrides.role || (index % 2 === 0 ? "user" : "assistant");
   return {
     id: fixtureId("3", index + 1),
     role,
     content: role === "user" ? "question" : "answer",
-    action_id: "analyze",
-    created_at: `2026-07-20T10:0${index}:00Z`,
+    created_at: `2026-07-20T10:00:${String(index % 60).padStart(2, "0")}Z`,
     attachments: [],
     ...overrides,
   };
@@ -52,21 +51,20 @@ function attachment({
   };
 }
 
-/** Build one valid schema-v2 Workspace with optional state overrides. */
+/** Build one valid schema-v3 Workspace with optional state overrides. */
 function workspace(overrides = {}) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     resourceUrl: RESOURCE_URL,
     pageTitle: "Platform Engineer",
     quickInsight: {
       title: "Strong match",
       cards: [{ type: "score", id: "decision", title: "Decision", score: 87 }],
     },
-    actions: [
-      { id: "analyze", title: "Analyze" },
-      { id: "ask_more", title: "Ask More" },
+    shortcuts: [
+      { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+      { id: "ask_more", title: "Ask More", prompt: "" },
     ],
-    selectedActionId: "analyze",
     histories: [],
     artifacts: { cv: null, cover_letter: null },
     updatedAt: null,
@@ -90,7 +88,6 @@ async function renderState(state, overrides = {}) {
     state,
     lang: "en",
     uiLanguage: "en-US",
-    selectedActionId: state?.selectedActionId || null,
     loading: false,
     error: null,
     ...modelOverrides,
@@ -168,6 +165,8 @@ test("submit immediately renders a transient user turn and clears the composer",
   assert.equal(setup.elements.messageInput.value, "");
   assert.equal(setup.model.pendingTurn?.userText, "这个岗位最看重什么？");
   assert.equal(request?.operationId, "00000000-0000-4000-8000-000000000001");
+  assert.equal(request?.message, "这个岗位最看重什么？");
+  assert.equal("actionId" in request, false);
   assert.match(setup.elements.timeline.textContent, /这个岗位最看重什么/);
   assert.equal(setup.elements.timeline.querySelectorAll(".message.transient time").length, 2);
   assert.doesNotMatch(setup.elements.timeline.textContent, /\bYou\b|\bAgent\b|你：/);
@@ -825,7 +824,7 @@ test("timeline distinguishes connected empty, disconnected, and initial loading"
     ".timeline-empty-state"
   );
   assert.equal(connectedNotice?.dataset.state, "connected-empty");
-  assert.match(connectedNotice?.textContent || "", /Action/);
+  assert.match(connectedNotice?.textContent || "", /shortcut/i);
 
   const disconnected = await renderState(null);
   assert.equal(
@@ -1033,27 +1032,87 @@ test("CV Attachment opens the response URL safely and Side Panel has no preview 
   assert.equal("CV_PREVIEW_URL" in sidepanel, false);
 });
 
-test("Action chips wrap near the composer and selection never clears shared history", async () => {
+test("Shortcut chips replace the composer and Ask More clears it without selection state", async () => {
   const histories = [message(0), message(1)];
   const { dom, model } = await renderState(workspace({ histories }));
   const { document } = dom.window;
-  const chips = [...document.querySelectorAll("#composer .action-chip")];
+  const chips = [...document.querySelectorAll("#composer .shortcut-chip")];
 
   assert.equal(chips.length, 2);
+  const input = document.getElementById("message-input");
+  input.value = "Existing draft";
+  chips[0].click();
+  assert.equal(input.value, "Analyze this role.");
+  assert.equal(document.activeElement, input);
   chips[1].click();
-  assert.equal(model.selectedActionId, "ask_more");
+  assert.equal(input.value, "");
+  assert.equal(document.activeElement, input);
   assert.equal(document.querySelectorAll(".message").length, histories.length);
-  assert.equal(chips[1].getAttribute("aria-pressed"), "true");
+  assert.equal(chips[1].hasAttribute("aria-pressed"), false);
+  assert.equal("selectedActionId" in model, false);
 
   const generic = await renderState(workspace({
     quickInsight: { title: "Page summary", cards: [] },
-    actions: [{ id: "ask_more", title: "Ask More" }],
-    selectedActionId: "ask_more",
+    shortcuts: [{ id: "ask_more", title: "Ask More", prompt: "" }],
   }));
   assert.deepEqual(
-    [...generic.dom.window.document.querySelectorAll(".action-chip")].map((chip) => chip.textContent),
+    [...generic.dom.window.document.querySelectorAll(".shortcut-chip")].map((chip) => chip.textContent),
     ["Ask More"]
   );
+});
+
+test("consumed Quick Insight prefill initializes the composer without auto-sending", async () => {
+  const setup = await renderState(null, { tabId: 7 });
+  const requests = [];
+
+  await sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, {
+    sendRuntime: async (request) => {
+      requests.push(request);
+      return {
+        ok: true,
+        state: workspace(),
+        lang: "en",
+        prefill: { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+      };
+    },
+  });
+
+  assert.equal(setup.elements.messageInput.value, "Analyze this role.");
+  assert.deepEqual(requests, [{ type: sidepanel.WORKSPACE_GET, tabId: 7 }]);
+});
+
+test("prefill is ignored after ten canonical user turns", async () => {
+  const setup = await renderState(null, { tabId: 7 });
+  await sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, {
+    sendRuntime: async () => ({
+      ok: true,
+      state: workspace({ histories: Array.from({ length: 20 }, (_, index) => message(index)) }),
+      lang: "en",
+      prefill: { id: "analyze", title: "Analyze", prompt: "Do not apply" },
+    }),
+  });
+
+  assert.equal(setup.elements.messageInput.value, "");
+  assert.equal(setup.elements.messageInput.disabled, true);
+});
+
+test("tenth pending send shows 10 / 10 and failure restores 9 / 10", async () => {
+  const setup = await renderState(workspace({
+    histories: Array.from({ length: 18 }, (_, index) => message(index)),
+  }), { tabId: 7 });
+  const request = deferred();
+  setup.elements.messageInput.value = "Final question";
+
+  const submit = sidepanel.submitMessage(setup.elements, setup.model, {
+    randomUUID: () => "00000000-0000-4000-8000-000000000001",
+    sendRuntime: () => request.promise,
+  });
+  assert.equal(setup.elements.turnMeter.textContent, "10 / 10");
+
+  request.resolve({ ok: false, error: "Generation failed" });
+  await submit;
+  assert.equal(setup.elements.turnMeter.textContent, "9 / 10");
+  assert.equal(setup.elements.messageInput.disabled, false);
 });
 
 test("update-required and retryable errors render distinct accessible composer states", async () => {
@@ -1063,7 +1122,7 @@ test("update-required and retryable errors render distinct accessible composer s
     ok: false,
     type: "AGENT_BRIDGE_EXTENSION_UPDATE_REQUIRED",
     updateUrl,
-    requiredVersion: 3,
+    requiredVersion: 4,
   });
   const updated = await renderState(workspace(), { error: updateError });
   const updateRegion = updated.dom.window.document.querySelector("#composer-error");
@@ -1352,7 +1411,6 @@ test("same-tab canonical resource switch clears the old resource draft", async (
     state: workspace({
       resourceUrl: OTHER_RESOURCE_URL,
       pageTitle: "Resource B",
-      selectedActionId: "ask_more",
     }),
     lang: "en",
   });
@@ -1360,7 +1418,7 @@ test("same-tab canonical resource switch clears the old resource draft", async (
 
   assert.equal(model.state?.resourceUrl, OTHER_RESOURCE_URL);
   assert.equal(model.state?.pageTitle, "Resource B");
-  assert.equal(model.selectedActionId, "ask_more");
+  assert.equal("selectedActionId" in model, false);
   assert.equal(model.error, null);
   assert.equal(elements.messageInput.value, "");
 });
@@ -1610,8 +1668,8 @@ test("Quiet Precision CSS contains horizontal overflow and keeps rich content lo
     css,
     /\.message\.user\s+\.message-surface\s*\{[^}]*background:\s*var\(--brand-soft\)/s
   );
-  assert.match(css, /\.action-chips\s*\{[^}]*flex-wrap:\s*wrap/s);
-  assert.doesNotMatch(css, /\.action-chips\s*\{[^}]*overflow-x:\s*(?:auto|scroll)/s);
+  assert.match(css, /\.shortcut-chips\s*\{[^}]*flex-wrap:\s*wrap/s);
+  assert.doesNotMatch(css, /\.shortcut-chips\s*\{[^}]*overflow-x:\s*(?:auto|scroll)/s);
   assert.match(css, /\.markdown-content\s+table\s*\{[^}]*overflow-x:\s*auto/s);
   assert.match(css, /\.markdown-content\s+pre\s*\{[^}]*overflow-x:\s*auto/s);
   assert.match(css, /\.markdown-content\s+code\s*\{[^}]*overflow-x:\s*auto/s);
@@ -1641,12 +1699,19 @@ test("Quiet Precision CSS contains horizontal overflow and keeps rich content lo
 test("Side Panel keeps lifecycle reloads, loading state, message limit, and auto-scroll", async () => {
   const source = await readFile(new URL("./sidepanel.js", import.meta.url), "utf8");
   const limited = await renderState(workspace({
-    histories: Array.from({ length: 10 }, (_, index) => message(index)),
+    histories: Array.from({ length: 20 }, (_, index) => message(index)),
   }));
 
   assert.equal(limited.elements.messageInput.disabled, true);
   assert.equal(limited.elements.sendButton.disabled, true);
-  assert.match(limited.elements.composerHint.textContent, /limit/i);
+  assert.equal(limited.elements.messageInput.placeholder, "This Workspace supports up to 10 turns.");
+  assert.equal(limited.elements.composerHint.hidden, true);
+  assert.equal(limited.elements.turnMeter.textContent, "10 / 10");
+  assert.equal(
+    [...limited.dom.window.document.querySelectorAll(".shortcut-chip")]
+      .every((button) => button.disabled),
+    true
+  );
   assert.match(source, /AGENT_BRIDGE_WORKSPACE_UPDATED/);
   assert.match(source, /AGENT_BRIDGE_WORKSPACE_RESET/);
   assert.match(source, /chrome\.tabs\.onActivated\.addListener/);
