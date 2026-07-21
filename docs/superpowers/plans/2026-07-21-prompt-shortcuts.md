@@ -17,6 +17,9 @@
 - Keep Workspace streaming on Chat Completions and NDJSON. Do not introduce SSE, WebSocket, polling, or the Responses API.
 - Preserve atomic terminal commits: pending text and deltas never enter canonical histories or consume a turn after failure/cancellation.
 - Count a turn from canonical `role=user` messages only. The tenth user send is legal; an eleventh is rejected by both Extension and Gateway.
+- A fresh v4 Workspace naturally contains at most 20 histories. A v2-migrated Workspace may retain
+  up to 11 legacy Action Assistant histories and therefore has a compatibility ceiling of 31; the
+  ten-user-turn limit remains unchanged.
 - Analyze output uses a Markdown table with exactly the two requested columns: `JD 要求 | 匹配情况` in Chinese and `JD Requirement | Match` in English.
 - Tailor Resume's initial Shortcut asks for a modification plan and does not directly create a CV. A later explicit confirmation may create or update the CV Artifact.
 - Cover Letter remains a plain-text, copyable Attachment even though the Assistant note supports Markdown rendering.
@@ -196,7 +199,8 @@ Replace the request union with one strict model and centralize user-turn countin
 
 ```python
 MAX_WORKSPACE_TURNS = 10
-MAX_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2
+MAX_FRESH_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2
+MAX_WORKSPACE_HISTORIES = 11 + MAX_FRESH_WORKSPACE_HISTORIES
 
 
 def count_user_turns(histories: list[HistoryMessage]) -> int:
@@ -228,8 +232,10 @@ class WorkspaceRequest(PageContext):
 
 Set `CURRENT_EXTENSION_PROTOCOL_VERSION = 4`, make `WorkspaceResponse.histories` use
 `MAX_WORKSPACE_HISTORIES`, remove `selected_action_id`, and preserve `extra="forbid"` on all
-affected boundary models. Remove stale Action-specific exports and imports from these files only;
-downstream compile failures are intentionally resolved in Task 2.
+affected boundary models. The 31-message bound only preserves a migrated v2 state's possible 11
+legacy Assistant messages plus 20 v4 user/Assistant records; a fresh v4 reducer still naturally
+stops at 20. Remove stale Action-specific exports and imports from these files only; downstream
+compile failures are intentionally resolved later in this same task.
 
 - [ ] **Step 4: Run the schema tests as an implementation checkpoint**
 
@@ -562,7 +568,8 @@ Set constants and state helpers:
 ```javascript
 export const WORKSPACE_SCHEMA_VERSION = 3;
 export const MAX_WORKSPACE_TURNS = 10;
-export const MAX_WORKSPACE_HISTORIES = 20;
+export const MAX_FRESH_WORKSPACE_HISTORIES = 20;
+export const MAX_WORKSPACE_HISTORIES = 31;
 
 export function countUserTurns(histories = []) {
   return histories.reduce(
@@ -576,7 +583,9 @@ export function canSendUserMessage(state) {
 }
 ```
 
-Validate each Shortcut as exactly `id`, `title`, and `prompt`; permit `prompt === ""`. Persist only:
+Validate each Shortcut as exactly `id`, `title`, and `prompt`; permit `prompt === ""`. The 31-record
+validation ceiling exists only so a v2 state can retain its possible 11 legacy Action Assistant
+messages while completing ten real user turns; fresh v4 state still naturally ends at 20. Persist only:
 
 ```text
 schemaVersion/resourceUrl/pageTitle/quickInsight/shortcuts/histories/artifacts/updatedAt
@@ -967,7 +976,8 @@ git commit -m "docs: release prompt shortcut workspace v4"
 - [ ] Analyze output contains exactly the two comparison columns requested by the user.
 - [ ] Tailor Resume asks for a change plan before generation; later confirmation can create/update CV.
 - [ ] Cover Letter creates and updates a plain-text, copyable Artifact.
-- [ ] Ten canonical user sends work; an eleventh is blocked, and pending failures do not consume a turn.
+- [ ] Ten canonical user sends work; an eleventh is blocked, pending failures do not consume a turn,
+      fresh v4 history ends at 20, and migrated v2 history may reach at most 31 without data loss.
 - [ ] v2 local Workspace history, Attachments, Artifacts, and page metadata survive v3 migration;
       Action state is removed and v1 migration is gone.
 - [ ] Full Gateway/Extension suites, import check, package check, diff check, and manual smoke test pass.
