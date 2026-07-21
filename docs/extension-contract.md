@@ -215,8 +215,9 @@ Extension 不能从它们 append canonical Message 或修改 Artifact。
 
 - id 为 UUID，`created_at` 为 UTC；pure-v4 histories 只包含完整、按顺序排列的
   User/Assistant pair，response 最多 10 个 pair / 20 条 histories。
-- 旧本地 Workspace schema 会被丢弃并创建全新的 schema-v3 Workspace；旧 histories 和
-  Artifacts 不转换。
+- `WORKSPACE_GET` 遇到旧本地 Workspace schema 时会丢弃精确旧 record 与 mapping 并返回
+  未连接状态；下一次 Quick Insight seed 才创建全新的 schema-v3 Workspace。旧 histories
+  和 Artifacts 不转换。
 - User Message 不能带 Attachment；每条 Assistant Message 最多一个 Attachment。
 - Assistant content、Artifact draft 和 Cover Letter Attachment 最多 100,000 字符。
 
@@ -251,9 +252,9 @@ agent-bridge:workspace:v3:<encoded owner>:<encoded resourceUrl>
 Repository 或跨设备恢复。
 
 local schema v3 保存 Quick Insight、Shortcuts、histories 与 Artifacts，不保存 Shortcut
-selection。旧 local schema 不转换：精确旧 record 或指向非 v3 record 的 mapping 会被
-丢弃，再创建新的空 v3 Workspace；不保留旧 histories / Artifacts，也不扫描其他
-owner/resource。
+selection。旧 local schema 不转换：`WORKSPACE_GET` 会丢弃精确旧 record 或指向非 v3
+record 的 mapping，返回未连接状态；下一次 Quick Insight seed 才创建新的空 v3
+Workspace。不保留旧 histories / Artifacts，也不扫描其他 owner/resource。
 
 - 同一 owner/resource 使用 keyed queue；每次在队列内重读最新 state 并重新采集页面。
 - 发送时 Side Panel 先显示 optimistic User Message 和 transient Assistant，但不持久化。

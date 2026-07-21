@@ -349,7 +349,7 @@ test("non-v3 mapping cannot discard another resource in the same owner namespace
   assert.deepEqual(workspaceStore.removeCalls, []);
 });
 
-test("mapping to a non-v3 record discards that exact record and mapping", async () => {
+test("WORKSPACE_GET discards an exact non-v3 record and mapping, then disconnects", async () => {
   const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
   const mappingKey = activeWorkspaceKey(10);
   const storageKey = "agent-bridge:workspace:v1:user-a:https%3A%2F%2Fx%2Fjob%2F1";
@@ -374,7 +374,7 @@ test("mapping to a non-v3 record discards that exact record and mapping", async 
   assert.equal(sessionStore.data[mappingKey], undefined);
 });
 
-test("owner-scoped load discards exact v2 state instead of converting it", async () => {
+test("WORKSPACE_GET discards exact v2 state and returns no Workspace", async () => {
   const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
   const mappingKey = activeWorkspaceKey(8);
   const resourceUrl = "https://x/job/1";

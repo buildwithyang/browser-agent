@@ -72,7 +72,7 @@ No copying and pasting. No switching between the job page and a separate chatbot
 - Keep Context Routing and webpage-resource normalization in the gateway, so supported sites can evolve without republishing the extension.
 - Detect incompatible Extension/Gateway protocols before applying a response and offer an Extension update without clearing the current Workspace or sign-in state.
 
-Workspace history and the latest CV / Cover Letter state are stored in the current Chrome profile, not as server-side Threads or Artifacts. Pure protocol v4 stores complete User/Assistant pairs only, with at most ten user turns and 20 messages. Older local Workspace schemas are discarded and replaced by a fresh Workspace. At the limit, the composer and Shortcuts are disabled, but the user can still read the complete history and copy generated content.
+Workspace history and the latest CV / Cover Letter state are stored in the current Chrome profile, not as server-side Threads or Artifacts. Pure protocol v4 stores complete User/Assistant pairs only, with at most ten user turns and 20 messages. Opening an older local Workspace discards it and disconnects the Side Panel; the next Quick Insight creates a fresh Workspace. At the limit, the composer and Shortcuts are disabled, but the user can still read the complete history and copy generated content.
 
 ## How It Works
 

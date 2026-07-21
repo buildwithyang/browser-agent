@@ -351,7 +351,7 @@ function validatedCurrentWorkspace(mapping, state) {
   return current;
 }
 
-/** Load a tab Workspace only when its mapping belongs to the current stable owner. */
+/** Load current v3 state, or disconnect after deleting one exact legacy mapping and record. */
 export async function loadOwnerScopedWorkspace(
   tabId,
   { ownerId, sessionStore, workspaceStore }

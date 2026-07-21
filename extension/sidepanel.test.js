@@ -1049,7 +1049,7 @@ test("Shortcut chips replace the composer and Ask More clears it without selecti
   );
 });
 
-test("consumed Quick Insight prefill initializes the composer without auto-sending", async () => {
+test("accepted Quick Insight prefill initializes the composer and ACKs without auto-send", async () => {
   const setup = await renderState(null, { tabId: 7 });
   const requests = [];
   const delivery = {

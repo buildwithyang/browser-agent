@@ -329,7 +329,7 @@ function dispatchQuickInsight({ tabId, lang, source, payload }) {
     });
 }
 
-/** Seed or refresh one owner-scoped Workspace and optional one-shot Shortcut draft. */
+/** Seed or refresh one owner-scoped Workspace and optional tokenized Shortcut draft. */
 async function seedWorkspace(tabId, message) {
   const descriptor = message.workspace || {};
   const resourceUrl = descriptor.resource_url || descriptor.resourceUrl || message.source || "";

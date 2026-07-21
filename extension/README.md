@@ -57,9 +57,10 @@ agent-bridge:workspace:v3:<owner>:<resourceUrl>
 `artifacts.cover_letter`。页面正文、选区和图片文字线索在发送前从当前标签页重新采集，
 不写入 Workspace。当前没有服务端 Thread、Artifact Repository 或跨设备 Workspace 同步。
 
-schema v3 不转换旧本地 Workspace schema。遇到当前 owner/resource 的精确旧 record，或
-tab mapping 指向非 v3 record 时，扩展会丢弃该 record 与 mapping，再创建全新的 v3
-Workspace；旧 histories 和 Artifacts 不保留，也不会扫描其他 owner 或 resource。
+schema v3 不转换旧本地 Workspace schema。`WORKSPACE_GET` 遇到当前 owner/resource 的
+精确旧 record，或 tab mapping 指向非 v3 record 时，只丢弃该 record 与 mapping，并返回
+未连接状态；下一次 Quick Insight seed 才创建全新的 v3 Workspace。旧 histories 和
+Artifacts 不保留，也不会扫描其他 owner 或 resource。
 
 pure v4 canonical history 只包含完整、按顺序排列的 User/Assistant pair，唯一上限为 20 条
 history / 10 个 User turn。第 10 次发送允许，第 11 次被前后端拒绝；pending 立即计入

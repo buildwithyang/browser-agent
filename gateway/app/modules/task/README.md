@@ -168,7 +168,8 @@ Attachment，再生成 canonical next state。同类型更新复用 Artifact ID 
 - 轮数只统计 `role=user`；第 10 次用户发送允许，第 11 次拒绝。
 - pure-v4 history 必须是完整、按顺序排列的 User/Assistant pair；请求最多携带 9 个 pair，
   terminal response 最多携带 10 个 pair / 20 条 history。
-- Extension 丢弃旧本地 schema 并创建全新 v3 Workspace，不向 Gateway 发送旧历史。
+- Extension 的 `WORKSPACE_GET` 丢弃精确旧本地 schema/mapping 并返回未连接；下一次 Quick
+  Insight seed 才创建全新 v3 Workspace，不向 Gateway 发送旧历史。
 - 失败、取消或非法终态不提交 canonical history，因此不消耗轮数。
 - 达到上限后客户端仍可展示历史、Attachment 和复制控件。
 - 用户文本最多 10,000 字符；Assistant Markdown 与 Artifact draft 最多 100,000 字符。

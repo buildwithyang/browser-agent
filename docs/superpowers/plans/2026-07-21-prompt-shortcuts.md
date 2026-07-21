@@ -4,7 +4,7 @@
 
 **Goal:** Replace Workspace Action routing with localized, editable Prompt Shortcuts and enforce a true ten-user-turn limit across Gateway and Extension.
 
-**Architecture:** Protocol v4 makes Quick Insight the server-owned capability catalogue and keeps Workspace as one message-only streaming endpoint. Gateway Agents expose localized Shortcut metadata, while `JobMatchAgent` plans every submitted message from message, artifacts, and shared history. The Extension stores Shortcut drafts but sends only the edited message, uses one-shot session prefill when entering from Quick Insight, and counts canonical user messages rather than total history records.
+**Architecture:** Protocol v4 makes Quick Insight the server-owned capability catalogue and keeps Workspace as one message-only streaming endpoint. Gateway Agents expose localized Shortcut metadata, while `JobMatchAgent` plans every submitted message from message, artifacts, and shared history. The Extension stores tokenized Shortcut drafts but sends only the edited message, retains each prefill until the Side Panel ACKs the matching token, and counts canonical user messages rather than total history records.
 
 **Tech Stack:** Python 3.13, FastAPI, Pydantic v2, `StrEnum`, AsyncOpenAI Chat Completions, NDJSON, Chrome Manifest V3 service worker and Side Panel APIs, JavaScript ES modules, Marked, DOMPurify, pytest, Node test runner.
 
@@ -19,7 +19,8 @@
 - Count a turn from canonical `role=user` messages only. The tenth user send is legal; an eleventh is rejected by both Extension and Gateway.
 - A pure-v4 Workspace contains only complete User/Assistant pairs and at most 20 histories. Incoming
   requests contain at most nine pairs so the reducer can append the tenth pair.
-- Discard old local Workspace schemas and create a fresh schema-v3 Workspace; do not convert old
+- On `WORKSPACE_GET`, discard an exact old local Workspace record and mapping, then return no active
+  Workspace. The next Quick Insight seed creates a fresh schema-v3 Workspace; do not convert old
   histories or Artifacts.
 - Analyze output uses a Markdown table with exactly the two requested columns: `JD 要求 | 匹配情况` in Chinese and `JD Requirement | Match` in English.
 - Tailor Resume's initial Shortcut asks for a modification plan and does not directly create a CV. A later explicit confirmation may create or update the CV Artifact.
@@ -52,11 +53,11 @@
 
 - Modify `extension/config.js`: wire protocol version `4`.
 - Modify `extension/workspace.js`: local schema v3, Shortcut validation, Action-free state, and user-turn counting.
-- Modify `extension/workspace-controller.js`: exact old-schema discard and one-shot session prefill storage.
+- Modify `extension/workspace-controller.js`: exact old-schema discard and tokenized session prefill storage.
 - Modify `extension/auth.js`: message-only Workspace body.
 - Modify `extension/workspace-operation.js`: remove Quick Action operations and Action metadata.
 - Modify `extension/quick-insight.js`: turn Quick Insight clicks into open-and-prefill commands.
-- Modify `extension/background.js`: seed Shortcuts, consume prefill once, and submit only final composer text.
+- Modify `extension/background.js`: seed Shortcuts, deliver/ACK prefill, and submit only final composer text.
 - Modify `extension/sidepanel.js`: Shortcut composer behavior, ten-turn meter, and disabled-limit state.
 - Modify `extension/sidepanel.html` and `extension/sidepanel.css`: Shortcut semantics and limit presentation where required.
 - Modify all corresponding Extension tests and production package assertions.
@@ -478,7 +479,8 @@ git commit -m "feat: cut gateway over to prompt shortcut protocol v4"
 **Interfaces:**
 - Produces: local Workspace schema v3 with `shortcuts` and no selection state.
 - Produces: `countUserTurns(histories) -> number` and `canSendUserMessage(state) -> boolean`.
-- Produces: one-shot `storeWorkspacePrefill(tabId, shortcut)` and `consumeWorkspacePrefill(tabId)` session helpers.
+- Produces: tokenized `storeWorkspacePrefill(tabId, shortcut)`, `readWorkspacePrefill(tabId)`, and
+  `acknowledgeWorkspacePrefill(tabId, token)` session helpers.
 - Changes: Workspace request builder to `{operationId, page context, resourceUrl, histories, artifacts, message}` only.
 - Removes: Quick Action operation kinds, `trigger`, `actionId`, `actions`, `selectedActionId`, and old-schema conversion.
 
@@ -532,9 +534,10 @@ assert.equal("trigger" in workspaceBody, false);
 assert.equal("actionId" in workspaceBody, false);
 ```
 
-Add session-prefill tests proving it is isolated per tab, returned once, deleted after consumption,
-and removed by tab reset. Use a Shortcut object rather than a plain string so empty Ask More remains
-distinguishable from no pending prefill.
+Add session-prefill tests proving it is isolated per tab, may be read repeatedly before acceptance,
+is deleted only by an ACK with the current token, rejects a stale ACK, and is removed by tab reset.
+Use a Shortcut object rather than a plain string so empty Ask More remains distinguishable from no
+pending prefill.
 
 - [ ] **Step 2: Run the focused tests and verify RED**
 
@@ -546,7 +549,7 @@ node --test auth.test.js workspace.test.js workspace-controller.test.js workspac
 ```
 
 Expected: failures because storage is schema v2, transport still requires Action fields, and no
-one-shot prefill API exists.
+tokenized prefill delivery/ACK API exists.
 
 - [ ] **Step 3: Implement local Workspace schema v3**
 
@@ -576,11 +579,12 @@ complete User/Assistant pairs and at most 20 histories. Persist only:
 schemaVersion/resourceUrl/pageTitle/quickInsight/shortcuts/histories/artifacts/updatedAt
 ```
 
-Remove all Action selection and old-schema conversion helpers. When an exact old-schema record or a
-mapping to any non-v3 record is encountered, delete only that record and mapping. The caller then
-creates a fresh v3 Workspace with empty histories and Artifacts. Never scan another owner/resource.
+Remove all Action selection and old-schema conversion helpers. When `WORKSPACE_GET` encounters an
+exact old-schema record or a mapping to any non-v3 record, delete only that record and mapping, then
+return no active Workspace. Do not synthesize v3 state inside GET. The next Quick Insight seed creates
+a fresh v3 Workspace with empty histories and Artifacts. Never scan another owner/resource.
 
-- [ ] **Step 4: Implement one-shot prefill and message-only operations**
+- [ ] **Step 4: Implement tokenized prefill delivery/ACK and message-only operations**
 
 Use a tab-scoped `chrome.storage.session` key separate from durable Workspace content:
 
@@ -590,19 +594,25 @@ export function workspacePrefillKey(tabId) {
 }
 
 export async function storeWorkspacePrefill(tabId, shortcut) {
-  /** Persist one server-declared draft until the Side Panel consumes it. */
+  /** Persist one server-declared draft with a new delivery token. */
 }
 
-export async function consumeWorkspacePrefill(tabId) {
-  /** Atomically read and delete one pending composer draft for a tab. */
+export async function readWorkspacePrefill(tabId) {
+  /** Read one pending delivery without deleting it before Side Panel acceptance. */
+}
+
+export async function acknowledgeWorkspacePrefill(tabId, token) {
+  /** Delete only the pending delivery whose current token matches the ACK. */
 }
 ```
 
-Serialize `store`/`consume` with the existing per-tab seed queue so `WORKSPACE_GET` cannot race ahead
-of a Quick Insight seed. `seedWorkspace()` stores the full `shortcuts` catalogue and, when the open
-message includes one selected Shortcut, stores that Shortcut as the pending one-shot prefill.
-`WORKSPACE_GET` waits for the seed queue, returns `{ state, prefill }`, then removes the prefill.
-Workspace reset and tab removal delete both the active mapping and prefill key.
+Serialize `store`/`read`/`acknowledge` with the existing per-tab seed queue so `WORKSPACE_GET` cannot
+race ahead of a Quick Insight seed. `seedWorkspace()` stores the full `shortcuts` catalogue and, when
+the open message includes one selected Shortcut, stores that Shortcut with a new token. `WORKSPACE_GET`
+waits for the seed queue and returns `{ state, prefill: { token, shortcut } }` without deleting it.
+After the Side Panel accepts the draft, it sends `WORKSPACE_PREFILL_ACK`; only an ACK matching the
+current token removes the delivery, so stale ACKs cannot delete a newer draft. Workspace reset and
+tab removal delete both the active mapping and prefill key.
 
 Replace operation creation with one user-message shape:
 
@@ -647,7 +657,7 @@ full Extension suite use the v4 state shape.
 - Modify: `extension/sidepanel.test.js`
 
 **Interfaces:**
-- Consumes: server `shortcuts` and one-shot `{id, title, prompt}` prefill.
+- Consumes: server `shortcuts` and tokenized `{token, shortcut: {id, title, prompt}}` prefill.
 - Produces: `OPEN_WORKSPACE` seed/open message containing the selected Shortcut but no execution command.
 - Removes: selected-chip state, `aria-pressed`, default Action, and Action-dependent send guards.
 
@@ -686,8 +696,8 @@ test("Side Panel shortcut replaces composer and Ask More clears it", async () =>
 });
 ```
 
-Add tests that a consumed Quick Insight prefill initializes the composer but does not auto-send,
-and that it is ignored when ten user turns already exist.
+Add tests that an accepted Quick Insight prefill initializes the composer, ACKs its token, and does
+not auto-send; also verify it is ignored when ten user turns already exist.
 
 Cover the meter and pending rollback:
 
@@ -733,7 +743,7 @@ Side Panel. Delete all branches that call Workspace for a Quick Insight Action. 
 same route with an empty `prompt`, which intentionally clears the composer.
 
 In Background, validate that the selected Shortcut exactly matches an item in the server-provided
-catalogue by ID and prompt before writing the one-shot prefill. Seed/open still works when no
+catalogue by ID and prompt before writing a tokenized prefill delivery. Seed/open still works when no
 Shortcut is selected, but it does not change the composer.
 
 - [ ] **Step 10: Implement stateless Side Panel Shortcut chips**
@@ -751,10 +761,11 @@ function applyPromptShortcut(shortcut) {
 }
 ```
 
-Do not style one Shortcut as selected and do not retain its ID. On initial `WORKSPACE_GET`, apply a
-returned one-shot prefill once. Later Workspace updates refresh the catalogue without overwriting an
-in-progress user draft. The send guard depends only on non-empty edited text, loading state, active
-tab, and remaining user turns.
+Do not style one Shortcut as selected and do not retain its ID. On initial `WORKSPACE_GET`, apply the
+returned prefill and ACK its token only after the Side Panel accepts the draft. Repeated GET reads
+before that ACK return the same delivery; a stale ACK cannot remove a newer delivery. Later Workspace
+updates refresh the catalogue without overwriting an in-progress user draft. The send guard depends
+only on non-empty edited text, loading state, active tab, and remaining user turns.
 
 - [ ] **Step 11: Implement true ten-turn UI state**
 
@@ -918,8 +929,9 @@ With local Gateway running and the unpacked Extension reloaded:
    version and confirm the existing Artifact is updated.
 7. Reach ten user sends; confirm `10 / 10`, disabled Shortcuts/composer/send, exact localized limit
    placeholder, hidden keyboard hint, and still-working copy controls.
-8. Repeat with a v2 local Workspace fixture and confirm it is discarded and a fresh empty v3
-   Workspace is created for the exact owner/resource.
+8. Repeat with a v2 local Workspace fixture and call `WORKSPACE_GET`; confirm the exact legacy record
+   and mapping are discarded and the result is disconnected. Run Quick Insight again and confirm its
+   seed creates a fresh empty v3 Workspace for the exact owner/resource.
 
 - [ ] **Step 7: Review the final diff for contract leaks**
 
@@ -961,6 +973,7 @@ git commit -m "docs: release prompt shortcut workspace v4"
 - [ ] Cover Letter creates and updates a plain-text, copyable Artifact.
 - [ ] Ten canonical User/Assistant pairs work; an eleventh send is blocked, pending failures do not
       consume a turn, and pure-v4 history ends at 20 messages.
-- [ ] v1/v2 local Workspace histories and Artifacts are discarded; a fresh v3 Workspace is created
-      without scanning another owner or resource.
+- [ ] On `WORKSPACE_GET`, v1/v2 local Workspace histories, Artifacts, and exact mapping are discarded
+      and the result is disconnected; the next Quick Insight seed creates a fresh v3 Workspace without
+      scanning another owner or resource.
 - [ ] Full Gateway/Extension suites, import check, package check, diff check, and manual smoke test pass.
