@@ -18,6 +18,9 @@ const INITIAL_SELECTION_PREFIX = "agent-bridge:initial-selection:v1";
 const WORKSPACE_PREFILL_PREFIX = "agent-bridge:workspace-prefill";
 const LEGACY_WORKSPACE_PREFIX = "agent-bridge:workspace:v2:";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Lock order is outer Background tab/SEND queue -> inner durable-record queue; this queue never
+// calls back into either outer queue, so exact owner/resource migrations cannot form a cycle.
+const durableWorkspaceMigrationQueue = createKeyedQueue();
 
 /** Error raised when the gateway returns a syntactically valid non-success response. */
 export class GatewayHttpError extends Error {
@@ -331,6 +334,15 @@ export async function clearAuthWorkspaceStateIfCurrent({
   return true;
 }
 
+/** Validate one current v3 record against its exact owner/resource mapping. */
+function validatedCurrentWorkspace(mapping, state) {
+  const current = createWorkspace(state);
+  if (state.schemaVersion !== WORKSPACE_SCHEMA_VERSION) throw new TypeError("schema");
+  if (current.resourceUrl !== mapping.resourceUrl) throw new TypeError("resource");
+  validateWorkspaceState(current.histories, current.artifacts);
+  return current;
+}
+
 /** Load a tab Workspace only when its mapping belongs to the current stable owner. */
 export async function loadOwnerScopedWorkspace(
   tabId,
@@ -350,51 +362,74 @@ export async function loadOwnerScopedWorkspace(
     await sessionStore.remove(mappingKey);
     return null;
   }
+  let currentStorageKey = null;
   if (pointsToCurrent) {
-    let expectedStorageKey = null;
     try {
-      expectedStorageKey = workspaceStorageKey(ownerId, mapping.resourceUrl);
+      currentStorageKey = workspaceStorageKey(ownerId, mapping.resourceUrl);
     } catch {
       // The invalid mapping is discarded below without reading arbitrary local state.
     }
-    if (mapping.storageKey !== expectedStorageKey) {
+    if (mapping.storageKey !== currentStorageKey) {
       await sessionStore.remove(mappingKey);
       return null;
     }
   }
+  let legacyStorageKey = null;
   if (pointsToLegacy) {
-    let expectedLegacyKey = null;
     try {
-      expectedLegacyKey = legacyWorkspaceStorageKey(ownerId, mapping.resourceUrl);
+      currentStorageKey = workspaceStorageKey(ownerId, mapping.resourceUrl);
+      legacyStorageKey = legacyWorkspaceStorageKey(ownerId, mapping.resourceUrl);
     } catch {
       return null;
     }
-    if (mapping.storageKey !== expectedLegacyKey) return null;
+    if (mapping.storageKey !== legacyStorageKey) return null;
   }
-  const stored = await workspaceStore.get(mapping.storageKey);
-  const state = stored[mapping.storageKey];
-  if (!state) return null;
-  if (!pointsToLegacy) {
-    try {
-      const current = createWorkspace(state);
-      if (state.schemaVersion !== WORKSPACE_SCHEMA_VERSION) throw new TypeError("schema");
-      if (current.resourceUrl !== mapping.resourceUrl) throw new TypeError("resource");
-      validateWorkspaceState(current.histories, current.artifacts);
-      return { mapping, state: current, lang: mapping.lang || "en" };
-    } catch {
-      await Promise.all([
-        sessionStore.remove(mappingKey),
-        workspaceStore.remove(mapping.storageKey),
-      ]);
-      return null;
+
+  return durableWorkspaceMigrationQueue.run(currentStorageKey, async () => {
+    if (!pointsToLegacy) {
+      const stored = await workspaceStore.get(currentStorageKey);
+      const state = stored[currentStorageKey];
+      if (!state) return null;
+      try {
+        const current = validatedCurrentWorkspace(mapping, state);
+        return { mapping, state: current, lang: mapping.lang || "en" };
+      } catch {
+        await Promise.all([
+          sessionStore.remove(mappingKey),
+          workspaceStore.remove(currentStorageKey),
+        ]);
+        return null;
+      }
     }
-  }
-  return migrateOwnerScopedWorkspace({
-    mappingKey,
-    mapping,
-    state,
-    sessionStore,
-    workspaceStore,
+
+    // Another tab may have committed v3 while this tab retained its exact v2 pointer.
+    const currentData = await workspaceStore.get(currentStorageKey);
+    const currentState = currentData[currentStorageKey];
+    if (currentState !== undefined) {
+      const currentMapping = { ...mapping, storageKey: currentStorageKey };
+      let current = null;
+      try {
+        current = validatedCurrentWorkspace(currentMapping, currentState);
+      } catch {
+        await workspaceStore.remove(currentStorageKey);
+      }
+      if (current) {
+        await sessionStore.set({ [mappingKey]: currentMapping });
+        return { mapping: currentMapping, state: current, lang: mapping.lang || "en" };
+      }
+    }
+
+    const legacyData = await workspaceStore.get(legacyStorageKey);
+    const legacyState = legacyData[legacyStorageKey];
+    if (!legacyState) return null;
+    return migrateOwnerScopedWorkspace({
+      mappingKey,
+      mapping,
+      state: legacyState,
+      sessionStore,
+      workspaceStore,
+      rollbackCreatedWorkspace: true,
+    });
   });
 }
 
@@ -404,37 +439,39 @@ export async function loadWorkspaceForSeed(
   { ownerId, resourceUrl, lang = "en", sessionStore, workspaceStore }
 ) {
   const currentStorageKey = workspaceStorageKey(ownerId, resourceUrl);
-  const currentData = await workspaceStore.get(currentStorageKey);
-  if (currentData[currentStorageKey] !== undefined) {
-    return {
+  return durableWorkspaceMigrationQueue.run(currentStorageKey, async () => {
+    const currentData = await workspaceStore.get(currentStorageKey);
+    if (currentData[currentStorageKey] !== undefined) {
+      return {
+        mapping: {
+          ownerId,
+          storageKey: currentStorageKey,
+          resourceUrl,
+          lang,
+        },
+        state: currentData[currentStorageKey],
+        lang,
+      };
+    }
+
+    const legacyStorageKey = legacyWorkspaceStorageKey(ownerId, resourceUrl);
+    const legacyData = await workspaceStore.get(legacyStorageKey);
+    const legacyState = legacyData[legacyStorageKey];
+    if (legacyState === undefined) return null;
+    return migrateOwnerScopedWorkspace({
+      mappingKey: activeWorkspaceKey(tabId),
       mapping: {
         ownerId,
-        storageKey: currentStorageKey,
+        storageKey: legacyStorageKey,
         resourceUrl,
         lang,
       },
-      state: currentData[currentStorageKey],
-      lang,
-    };
-  }
-
-  const legacyStorageKey = legacyWorkspaceStorageKey(ownerId, resourceUrl);
-  const legacyData = await workspaceStore.get(legacyStorageKey);
-  const legacyState = legacyData[legacyStorageKey];
-  if (legacyState === undefined) return null;
-  return migrateOwnerScopedWorkspace({
-    mappingKey: activeWorkspaceKey(tabId),
-    mapping: {
-      ownerId,
-      storageKey: legacyStorageKey,
-      resourceUrl,
-      lang,
-    },
-    state: legacyState,
-    sessionStore,
-    workspaceStore,
-    rollbackMapping: null,
-    rollbackCreatedWorkspace: true,
+      state: legacyState,
+      sessionStore,
+      workspaceStore,
+      rollbackMapping: null,
+      rollbackCreatedWorkspace: true,
+    });
   });
 }
 

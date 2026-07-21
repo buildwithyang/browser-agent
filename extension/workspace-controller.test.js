@@ -91,6 +91,11 @@ function deferred() {
   return { promise, resolve };
 }
 
+/** Yield enough deterministic microtasks for unblocked storage operations to reach their gates. */
+async function flushMicrotasks(turns = 12) {
+  for (let turn = 0; turn < turns; turn += 1) await Promise.resolve();
+}
+
 /** Build one valid schema-v2 Workspace with a linked Cover Letter Artifact. */
 function legacyWorkspaceState(resourceUrl) {
   const artifactId = "10000000-0000-4000-8000-000000000001";
@@ -431,7 +436,11 @@ test("owner-scoped load migrates valid v2 state to v3 and strips Action fields",
   assert.equal("selectedActionId" in active.state, false);
   assert.equal(workspaceStore.data[v2Key], undefined);
   assert.deepEqual(sessionStore.data[mappingKey], active.mapping);
-  assert.deepEqual(workspaceStore.getCalls, [v2Key, active.mapping.storageKey]);
+  assert.deepEqual(workspaceStore.getCalls, [
+    active.mapping.storageKey,
+    v2Key,
+    active.mapping.storageKey,
+  ]);
   assert.deepEqual(workspaceStore.removeCalls, [[v2Key]]);
 });
 
@@ -562,6 +571,162 @@ test("seed discovery restores an absent mapping when legacy removal fails", asyn
   assert.equal(active.state.histories[0].content, "Created the draft.");
   assert.deepEqual(active.state.artifacts, legacy.artifacts);
   assert.deepEqual(sessionStore.data[mappingKey], active.mapping);
+});
+
+test("two tab seeds cannot roll back another tab's committed owner-resource migration", async () => {
+  const loadWorkspaceForSeed = requiredExport("loadWorkspaceForSeed");
+  const resourceUrl = "https://x/job/two-tabs";
+  const ownerId = "user-a";
+  const v2Key = legacyWorkspaceStorageKey(ownerId, resourceUrl);
+  const v3Key = workspaceStorageKey(ownerId, resourceUrl);
+  const firstMappingKey = activeWorkspaceKey(31);
+  const secondMappingKey = activeWorkspaceKey(32);
+  const legacy = legacyWorkspaceState(resourceUrl);
+  const workspaceStore = fakeStorageArea({ [v2Key]: legacy });
+  const sessionStore = fakeStorageArea();
+  const firstSeedMapped = deferred();
+  const setSession = sessionStore.set.bind(sessionStore);
+  let firstMappingWrites = 0;
+  sessionStore.set = async (values) => {
+    if (Object.hasOwn(values, secondMappingKey)) {
+      await firstSeedMapped.promise;
+      throw new TypeError("simulated tab 32 mapping failure");
+    }
+    await setSession(values);
+    if (Object.hasOwn(values, firstMappingKey)) {
+      firstMappingWrites += 1;
+      if (firstMappingWrites === 2) firstSeedMapped.resolve();
+    }
+  };
+
+  /** Mirror the Background seed commit after controller discovery. */
+  async function seedTab(tabId) {
+    const active = await loadWorkspaceForSeed(tabId, {
+      ownerId,
+      resourceUrl,
+      lang: "en",
+      sessionStore,
+      workspaceStore,
+    });
+    await Promise.all([
+      workspaceStore.set({ [v3Key]: active.state }),
+      sessionStore.set({ [activeWorkspaceKey(tabId)]: active.mapping }),
+    ]);
+    return active;
+  }
+
+  const results = await Promise.allSettled([seedTab(31), seedTab(32)]);
+
+  assert.equal(results[0].status, "fulfilled");
+  assert.equal(results[1].status, "rejected");
+  assert.match(results[1].reason?.message || "", /tab 32 mapping failure/);
+  assert.equal(workspaceStore.data[v2Key], undefined);
+  assert.equal(workspaceStore.data[v3Key].histories[0].content, "Created the draft.");
+  assert.deepEqual(workspaceStore.data[v3Key].artifacts, legacy.artifacts);
+  assert.equal(sessionStore.data[firstMappingKey].storageKey, v3Key);
+  assert.equal(sessionStore.data[secondMappingKey], undefined);
+});
+
+test("mapped and unmapped tabs share one owner-resource migration critical section", async () => {
+  const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
+  const loadWorkspaceForSeed = requiredExport("loadWorkspaceForSeed");
+  const resourceUrl = "https://x/job/mapped-race";
+  const ownerId = "user-a";
+  const v2Key = legacyWorkspaceStorageKey(ownerId, resourceUrl);
+  const v3Key = workspaceStorageKey(ownerId, resourceUrl);
+  const mappingKey = activeWorkspaceKey(41);
+  const sessionStore = fakeStorageArea({
+    [mappingKey]: { ownerId, storageKey: v2Key, resourceUrl, lang: "en" },
+  });
+  const workspaceStore = fakeStorageArea({ [v2Key]: legacyWorkspaceState(resourceUrl) });
+  const setWorkspace = workspaceStore.set.bind(workspaceStore);
+  const firstCandidateStarted = deferred();
+  const releaseFirstCandidate = deferred();
+  let candidateWrites = 0;
+  workspaceStore.set = async (values) => {
+    if (Object.hasOwn(values, v3Key)) {
+      candidateWrites += 1;
+      if (candidateWrites === 1) {
+        firstCandidateStarted.resolve();
+        await releaseFirstCandidate.promise;
+      }
+    }
+    await setWorkspace(values);
+  };
+
+  const mappedLoad = loadOwnerScopedWorkspace(41, {
+    ownerId,
+    sessionStore,
+    workspaceStore,
+  });
+  await firstCandidateStarted.promise;
+  const seedLoad = loadWorkspaceForSeed(42, {
+    ownerId,
+    resourceUrl,
+    lang: "en",
+    sessionStore,
+    workspaceStore,
+  });
+  await flushMicrotasks();
+  const overlappedCandidateWrite = candidateWrites > 1;
+  releaseFirstCandidate.resolve();
+  const results = await Promise.allSettled([mappedLoad, seedLoad]);
+
+  assert.equal(overlappedCandidateWrite, false);
+  assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+  assert.equal(workspaceStore.data[v3Key].histories[0].content, "Created the draft.");
+});
+
+test("different owner-resource migration keys remain independent", async () => {
+  const loadWorkspaceForSeed = requiredExport("loadWorkspaceForSeed");
+  const ownerId = "user-a";
+  const firstResourceUrl = "https://x/job/independent-a";
+  const secondResourceUrl = "https://x/job/independent-b";
+  const firstV2Key = legacyWorkspaceStorageKey(ownerId, firstResourceUrl);
+  const secondV2Key = legacyWorkspaceStorageKey(ownerId, secondResourceUrl);
+  const firstV3Key = workspaceStorageKey(ownerId, firstResourceUrl);
+  const secondV3Key = workspaceStorageKey(ownerId, secondResourceUrl);
+  const sessionStore = fakeStorageArea();
+  const workspaceStore = fakeStorageArea({
+    [firstV2Key]: legacyWorkspaceState(firstResourceUrl),
+    [secondV2Key]: legacyWorkspaceState(secondResourceUrl),
+  });
+  const setWorkspace = workspaceStore.set.bind(workspaceStore);
+  const firstCandidateStarted = deferred();
+  const releaseFirstCandidate = deferred();
+  let secondCandidateStarted = false;
+  workspaceStore.set = async (values) => {
+    if (Object.hasOwn(values, firstV3Key)) {
+      firstCandidateStarted.resolve();
+      await releaseFirstCandidate.promise;
+    }
+    if (Object.hasOwn(values, secondV3Key)) secondCandidateStarted = true;
+    await setWorkspace(values);
+  };
+
+  const firstLoad = loadWorkspaceForSeed(51, {
+    ownerId,
+    resourceUrl: firstResourceUrl,
+    sessionStore,
+    workspaceStore,
+  });
+  await firstCandidateStarted.promise;
+  const secondLoad = loadWorkspaceForSeed(52, {
+    ownerId,
+    resourceUrl: secondResourceUrl,
+    sessionStore,
+    workspaceStore,
+  });
+  await flushMicrotasks();
+  const progressedIndependently = secondCandidateStarted;
+  releaseFirstCandidate.resolve();
+  await Promise.all([firstLoad, secondLoad]);
+
+  assert.equal(progressedIndependently, true);
+  assert.equal(workspaceStore.data[firstV2Key], undefined);
+  assert.equal(workspaceStore.data[secondV2Key], undefined);
+  assert.equal(workspaceStore.data[firstV3Key].schemaVersion, 3);
+  assert.equal(workspaceStore.data[secondV3Key].schemaVersion, 3);
 });
 
 test("malformed v2 state is discarded rather than partially migrated", async () => {
