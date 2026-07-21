@@ -764,9 +764,26 @@ function clearWorkspaceTransient(elements, model, dependencies = {}) {
   elements.messageInput.value = "";
   model.pendingTurn = null;
   model.settledLocalOperation = null;
+  model.appliedWorkspacePrefill = null;
   model.state = null;
   model.renderedHistoryCount = -1;
   model.error = null;
+}
+
+/** Return whether a tokenized prefill was already applied inside the same tab/resource boundary. */
+function isSameWorkspacePrefill(model, receipt) {
+  const applied = model.appliedWorkspacePrefill;
+  return !!applied
+    && applied.tabId === receipt.tabId
+    && applied.resourceUrl === receipt.resourceUrl
+    && applied.token === receipt.token;
+}
+
+/** Require the Background to confirm that this exact token was removed. */
+function validateWorkspacePrefillAck(response) {
+  if (response?.ok !== true || response.acknowledged !== true) {
+    throw new Error("Workspace prefill ACK was not acknowledged");
+  }
 }
 
 /** Cancel one queued transient Markdown paint at a Workspace identity boundary. */
@@ -1081,6 +1098,7 @@ export async function loadWorkspaceForTab(
   if (!tabId) return;
 
   let completionOperation = null;
+  let suppressComposerFocus = false;
   try {
     const response = await sendRuntimeWith(dependencies, { type: WORKSPACE_GET, tabId });
     if (
@@ -1111,13 +1129,30 @@ export async function loadWorkspaceForTab(
       model.lang = response.lang || "browser";
       const responseView = workspaceView(response.state || {}, model.lang, model.uiLanguage);
       if (response.prefill?.shortcut && responseView.canSend) {
-        elements.messageInput.value = response.prefill.shortcut.prompt;
+        const receipt = {
+          tabId,
+          resourceUrl: response.state?.resourceUrl || "",
+          token: response.prefill.token,
+          acknowledged: false,
+        };
+        const redelivered = isSameWorkspacePrefill(model, receipt);
+        if (redelivered) {
+          suppressComposerFocus = true;
+        } else {
+          elements.messageInput.value = response.prefill.shortcut.prompt;
+        }
+        // Record application before ACK so a failed transport cannot reapply this token.
+        model.appliedWorkspacePrefill = receipt;
         try {
-          await sendRuntimeWith(dependencies, {
+          const ackResponse = await sendRuntimeWith(dependencies, {
             type: WORKSPACE_PREFILL_ACK,
             tabId,
             token: response.prefill.token,
           });
+          validateWorkspacePrefillAck(ackResponse);
+          if (isSameWorkspacePrefill(model, receipt)) {
+            model.appliedWorkspacePrefill = { ...receipt, acknowledged: true };
+          }
         } catch {
           // A failed ACK leaves the tokenized prefill available for a later accepted load.
         }
@@ -1153,11 +1188,19 @@ export async function loadWorkspaceForTab(
     if (isCurrentSettledOperation(model, completionOperation)) {
       model.loading = false;
       render(elements, model, dependencies);
-      if (model.state && !isUpdateRequired(model.error)) elements.messageInput.focus();
+      if (
+        model.state
+        && !isUpdateRequired(model.error)
+        && !suppressComposerFocus
+      ) elements.messageInput.focus();
     } else if (releasedLatestLoad && !model.pendingSendGeneration) {
       model.loading = false;
       render(elements, model, dependencies);
-      if (model.state && !isUpdateRequired(model.error)) elements.messageInput.focus();
+      if (
+        model.state
+        && !isUpdateRequired(model.error)
+        && !suppressComposerFocus
+      ) elements.messageInput.focus();
     }
   }
 }
@@ -1177,6 +1220,7 @@ async function initSidePanel() {
     pendingSendGeneration: null,
     pendingTurn: null,
     settledLocalOperation: null,
+    appliedWorkspacePrefill: null,
     streamRenderTimer: null,
     streamEpoch: 0,
     loading: false,

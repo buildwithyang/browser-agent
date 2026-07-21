@@ -1132,6 +1132,69 @@ test("WORKSPACE_UPDATED overlap applies and ACKs prefill only from the winning l
   ), [{ type: sidepanel.WORKSPACE_PREFILL_ACK, tabId: 7, token: delivery.token }]);
 });
 
+test("failed prefill ACK redelivery preserves a newer draft and a new token still applies", async () => {
+  const setup = await renderState(null, { tabId: 7 });
+  const firstDelivery = {
+    token: "50000000-0000-4000-8000-000000000010",
+    shortcut: { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+  };
+  const secondDelivery = {
+    token: "50000000-0000-4000-8000-000000000011",
+    shortcut: { id: "ask_more", title: "Ask More", prompt: "Apply the newer prompt." },
+  };
+  const deliveries = [firstDelivery, firstDelivery, firstDelivery, secondDelivery];
+  const ackResponses = [
+    new Error("runtime unavailable"),
+    { ok: true },
+    { ok: true, acknowledged: true },
+    { ok: true, acknowledged: true },
+  ];
+  const requests = [];
+  const dependencies = {
+    sendRuntime: async (request) => {
+      requests.push(request);
+      if (request.type === sidepanel.WORKSPACE_PREFILL_ACK) {
+        const response = ackResponses.shift();
+        if (response instanceof Error) throw response;
+        return response;
+      }
+      return {
+        ok: true,
+        state: workspace(),
+        lang: "en",
+        prefill: deliveries.shift(),
+      };
+    },
+  };
+
+  await sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, dependencies);
+  assert.equal(setup.elements.messageInput.value, "Analyze this role.");
+  assert.equal(setup.model.appliedWorkspacePrefill?.token, firstDelivery.token);
+  assert.equal(setup.model.appliedWorkspacePrefill?.acknowledged, false);
+
+  setup.elements.messageInput.value = "My newer unsent draft";
+  setup.elements.sendButton.focus();
+  await sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, dependencies);
+  assert.equal(setup.elements.messageInput.value, "My newer unsent draft");
+  assert.equal(setup.dom.window.document.activeElement, setup.elements.sendButton);
+  assert.equal(setup.model.appliedWorkspacePrefill?.acknowledged, false);
+
+  await sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, dependencies);
+  assert.equal(setup.elements.messageInput.value, "My newer unsent draft");
+  assert.equal(setup.dom.window.document.activeElement, setup.elements.sendButton);
+  assert.equal(setup.model.appliedWorkspacePrefill?.acknowledged, true);
+
+  await sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, dependencies);
+  assert.equal(setup.elements.messageInput.value, "Apply the newer prompt.");
+  assert.equal(setup.dom.window.document.activeElement, setup.elements.messageInput);
+  assert.equal(setup.model.appliedWorkspacePrefill?.token, secondDelivery.token);
+  assert.equal(setup.model.appliedWorkspacePrefill?.acknowledged, true);
+  assert.equal(
+    requests.filter((request) => request.type === sidepanel.WORKSPACE_PREFILL_ACK).length,
+    4
+  );
+});
+
 test("prefill is ignored after ten canonical user turns", async () => {
   const setup = await renderState(null, { tabId: 7 });
   const requests = [];
@@ -1391,12 +1454,25 @@ test("workspace boundaries clear drafts while same-tab reload preserves them", a
   const dependencies = { sendRuntime: () => requests.shift().promise };
 
   elements.messageInput.value = "private draft from tab A";
+  model.appliedWorkspacePrefill = {
+    tabId: 7,
+    resourceUrl: RESOURCE_URL,
+    token: "50000000-0000-4000-8000-000000000020",
+    acknowledged: false,
+  };
   const tabBLoad = sidepanel.loadWorkspaceForTab(elements, model, 8, dependencies);
   assert.equal(elements.messageInput.value, "", "tab/resource change clears the old draft");
+  assert.equal(model.appliedWorkspacePrefill, null);
   tabBRequest.resolve({ ok: true, state: workspace({ pageTitle: "Tab B" }), lang: "en" });
   await tabBLoad;
 
   elements.messageInput.value = "draft still being written on tab B";
+  model.appliedWorkspacePrefill = {
+    tabId: 8,
+    resourceUrl: RESOURCE_URL,
+    token: "50000000-0000-4000-8000-000000000021",
+    acknowledged: false,
+  };
   const sameTabLoad = sidepanel.loadWorkspaceForTab(elements, model, 8, dependencies);
   assert.equal(
     elements.messageInput.value,
@@ -1406,12 +1482,14 @@ test("workspace boundaries clear drafts while same-tab reload preserves them", a
   sameTabRequest.resolve({ ok: true, state: workspace({ pageTitle: "Tab B refreshed" }), lang: "en" });
   await sameTabLoad;
   assert.equal(elements.messageInput.value, "draft still being written on tab B");
+  assert.equal(model.appliedWorkspacePrefill?.token, "50000000-0000-4000-8000-000000000021");
 
   const resetLoad = sidepanel.loadWorkspaceForTab(elements, model, 8, dependencies, {
     cancelPendingSend: true,
     clearState: true,
   });
   assert.equal(elements.messageInput.value, "", "owner/reset boundary clears the draft");
+  assert.equal(model.appliedWorkspacePrefill, null);
   resetRequest.resolve({ ok: false, error: "Workspace reset" });
   await resetLoad;
   assert.equal(elements.messageInput.value, "");
@@ -1456,6 +1534,12 @@ test("same-tab canonical resource switch clears the old resource draft", async (
   const request = deferred();
   const dependencies = { sendRuntime: () => request.promise };
   elements.messageInput.value = "private draft for resource A";
+  model.appliedWorkspacePrefill = {
+    tabId: 7,
+    resourceUrl: RESOURCE_URL,
+    token: "50000000-0000-4000-8000-000000000022",
+    acknowledged: false,
+  };
 
   const load = sidepanel.loadWorkspaceForTab(elements, model, 7, dependencies);
   assert.equal(
@@ -1478,6 +1562,7 @@ test("same-tab canonical resource switch clears the old resource draft", async (
   assert.equal("selectedActionId" in model, false);
   assert.equal(model.error, null);
   assert.equal(elements.messageInput.value, "");
+  assert.equal(model.appliedWorkspacePrefill, null);
 });
 
 test("same-tab resource B GET supersedes pending resource A SEND", async () => {

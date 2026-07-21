@@ -522,11 +522,18 @@ test("seed discovery restores an absent mapping when legacy removal fails", asyn
   const ownerId = "user-a";
   const mappingKey = activeWorkspaceKey(21);
   const v2Key = legacyWorkspaceStorageKey(ownerId, resourceUrl);
+  const v3Key = workspaceStorageKey(ownerId, resourceUrl);
   const legacy = legacyWorkspaceState(resourceUrl);
   const sessionStore = fakeStorageArea();
   const workspaceStore = fakeStorageArea({ [v2Key]: legacy });
-  workspaceStore.remove = async () => {
-    throw new Error("simulated legacy removal failure");
+  const remove = workspaceStore.remove.bind(workspaceStore);
+  let failLegacyRemoval = true;
+  workspaceStore.remove = async (keys) => {
+    if (failLegacyRemoval && keys === v2Key) {
+      failLegacyRemoval = false;
+      throw new Error("simulated legacy removal failure");
+    }
+    await remove(keys);
   };
 
   await assert.rejects(
@@ -540,7 +547,21 @@ test("seed discovery restores an absent mapping when legacy removal fails", asyn
     /removal failure/
   );
   assert.deepEqual(workspaceStore.data[v2Key], legacy);
+  assert.equal(workspaceStore.data[v3Key], undefined);
   assert.equal(sessionStore.data[mappingKey], undefined);
+
+  const active = await loadWorkspaceForSeed(21, {
+    ownerId,
+    resourceUrl,
+    lang: "en",
+    sessionStore,
+    workspaceStore,
+  });
+  assert.equal(workspaceStore.data[v2Key], undefined);
+  assert.deepEqual(workspaceStore.data[v3Key], active.state);
+  assert.equal(active.state.histories[0].content, "Created the draft.");
+  assert.deepEqual(active.state.artifacts, legacy.artifacts);
+  assert.deepEqual(sessionStore.data[mappingKey], active.mapping);
 });
 
 test("malformed v2 state is discarded rather than partially migrated", async () => {

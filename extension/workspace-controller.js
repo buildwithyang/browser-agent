@@ -434,6 +434,7 @@ export async function loadWorkspaceForSeed(
     sessionStore,
     workspaceStore,
     rollbackMapping: null,
+    rollbackCreatedWorkspace: true,
   });
 }
 
@@ -445,6 +446,7 @@ async function migrateOwnerScopedWorkspace({
   sessionStore,
   workspaceStore,
   rollbackMapping = mapping,
+  rollbackCreatedWorkspace = false,
 }) {
   const resourceUrl = mapping.resourceUrl || state.resourceUrl;
   let nextState;
@@ -464,10 +466,12 @@ async function migrateOwnerScopedWorkspace({
     resourceUrl,
   };
   let mappingWriteAttempted = false;
+  let candidateWritten = false;
 
   try {
     // Keep v2 intact until v3 has survived both Chrome serialization and a fresh read.
     await workspaceStore.set({ [nextStorageKey]: nextState });
+    candidateWritten = true;
     const confirmedData = await workspaceStore.get(nextStorageKey);
     const confirmed = confirmedData[nextStorageKey];
     if (!confirmed || confirmed.schemaVersion !== WORKSPACE_SCHEMA_VERSION) {
@@ -480,7 +484,8 @@ async function migrateOwnerScopedWorkspace({
     await workspaceStore.remove(mapping.storageKey);
     return { mapping: nextMapping, state: confirmed, lang: mapping.lang || "en" };
   } catch (error) {
-    // If the mapping write or final removal fails, restore the old active pointer.
+    const rollbackErrors = [];
+    // Restore the exact prior mapping state before exposing the migration failure.
     if (mappingWriteAttempted) {
       try {
         if (rollbackMapping) {
@@ -489,11 +494,22 @@ async function migrateOwnerScopedWorkspace({
           await sessionStore.remove(mappingKey);
         }
       } catch (rollbackError) {
-        throw new AggregateError(
-          [error, rollbackError],
-          "Workspace migration failed and mapping rollback failed"
-        );
+        rollbackErrors.push(rollbackError);
       }
+    }
+    // Seed discovery proved v3 absent, so its failed candidate must not mask retained v2.
+    if (rollbackCreatedWorkspace && candidateWritten) {
+      try {
+        await workspaceStore.remove(nextStorageKey);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        "Workspace migration failed and rollback failed"
+      );
     }
     throw error;
   }
