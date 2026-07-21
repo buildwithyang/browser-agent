@@ -72,7 +72,7 @@ Side Panel 共享 Workspace
 - Context Routing 和网页资源归一化都由网关负责，新增路由规则不需要重新发布扩展。
 - 在应用响应前检查扩展与网关协议；不兼容时提供更新入口，不清空登录态或当前 Workspace。
 
-Workspace 历史以及最新 CV / Cover Letter state 只保存在当前 Chrome 配置中，不建立服务端 Thread 或 Artifact。每个 Workspace 支持 10 次用户发送并保留对应的 Assistant 回复，因此全新的 Workspace 最多有 20 条消息。达到上限后输入框、Shortcut 与发送按钮会禁用，但仍可阅读完整历史并复制已生成内容。
+Workspace 历史以及最新 CV / Cover Letter state 只保存在当前 Chrome 配置中，不建立服务端 Thread 或 Artifact。pure protocol v4 只保存完整的 User/Assistant pair，最多支持 10 次用户发送和 20 条消息；旧的本地 Workspace schema 会直接丢弃并创建全新 Workspace。达到上限后输入框、Shortcut 与发送按钮会禁用，但仍可阅读完整历史并复制已生成内容。
 
 ## 使用流程
 

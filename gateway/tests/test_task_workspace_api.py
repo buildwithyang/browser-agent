@@ -185,7 +185,10 @@ def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None
         json=_payload(
             url="https://example.com/article?utm_source=email&b=2&a=1#part",
             resourceUrl="https://example.com/article?a=1&b=2",
-            histories=[{"role": "assistant", "content": "previous"}],
+            histories=[
+                {"role": "user", "content": "previous question"},
+                {"role": "assistant", "content": "previous"},
+            ],
         ),
     ) as response:
         lines = _stream_lines(response)
@@ -210,6 +213,7 @@ def test_workspace_api_returns_ndjson_and_no_buffer_headers(monkeypatch) -> None
     assert "selected_action_id" not in body
     assert body["result_type"] == "reply"
     assert [item["content"] for item in body["histories"]] == [
+        "previous question",
         "previous",
         "next question",
         "assistant answer",

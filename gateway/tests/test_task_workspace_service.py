@@ -42,7 +42,7 @@ CV_PREVIEW_URL = "https://browser.buildwithyang.com"
 
 
 class FakeWorkspaceAgent(WorkspaceAgent):
-    """Return one prepared v2 execution while recording request-scoped context."""
+    """Return one prepared v4 execution while recording request-scoped context."""
 
     name = AgentName.SUMMARY_PAGE
 
@@ -61,7 +61,7 @@ class FakeWorkspaceAgent(WorkspaceAgent):
         self.calls: list[WorkspaceAgentContext] = []
 
     def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
-        """Record the v2 context and return or raise the prepared outcome."""
+        """Record the v4 context and return or raise the prepared outcome."""
 
         self.calls.append(ctx)
         if self.error is not None:
@@ -310,6 +310,14 @@ def _artifact_state(
             attachment=attachment,
         )
         artifacts[artifact_type] = artifact
+        histories.append(
+            HistoryMessage(
+                id=UUID(int=offset + 30),
+                role="user",
+                content=f"Create {title}.",
+                created_at=FIXED_NOW,
+            )
+        )
         histories.append(
             HistoryMessage(
                 id=UUID(int=offset + 20),
@@ -763,7 +771,7 @@ def test_update_reuses_artifact_id_and_appends_immutable_attachment() -> None:
     assert updated.version == previous.version + 1
     assert updated.attachment.id == UUID(int=2)
     assert response.histories[-1].attachments == [updated.attachment]
-    assert response.histories[0].attachments[0].model_dump_json() == previous_attachment_json
+    assert response.histories[1].attachments[0].model_dump_json() == previous_attachment_json
 
 
 def test_updating_cover_letter_preserves_coexisting_cv() -> None:
@@ -931,7 +939,7 @@ def test_final_response_validation_failure_records_only_failed_metrics() -> None
 
 
 def test_resume_injection_metrics_url_normalization_and_full_duration() -> None:
-    """Preserve operational orchestration around the complete v2 Agent call."""
+    """Preserve operational orchestration around the complete v4 Agent call."""
 
     perf_values = iter((10.0, 10.375))
     repository = RecordingRepository()

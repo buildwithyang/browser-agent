@@ -241,6 +241,12 @@ def _artifact_state(
         )
         histories.append(
             HistoryMessage(
+                role="user",
+                content=f"Please prepare {title}.",
+            )
+        )
+        histories.append(
+            HistoryMessage(
                 role="assistant",
                 content=f"Prepared {title}.",
                 attachments=[attachment],

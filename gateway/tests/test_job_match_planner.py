@@ -202,6 +202,10 @@ def test_existing_cover_letter_edit_is_explicitly_planned_as_artifact() -> None:
     )
     histories = [
         HistoryMessage(
+            role="user",
+            content="请生成求职信。",
+        ),
+        HistoryMessage(
             role="assistant",
             content="已创建求职信。",
             attachments=[attachment],

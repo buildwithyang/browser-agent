@@ -145,7 +145,10 @@ def workspace_request(
         operationId="00000000-0000-0000-0000-000000000001",
         title="Release Notes",
         pageText="Version 2.0 ships Friday.",
-        histories=[{"role": "assistant", "content": "The release is ready."}],
+        histories=[
+            {"role": "user", "content": "Is the release ready?"},
+            {"role": "assistant", "content": "The release is ready."},
+        ],
         artifacts={"cv": None, "cover_letter": None},
         message=message,
         lang=lang,

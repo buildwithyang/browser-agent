@@ -10,7 +10,6 @@ const {
   canSendUserMessage,
   countUserTurns,
   createWorkspace,
-  migrateWorkspaceV2,
   validateWorkspaceState,
   workspaceStorageKey,
 } = workspace;
@@ -72,7 +71,9 @@ function artifactState() {
   });
   return {
     histories: [
+      history(0),
       history(1, { attachments: [first] }),
+      history(2),
       history(3, { attachments: [latest] }),
     ],
     artifacts: {
@@ -158,134 +159,6 @@ test("createWorkspace persists only whitelisted schema-v3 fields", () => {
   assert.equal("currentDocument" in state, false);
 });
 
-test("migrates v2 workspace to v3 without losing histories or artifacts", () => {
-  const legacyMessage = { ...history(0), action_id: "analyze" };
-  const migrated = migrateWorkspaceV2({
-    schemaVersion: 2,
-    resourceUrl: "https://example.com/role",
-    pageTitle: "Role",
-    quickInsight: { title: "Job Match", cards: [] },
-    actions: [{ id: "analyze", title: "Analyze" }],
-    selectedActionId: "analyze",
-    histories: [legacyMessage],
-    artifacts: { cv: null, cover_letter: null },
-    updatedAt: "2026-07-21T10:00:00.000Z",
-  });
-
-  assert.equal(migrated.schemaVersion, 3);
-  assert.deepEqual(migrated.shortcuts, []);
-  assert.equal(migrated.histories[0].content, "question");
-  assert.equal("action_id" in migrated.histories[0], false);
-  assert.deepEqual(migrated.artifacts, { cv: null, cover_letter: null });
-  assert.equal("actions" in migrated, false);
-  assert.equal("selectedActionId" in migrated, false);
-});
-
-test("v2 migration rejects non-array histories", () => {
-  const valid = {
-    schemaVersion: 2,
-    resourceUrl: RESOURCE_URL,
-    pageTitle: "Role",
-    quickInsight: { title: "Job Match", cards: [] },
-    actions: [{ id: "analyze", title: "Analyze" }],
-    selectedActionId: "analyze",
-    histories: [{ ...history(0), action_id: "analyze" }],
-    artifacts: { cv: null, cover_letter: null },
-    updatedAt: "2026-07-21T10:00:00.000Z",
-  };
-
-  assert.throws(() => migrateWorkspaceV2({ ...valid, histories: null }), /histories.*array/i);
-});
-
-test("v2 migration validates legacy action_id before stripping it", () => {
-  const valid = {
-    schemaVersion: 2,
-    histories: [{ ...history(0), action_id: "analyze" }],
-    artifacts: { cv: null, cover_letter: null },
-  };
-
-  assert.throws(
-    () => migrateWorkspaceV2({
-      ...valid,
-      histories: [{ ...valid.histories[0], action_id: 42 }],
-    }),
-    /Action/i
-  );
-});
-
-test("v2 migration rejects a malformed Artifact graph before normalization", () => {
-  const valid = {
-    schemaVersion: 2,
-    histories: [{ ...history(0), action_id: "analyze" }],
-    artifacts: { cv: null, cover_letter: null },
-  };
-
-  assert.throws(
-    () => migrateWorkspaceV2({ ...valid, artifacts: { ...valid.artifacts, extra: null } }),
-    /Artifact.*exactly/i
-  );
-});
-
-test("v2 migration rejects invalid nested history and Artifact state", () => {
-  const invalidHistory = { ...history(0), action_id: "analyze", attachments: "invalid" };
-  assert.throws(
-    () => migrateWorkspaceV2({
-      schemaVersion: 2,
-      histories: [invalidHistory],
-      artifacts: { cv: null, cover_letter: null },
-    }),
-    /attachments/i
-  );
-
-  const nested = artifactState();
-  nested.artifacts.cover_letter.draft = 42;
-  assert.throws(
-    () => migrateWorkspaceV2({
-      schemaVersion: 2,
-      histories: nested.histories.map((message) => ({ ...message, action_id: null })),
-      artifacts: nested.artifacts,
-    }),
-    /draft/i
-  );
-});
-
-test("v2 migration rejects more than ten canonical user turns", () => {
-  const histories = Array.from({ length: 11 }, (_, index) => ({
-    ...history(index, { role: "user", content: `question ${index}` }),
-    action_id: "analyze",
-  }));
-
-  assert.throws(
-    () => migrateWorkspaceV2({
-      schemaVersion: 2,
-      histories,
-      artifacts: { cv: null, cover_letter: null },
-    }),
-    /10 user/i
-  );
-});
-
-test("v2 migration accepts exactly 11 histories and rejects a 12th", () => {
-  const legacyAssistantHistories = Array.from({ length: 12 }, (_, index) => ({
-    ...history(index, { role: "assistant", content: `legacy status ${index}` }),
-    action_id: "analyze",
-  }));
-  const seed = {
-    schemaVersion: 2,
-    artifacts: { cv: null, cover_letter: null },
-  };
-
-  assert.equal(
-    migrateWorkspaceV2({ ...seed, histories: legacyAssistantHistories.slice(0, 11) })
-      .histories.length,
-    11
-  );
-  assert.throws(
-    () => migrateWorkspaceV2({ ...seed, histories: legacyAssistantHistories }),
-    /11 histories/i
-  );
-});
-
 test("Prompt Shortcuts require exactly id title prompt and allow empty Ask More", () => {
   const askMore = { id: "ask_more", title: "Ask More", prompt: "" };
   assert.deepEqual(createWorkspace({ shortcuts: [askMore] }).shortcuts, [askMore]);
@@ -299,23 +172,29 @@ test("Prompt Shortcuts require exactly id title prompt and allow empty Ask More"
   }
 });
 
-test("storage validation permits 31 migrated records but rejects a 32nd", () => {
-  const histories = [
-    ...Array.from({ length: 10 }, (_, index) => (
-      history(index, { role: "user", content: `question ${index}` })
-    )),
-    ...Array.from({ length: 21 }, (_, index) => (
-      history(index + 10, { role: "assistant", content: "reply" })
-    )),
-  ];
+test("storage validation permits 20 paired records but rejects a 21st", () => {
+  const histories = Array.from({ length: 20 }, (_, index) => history(index));
   assert.equal(validateWorkspaceState(histories, { cv: null, cover_letter: null }), true);
   assert.throws(
     () => validateWorkspaceState(
-      [...histories, history(31, { role: "assistant", content: "reply" })],
+      [...histories, history(20, { role: "assistant", content: "surplus reply" })],
       { cv: null, cover_letter: null }
     ),
-    /31 messages/
+    /20 messages/
   );
+});
+
+test("canonical state accepts complete User Assistant pairs only", () => {
+  for (const histories of [
+    [history(0)],
+    [history(1, { role: "assistant" })],
+    [history(0), history(1, { role: "user" })],
+  ]) {
+    assert.throws(
+      () => validateWorkspaceState(histories, { cv: null, cover_letter: null }),
+      /User\/Assistant pairs/
+    );
+  }
 });
 
 test("canonical state rejects more than ten user histories", () => {
@@ -329,7 +208,7 @@ test("canonical state rejects more than ten user histories", () => {
   );
 });
 
-test("pure v2 validator accepts IDs, UTC timestamps, opaque Markdown, and latest snapshots", () => {
+test("pure v4 validator accepts IDs, UTC timestamps, opaque Markdown, and latest snapshots", () => {
   const state = artifactState();
   assert.equal(validateWorkspaceState(state.histories, state.artifacts), true);
 
@@ -341,7 +220,10 @@ test("pure v2 validator accepts IDs, UTC timestamps, opaque Markdown, and latest
   });
   assert.equal(
     validateWorkspaceState(
-      [history(5, { created_at: "2026-07-20T10:00:00+00:00", attachments: [cvAttachment] })],
+      [
+        history(4),
+        history(5, { created_at: "2026-07-20T10:00:00+00:00", attachments: [cvAttachment] }),
+      ],
       {
         cv: {
           id: cvAttachment.artifact_id,
@@ -358,13 +240,13 @@ test("pure v2 validator accepts IDs, UTC timestamps, opaque Markdown, and latest
   );
 });
 
-test("v2 validator accepts canonical UUIDs without imposing version or variant bits", () => {
+test("v4 validator accepts canonical UUIDs without imposing version or variant bits", () => {
   const state = artifactState();
   state.histories[0].id = "30000000-0000-0000-0000-000000000001";
   assert.equal(validateWorkspaceState(state.histories, state.artifacts), true);
 });
 
-test("v2 validator rejects malformed IDs, timestamps, attachments, and fixed Artifact maps", () => {
+test("v4 validator rejects malformed IDs, timestamps, attachments, and fixed Artifact maps", () => {
   const valid = artifactState();
   const cases = [];
 
@@ -381,12 +263,12 @@ test("v2 validator rejects malformed IDs, timestamps, attachments, and fixed Art
   cases.push(impossibleTimestamp);
 
   const userAttachment = copy(valid);
-  userAttachment.histories[0].role = "user";
-  userAttachment.histories[0].content = "question";
+  userAttachment.histories[1].role = "user";
+  userAttachment.histories[1].content = "question";
   cases.push(userAttachment);
 
   const twoAttachments = copy(valid);
-  twoAttachments.histories[0].attachments.push(
+  twoAttachments.histories[1].attachments.push(
     attachment({ id: "20000000-0000-4000-8000-000000000099" })
   );
   cases.push(twoAttachments);
@@ -407,7 +289,7 @@ test("v2 validator rejects malformed IDs, timestamps, attachments, and fixed Art
   }
 });
 
-test("v2 validator enforces CV URLs, Artifact identity, type, uniqueness, and latest snapshot", () => {
+test("v4 validator enforces CV URLs, Artifact identity, type, uniqueness, and latest snapshot", () => {
   const valid = artifactState();
   const cases = [];
 
@@ -418,7 +300,7 @@ test("v2 validator enforces CV URLs, Artifact identity, type, uniqueness, and la
     type: "cv",
     content: "/relative/cv",
   });
-  relativeCv.histories.push(history(5, { attachments: [cv] }));
+  relativeCv.histories.push(history(4), history(5, { attachments: [cv] }));
   relativeCv.artifacts.cv = {
     id: cv.artifact_id,
     type: "cv",
@@ -439,12 +321,12 @@ test("v2 validator enforces CV URLs, Artifact identity, type, uniqueness, and la
   cases.push(wrongReference);
 
   const earlierWrongReference = copy(valid);
-  earlierWrongReference.histories[0].attachments[0].artifact_id =
+  earlierWrongReference.histories[1].attachments[0].artifact_id =
     "10000000-0000-4000-8000-000000000099";
   cases.push(earlierWrongReference);
 
   const staleLatest = copy(valid);
-  staleLatest.artifacts.cover_letter.attachment = staleLatest.histories[0].attachments[0];
+  staleLatest.artifacts.cover_letter.attachment = staleLatest.histories[1].attachments[0];
   cases.push(staleLatest);
 
   const duplicateMessageId = copy(valid);
@@ -452,10 +334,10 @@ test("v2 validator enforces CV URLs, Artifact identity, type, uniqueness, and la
   cases.push(duplicateMessageId);
 
   const duplicateAttachmentId = copy(valid);
-  duplicateAttachmentId.histories[1].attachments[0].id =
-    duplicateAttachmentId.histories[0].attachments[0].id;
+  duplicateAttachmentId.histories[3].attachments[0].id =
+    duplicateAttachmentId.histories[1].attachments[0].id;
   duplicateAttachmentId.artifacts.cover_letter.attachment.id =
-    duplicateAttachmentId.histories[0].attachments[0].id;
+    duplicateAttachmentId.histories[1].attachments[0].id;
   cases.push(duplicateAttachmentId);
 
   for (const state of cases) {
@@ -466,10 +348,10 @@ test("v2 validator enforces CV URLs, Artifact identity, type, uniqueness, and la
   }
 });
 
-test("v2 validator rejects an Artifact version that differs from its latest Attachment", () => {
+test("v4 validator rejects an Artifact version that differs from its latest Attachment", () => {
   const state = artifactState();
-  state.histories = [state.histories[0]];
-  state.artifacts.cover_letter.attachment = state.histories[0].attachments[0];
+  state.histories = state.histories.slice(0, 2);
+  state.artifacts.cover_letter.attachment = state.histories[1].attachments[0];
   state.artifacts.cover_letter.version = 2;
 
   assert.throws(
@@ -478,7 +360,7 @@ test("v2 validator rejects an Artifact version that differs from its latest Atta
   );
 });
 
-test("allows ten user sends regardless of assistant message count", () => {
+test("allows the tenth user send after nine complete pairs", () => {
   const state = (turns) => ({
     histories: Array.from({ length: turns * 2 }, (_, index) => history(index)),
   });
@@ -547,7 +429,7 @@ test("invalid complete response leaves the caller's prior object unchanged", () 
   });
   const before = copy(current);
   const invalid = workspaceResponse();
-  invalid.artifacts.cover_letter.attachment = invalid.histories[0].attachments[0];
+  invalid.artifacts.cover_letter.attachment = invalid.histories[1].attachments[0];
 
   assert.throws(() => applyWorkspaceResponse(current, invalid), /latest|Attachment/i);
   assert.deepEqual(current, before);

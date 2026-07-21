@@ -166,9 +166,9 @@ Attachment，再生成 canonical next state。同类型更新复用 Artifact ID 
 - `histories` 是完整 canonical 时间线；所有 Message 由 Gateway 生成 UUID 和 UTC 时间。
 - `artifacts` 固定包含可空的 `cv` 与 `cover_letter`；每类只携带最新完整快照。
 - 轮数只统计 `role=user`；第 10 次用户发送允许，第 11 次拒绝。
-- 全新 v4 Workspace 最多 20 条 history。
-- 从 Extension schema v2 迁移的历史可能先有最多 11 条旧 Assistant Message；兼容总上限
-  是 31 条，但 `role=user` 仍最多 10 条。
+- pure-v4 history 必须是完整、按顺序排列的 User/Assistant pair；请求最多携带 9 个 pair，
+  terminal response 最多携带 10 个 pair / 20 条 history。
+- Extension 丢弃旧本地 schema 并创建全新 v3 Workspace，不向 Gateway 发送旧历史。
 - 失败、取消或非法终态不提交 canonical history，因此不消耗轮数。
 - 达到上限后客户端仍可展示历史、Attachment 和复制控件。
 - 用户文本最多 10,000 字符；Assistant Markdown 与 Artifact draft 最多 100,000 字符。

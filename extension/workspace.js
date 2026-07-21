@@ -6,9 +6,7 @@ export const ANONYMOUS_WORKSPACE_OWNER = "anonymous";
 /** The local Workspace schema version, independent from Extension release versions. */
 export const WORKSPACE_SCHEMA_VERSION = 3;
 export const MAX_WORKSPACE_TURNS = 10;
-export const MAX_FRESH_WORKSPACE_HISTORIES = 20;
-export const MAX_WORKSPACE_HISTORIES = 31;
-const MAX_V2_WORKSPACE_HISTORIES = 11;
+export const MAX_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2;
 
 const WORKSPACE_STORAGE_PREFIX = `agent-bridge:workspace:v${WORKSPACE_SCHEMA_VERSION}`;
 const USER_HISTORY_CONTENT_MAX_CHARS = 10_000;
@@ -16,16 +14,9 @@ const DOCUMENT_TEXT_MAX_CHARS = 100_000;
 const CV_ATTACHMENT_CONTENT_MAX_CHARS = 4_096;
 const TITLE_MAX_CHARS = 500;
 const ARTIFACT_VERSION_MAX = 2_147_483_647;
-const LEGACY_ACTION_IDS = new Set([
-  "analyze",
-  "tailor_resume",
-  "write_cover_letter",
-  "ask_more",
-]);
 const ARTIFACT_TYPES = new Set(["cv", "cover_letter"]);
 const RESULT_TYPES = new Set(["reply", "create_artifact", "update_artifact"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const LEGACY_WORKSPACE_STORAGE_PREFIX = "agent-bridge:workspace:v2";
 
 /** Return a stable owner id without deriving identity from a bearer token. */
 function normalizedOwnerId(ownerId) {
@@ -261,6 +252,13 @@ export function validateWorkspaceState(histories, artifacts) {
     countUserTurns(histories) <= MAX_WORKSPACE_TURNS,
     `Workspace histories must contain at most ${MAX_WORKSPACE_TURNS} user messages`
   );
+  requireSchema(
+    histories.length % 2 === 0
+      && histories.every((message, index) => (
+        message?.role === (index % 2 === 0 ? "user" : "assistant")
+      )),
+    "Workspace histories must contain complete User/Assistant pairs"
+  );
   requireExactKeys(artifacts, ["cv", "cover_letter"], "Workspace Artifacts");
 
   const messageIds = new Set();
@@ -327,18 +325,6 @@ export function workspaceStorageKey(ownerId, resourceUrl) {
   ].join(":");
 }
 
-/** Return the exact owner/resource key used by the protocol-v2 local Workspace schema. */
-export function legacyWorkspaceStorageKey(ownerId, resourceUrl) {
-  if (typeof resourceUrl !== "string" || !resourceUrl.trim()) {
-    throw new TypeError("resourceUrl must be a non-empty string");
-  }
-  return [
-    LEGACY_WORKSPACE_STORAGE_PREFIX,
-    encodeURIComponent(normalizedOwnerId(ownerId)),
-    encodeURIComponent(resourceUrl.trim()),
-  ].join(":");
-}
-
 /** Copy only the two fixed Artifact slots into local state. */
 function localArtifacts(value) {
   const source = isObject(value) ? value : {};
@@ -362,41 +348,6 @@ export function createWorkspace(seed = {}) {
     artifacts: localArtifacts(seed.artifacts),
     updatedAt: seed.updatedAt ?? null,
   };
-}
-
-/** Convert one valid v2 local state while removing its Action-era fields. */
-export function migrateWorkspaceV2(seed = {}) {
-  requireSchema(seed.schemaVersion === 2, "Only Workspace schema v2 can be migrated");
-  requireSchema(Array.isArray(seed.histories), "Workspace v2 histories must be an array");
-  requireSchema(
-    seed.histories.length <= MAX_V2_WORKSPACE_HISTORIES,
-    `Workspace v2 must contain at most ${MAX_V2_WORKSPACE_HISTORIES} histories`
-  );
-  requireExactKeys(seed.artifacts, ["cv", "cover_letter"], "Workspace Artifacts");
-  const histories = seed.histories.map((message) => {
-    requireExactKeys(
-      message,
-      ["id", "role", "content", "action_id", "created_at", "attachments"],
-      "Workspace v2 message"
-    );
-    requireSchema(
-      message.action_id === null || LEGACY_ACTION_IDS.has(message.action_id),
-      "Workspace v2 message Action is invalid"
-    );
-    const { action_id: _removedActionId, ...normalized } = message;
-    return normalized;
-  });
-  const artifacts = seed.artifacts;
-  validateWorkspaceState(histories, artifacts);
-  return createWorkspace({
-    resourceUrl: seed.resourceUrl,
-    pageTitle: seed.pageTitle,
-    quickInsight: seed.quickInsight,
-    shortcuts: [],
-    histories,
-    artifacts,
-    updatedAt: seed.updatedAt,
-  });
 }
 
 /** Validate and atomically replace canonical Workspace fields from one complete response. */

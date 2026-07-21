@@ -6,7 +6,6 @@ import * as auth from "./auth.js";
 import {
   applyWorkspaceResponse,
   createWorkspace,
-  legacyWorkspaceStorageKey,
   workspaceStorageKey,
 } from "./workspace.js";
 import { activeWorkspaceKey, workspacePrefillKey } from "./workspace-controller.js";
@@ -132,6 +131,15 @@ function dispatchRuntime(runtimeEvent, message, sender = {}) {
   });
 }
 
+/** Return the exact schema-v2 owner/resource key used only by discard fixtures. */
+function legacyWorkspaceKey(ownerId, resourceUrl) {
+  return [
+    "agent-bridge:workspace:v2",
+    encodeURIComponent(ownerId),
+    encodeURIComponent(resourceUrl),
+  ].join(":");
+}
+
 /** Build a complete successful first Artifact response from the Gateway. */
 function firstArtifactResponse() {
   const attachment = {
@@ -145,13 +153,22 @@ function firstArtifactResponse() {
   return {
     resource_url: RESOURCE_URL,
     result_type: "create_artifact",
-    histories: [{
-      id: "30000000-0000-4000-8000-000000000001",
-      role: "assistant",
-      content: "Created the first draft.",
-      created_at: "2026-07-20T10:00:00Z",
-      attachments: [attachment],
-    }],
+    histories: [
+      {
+        id: "30000000-0000-4000-8000-000000000001",
+        role: "user",
+        content: "Write a cover letter.",
+        created_at: "2026-07-20T09:59:59Z",
+        attachments: [],
+      },
+      {
+        id: "30000000-0000-4000-8000-000000000002",
+        role: "assistant",
+        content: "Created the first draft.",
+        created_at: "2026-07-20T10:00:00Z",
+        attachments: [attachment],
+      },
+    ],
     artifacts: {
       cv: null,
       cover_letter: {
@@ -183,7 +200,7 @@ function firstReplyResponse() {
   return {
     ...response,
     result_type: "reply",
-    histories: [{ ...response.histories[0], attachments: [] }],
+    histories: [response.histories[0], { ...response.histories[1], attachments: [] }],
     artifacts: { cv: null, cover_letter: null },
   };
 }
@@ -221,7 +238,7 @@ test("next SEND carries the complete Artifact state returned by the prior respon
   assert.equal(
     typeof auth.buildUserMessageWorkspaceBody,
     "function",
-    "background must share a pure v2 SEND builder"
+    "background must share a pure v4 SEND builder"
   );
   const state = applyWorkspaceResponse(
     createWorkspace({
@@ -251,7 +268,7 @@ test("next SEND carries the complete Artifact state returned by the prior respon
   assert.deepEqual(body.histories, state.histories);
   assert.deepEqual(body.artifacts, state.artifacts);
   assert.deepEqual(
-    body.histories[0].attachments[0],
+    body.histories[1].attachments[0],
     body.artifacts.cover_letter.attachment
   );
   assert.equal("currentDocument" in body, false);
@@ -396,7 +413,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   await import(`./background.js?mv3-behavior=${Date.now()}`);
 
   const retainedResourceUrl = "https://example.com/jobs/retained";
-  const retainedV2Key = legacyWorkspaceStorageKey("user-a", retainedResourceUrl);
+  const retainedV2Key = legacyWorkspaceKey("user-a", retainedResourceUrl);
   local.data[retainedV2Key] = {
     schemaVersion: 2,
     resourceUrl: retainedResourceUrl,
@@ -415,7 +432,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     artifacts: { cv: null, cover_letter: null },
     updatedAt: "2026-07-20T10:00:00Z",
   };
-  const migratedOpen = await dispatchRuntime(runtimeOnMessage, {
+  const freshOpen = await dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_OPEN_WORKSPACE",
     shortcuts: [{ id: "analyze", title: "Analyze", prompt: "Analyze this role." }],
     workspace: { resource_url: retainedResourceUrl },
@@ -425,10 +442,12 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     lang: "en",
   }, { tab: { id: 8 } });
   const retainedV3Key = workspaceStorageKey("user-a", retainedResourceUrl);
-  assert.equal(migratedOpen.ok, true);
-  assert.equal(migratedOpen.state.histories[0].content, "Preserve this retained turn");
+  assert.equal(freshOpen.ok, true);
+  assert.deepEqual(freshOpen.state.histories, []);
+  assert.deepEqual(freshOpen.state.artifacts, { cv: null, cover_letter: null });
   assert.equal(local.data[retainedV2Key], undefined);
-  assert.equal(local.data[retainedV3Key].histories[0].content, "Preserve this retained turn");
+  assert.deepEqual(local.data[retainedV3Key].histories, []);
+  assert.deepEqual(local.data[retainedV3Key].artifacts, { cv: null, cover_letter: null });
   assert.equal(session.data[activeWorkspaceKey(8)].storageKey, retainedV3Key);
   local.setCalls.length = 0;
   local.setStartedCalls.length = 0;
@@ -580,7 +599,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const completed = await send;
   assert.equal(completed.ok, true);
   assert.equal(local.setCalls.length, 1);
-  assert.equal(local.data[storageKey].histories[0].content, "Created the first draft.");
+  assert.equal(local.data[storageKey].histories[1].content, "Created the first draft.");
   const snapshots = runtimeMessages
     .filter((message) => message.type === "AGENT_BRIDGE_WORKSPACE_STREAM")
     .map((message) => message.snapshot);
@@ -942,7 +961,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   ).length;
   local.nextSetGate = persistGate.promise;
   const orderedOldResponse = firstArtifactResponse();
-  orderedOldResponse.histories[0].content = "Ordered old commit";
+  orderedOldResponse.histories[1].content = "Ordered old commit";
   const committingSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
@@ -994,7 +1013,7 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const replacementIndex = fetchesBeforeCommit + 1;
   const orderedReplacementRequest = JSON.parse(fetchCalls[replacementIndex].options.body);
   const orderedNewResponse = firstArtifactResponse();
-  orderedNewResponse.histories[0].content = "Ordered replacement wins";
+  orderedNewResponse.histories[1].content = "Ordered replacement wins";
   emitArtifactCompletion(
     streams[replacementIndex],
     orderedReplacementRequest.operationId,
@@ -1008,10 +1027,10 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   assert.equal(replacementFetchedBeforeCommit, false, "replacement must not load before commit");
   assert.equal(oldCompletedBroadcasted, false, "stale commit must not broadcast completed");
   assert.equal(
-    orderedReplacementRequest.histories[0].content,
+    orderedReplacementRequest.histories[1].content,
     "Ordered old commit",
     "replacement must load the ordered committed state"
   );
-  assert.equal(local.data[storageKey].histories[0].content, "Ordered replacement wins");
+  assert.equal(local.data[storageKey].histories[1].content, "Ordered replacement wins");
   assert.ok(lastErrorReads > 0, "no-receiver runtime callbacks must consume chrome.runtime.lastError");
 });

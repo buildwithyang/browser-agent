@@ -226,6 +226,7 @@ class HistoryMessage(BaseModel):
 def validate_workspace_state(histories: list[HistoryMessage], artifacts: Artifacts) -> None:
     """Validate cross-object identity, reference and latest-snapshot invariants."""
 
+    validate_complete_history_pairs(histories)
     message_ids = [message.id for message in histories]
     if len(message_ids) != len(set(message_ids)):
         raise ValueError("message IDs must be unique")
@@ -265,14 +266,23 @@ def validate_workspace_state(histories: list[HistoryMessage], artifacts: Artifac
 
 
 MAX_WORKSPACE_TURNS = 10
-MAX_FRESH_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2
-MAX_WORKSPACE_HISTORIES = 11 + MAX_FRESH_WORKSPACE_HISTORIES
+MAX_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2
 
 
 def count_user_turns(histories: list[HistoryMessage]) -> int:
     """Count completed canonical user sends in shared Workspace history."""
 
     return sum(message.role == "user" for message in histories)
+
+
+def validate_complete_history_pairs(histories: list[HistoryMessage]) -> None:
+    """Require canonical history to contain ordered User/Assistant turn pairs."""
+
+    if len(histories) % 2 != 0 or any(
+        message.role != ("user" if index % 2 == 0 else "assistant")
+        for index, message in enumerate(histories)
+    ):
+        raise ValueError("Workspace histories must contain complete User/Assistant pairs")
 
 
 class WorkspaceRequest(PageContext):
@@ -297,11 +307,6 @@ class WorkspaceRequest(PageContext):
         user_turns = count_user_turns(self.histories)
         if user_turns >= MAX_WORKSPACE_TURNS:
             raise ValueError("Workspace already contains 10 user turns")
-        assistant_turns = len(self.histories) - user_turns
-        if not user_turns <= assistant_turns <= user_turns + 11:
-            raise ValueError(
-                "Workspace history role balance must satisfy U <= A <= U + 11"
-            )
         return self
 
 

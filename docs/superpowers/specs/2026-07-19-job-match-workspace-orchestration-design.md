@@ -2,8 +2,9 @@
 
 日期：2026-07-19
 
-状态：当前源码实现与全量自动化验证已完成，等待用户浏览器验收。本设计不表示云端网关
-已经部署或 Chrome 扩展已经发布。2026-07-20 增加严格的 Extension 协议版本门。
+状态：历史 protocol-v2 设计。当前源码以
+[Prompt Shortcuts protocol v4](2026-07-21-prompt-shortcuts-design.md) 为准；旧本地 Workspace
+schema 会被丢弃并创建新的 schema-v3 Workspace，不执行本节记录的旧状态迁移设想。
 
 ## 1. 目标
 
@@ -736,7 +737,7 @@ Gateway 与 Extension 都不通过正则或手写 HTML 栈实现 Markdown parser
 
 这不是 legacy 行为兼容，而是明确的升级门。旧客户端必须更新后才能继续使用；新版核心代码不会因历史接口继续维护 `execute() -> DocumentContent`。
 
-## 16. 本地状态迁移与发布
+## 16. 历史本地状态迁移与发布设想
 
 Workspace 本地 schema 增加版本号。新版本以 `artifacts` 和带 `attachments` 的 histories 替代 `currentDocument`。
 

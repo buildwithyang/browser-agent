@@ -17,9 +17,10 @@
 - Keep Workspace streaming on Chat Completions and NDJSON. Do not introduce SSE, WebSocket, polling, or the Responses API.
 - Preserve atomic terminal commits: pending text and deltas never enter canonical histories or consume a turn after failure/cancellation.
 - Count a turn from canonical `role=user` messages only. The tenth user send is legal; an eleventh is rejected by both Extension and Gateway.
-- A fresh v4 Workspace naturally contains at most 20 histories. A v2-migrated Workspace may retain
-  up to 11 legacy Action Assistant histories and therefore has a compatibility ceiling of 31; the
-  ten-user-turn limit remains unchanged.
+- A pure-v4 Workspace contains only complete User/Assistant pairs and at most 20 histories. Incoming
+  requests contain at most nine pairs so the reducer can append the tenth pair.
+- Discard old local Workspace schemas and create a fresh schema-v3 Workspace; do not convert old
+  histories or Artifacts.
 - Analyze output uses a Markdown table with exactly the two requested columns: `JD 要求 | 匹配情况` in Chinese and `JD Requirement | Match` in English.
 - Tailor Resume's initial Shortcut asks for a modification plan and does not directly create a CV. A later explicit confirmation may create or update the CV Artifact.
 - Cover Letter remains a plain-text, copyable Attachment even though the Assistant note supports Markdown rendering.
@@ -51,7 +52,7 @@
 
 - Modify `extension/config.js`: wire protocol version `4`.
 - Modify `extension/workspace.js`: local schema v3, Shortcut validation, Action-free state, and user-turn counting.
-- Modify `extension/workspace-controller.js`: v2 -> v3 migration and one-shot session prefill storage.
+- Modify `extension/workspace-controller.js`: exact old-schema discard and one-shot session prefill storage.
 - Modify `extension/auth.js`: message-only Workspace body.
 - Modify `extension/workspace-operation.js`: remove Quick Action operations and Action metadata.
 - Modify `extension/quick-insight.js`: turn Quick Insight clicks into open-and-prefill commands.
@@ -199,8 +200,7 @@ Replace the request union with one strict model and centralize user-turn countin
 
 ```python
 MAX_WORKSPACE_TURNS = 10
-MAX_FRESH_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2
-MAX_WORKSPACE_HISTORIES = 11 + MAX_FRESH_WORKSPACE_HISTORIES
+MAX_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2
 
 
 def count_user_turns(histories: list[HistoryMessage]) -> int:
@@ -232,10 +232,10 @@ class WorkspaceRequest(PageContext):
 
 Set `CURRENT_EXTENSION_PROTOCOL_VERSION = 4`, make `WorkspaceResponse.histories` use
 `MAX_WORKSPACE_HISTORIES`, remove `selected_action_id`, and preserve `extra="forbid"` on all
-affected boundary models. The 31-message bound only preserves a migrated v2 state's possible 11
-legacy Assistant messages plus 20 v4 user/Assistant records; a fresh v4 reducer still naturally
-stops at 20. Remove stale Action-specific exports and imports from these files only; downstream
-compile failures are intentionally resolved later in this same task.
+affected boundary models. Require ordered, complete User/Assistant pairs; a request may contain at
+most nine pairs, while a terminal response may contain ten. Remove stale Action-specific exports
+and imports from these files only; downstream compile failures are intentionally resolved later in
+this same task.
 
 - [ ] **Step 4: Run the schema tests as an implementation checkpoint**
 
@@ -454,7 +454,7 @@ Expected: all Gateway tests pass with zero failures and import prints `main impo
 
 ```bash
 git add gateway/app/modules/task/schema.py gateway/app/modules/task/protocol.py gateway/app/modules/task/service.py gateway/app/agents/base.py gateway/app/agents/job_match/quick_insight.py gateway/app/agents/job_match/context.py gateway/app/agents/job_match/agent.py gateway/app/agents/job_match/planner.py gateway/app/agents/job_match/specialists/base.py gateway/app/agents/job_match/specialists/analysis.py gateway/app/agents/summary_page.py gateway/tests
-git commit -m "feat: migrate gateway to prompt shortcut protocol v4"
+git commit -m "feat: cut gateway over to prompt shortcut protocol v4"
 ```
 
 ---
@@ -480,37 +480,24 @@ git commit -m "feat: migrate gateway to prompt shortcut protocol v4"
 - Produces: `countUserTurns(histories) -> number` and `canSendUserMessage(state) -> boolean`.
 - Produces: one-shot `storeWorkspacePrefill(tabId, shortcut)` and `consumeWorkspacePrefill(tabId)` session helpers.
 - Changes: Workspace request builder to `{operationId, page context, resourceUrl, histories, artifacts, message}` only.
-- Removes: Quick Action operation kinds, `trigger`, `actionId`, `actions`, `selectedActionId`, and v1 migration.
+- Removes: Quick Action operation kinds, `trigger`, `actionId`, `actions`, `selectedActionId`, and old-schema conversion.
 
 - [ ] **Step 1: Write failing local schema and transport tests**
 
-Add strict Shortcut/state validation and v2 migration coverage:
+Add strict Shortcut/state validation and old-schema discard coverage:
 
 ```javascript
-test("migrates v2 workspace to v3 without losing histories or artifacts", () => {
-  const migrated = migrateWorkspaceV2({
-    schemaVersion: 2,
-    resourceUrl: "https://example.com/role",
-    pageTitle: "Role",
-    quickInsight: { title: "Job Match", cards: [] },
-    actions: [{ id: "analyze", title: "Analyze" }],
-    selectedActionId: "analyze",
-    histories: [history({ role: "user", content: "Hello", action_id: "analyze" })],
-    artifacts: emptyArtifacts(),
-    updatedAt: "2026-07-21T10:00:00.000Z",
-  });
+test("owner-scoped load discards exact v2 state instead of converting it", async () => {
+  const active = await loadOwnerScopedWorkspace(tabId, storesWithExactV2Record);
 
-  assert.equal(migrated.schemaVersion, 3);
-  assert.deepEqual(migrated.shortcuts, []);
-  assert.equal(migrated.histories[0].content, "Hello");
-  assert.equal("action_id" in migrated.histories[0], false);
-  assert.deepEqual(migrated.artifacts, emptyArtifacts());
-  assert.equal("actions" in migrated, false);
-  assert.equal("selectedActionId" in migrated, false);
+  assert.equal(active, null);
+  assert.equal(workspaceStore.data[exactV2Key], undefined);
+  assert.equal(sessionStore.data[activeWorkspaceKey(tabId)], undefined);
 });
 ```
 
-Delete v1 migration assertions and test that unsupported v1 state is discarded. Add true turn tests:
+Test that any mapping to a non-v3 record deletes only that exact record and mapping. Add true turn
+and complete-pair tests:
 
 ```javascript
 test("allows ten user sends regardless of assistant message count", () => {
@@ -568,8 +555,7 @@ Set constants and state helpers:
 ```javascript
 export const WORKSPACE_SCHEMA_VERSION = 3;
 export const MAX_WORKSPACE_TURNS = 10;
-export const MAX_FRESH_WORKSPACE_HISTORIES = 20;
-export const MAX_WORKSPACE_HISTORIES = 31;
+export const MAX_WORKSPACE_HISTORIES = MAX_WORKSPACE_TURNS * 2;
 
 export function countUserTurns(histories = []) {
   return histories.reduce(
@@ -583,19 +569,16 @@ export function canSendUserMessage(state) {
 }
 ```
 
-Validate each Shortcut as exactly `id`, `title`, and `prompt`; permit `prompt === ""`. The 31-record
-validation ceiling exists only so a v2 state can retain its possible 11 legacy Action Assistant
-messages while completing ten real user turns; fresh v4 state still naturally ends at 20. Persist only:
+Validate each Shortcut as exactly `id`, `title`, and `prompt`; permit `prompt === ""`. Accept only
+complete User/Assistant pairs and at most 20 histories. Persist only:
 
 ```text
 schemaVersion/resourceUrl/pageTitle/quickInsight/shortcuts/histories/artifacts/updatedAt
 ```
 
-Remove all Action selection helpers. Implement only v2 -> v3 migration, preserve message IDs,
-roles, content, timestamps, attachments, Artifact snapshots, page metadata, and Quick Insight, and
-strip `action_id` from each history record. Initialize `shortcuts: []`; the next successful Quick
-Insight seed replaces them with the current server catalogue. Discard unsupported v1 and malformed
-states rather than recursively migrating them.
+Remove all Action selection and old-schema conversion helpers. When an exact old-schema record or a
+mapping to any non-v3 record is encountered, delete only that record and mapping. The caller then
+creates a fresh v3 Workspace with empty histories and Artifacts. Never scan another owner/resource.
 
 - [ ] **Step 4: Implement one-shot prefill and message-only operations**
 
@@ -811,7 +794,7 @@ Expected: all Extension tests pass with zero failures.
 
 ```bash
 git add extension/config.js extension/workspace.js extension/workspace-controller.js extension/auth.js extension/workspace-operation.js extension/quick-insight.js extension/background.js extension/sidepanel.js extension/sidepanel.html extension/sidepanel.css extension/auth.test.js extension/workspace.test.js extension/workspace-controller.test.js extension/workspace-operation.test.js extension/workspace-stream.test.js extension/quick-insight.test.js extension/background.test.js extension/sidepanel.test.js
-git commit -m "feat: migrate extension to prompt shortcut protocol v4"
+git commit -m "feat: cut extension over to prompt shortcut protocol v4"
 ```
 
 ---
@@ -836,7 +819,7 @@ git commit -m "feat: migrate extension to prompt shortcut protocol v4"
 **Interfaces:**
 - Publishes: Extension `0.3.0`, wire protocol `4`, local Workspace schema `3`.
 - Documents: Quick Insight -> editable Prompt Shortcut -> shared-history Workspace -> message-driven Agent planning.
-- Verifies: old extension protocol rejection, fresh install, v2 storage migration, production ZIP, and full automated suites.
+- Verifies: old extension protocol rejection, fresh install, old-schema discard, production ZIP, and full automated suites.
 
 - [ ] **Step 1: Write failing release/package assertions**
 
@@ -935,8 +918,8 @@ With local Gateway running and the unpacked Extension reloaded:
    version and confirm the existing Artifact is updated.
 7. Reach ten user sends; confirm `10 / 10`, disabled Shortcuts/composer/send, exact localized limit
    placeholder, hidden keyboard hint, and still-working copy controls.
-8. Repeat with a v2 local Workspace fixture and confirm history/Artifacts survive migration while
-   Action fields disappear.
+8. Repeat with a v2 local Workspace fixture and confirm it is discarded and a fresh empty v3
+   Workspace is created for the exact owner/resource.
 
 - [ ] **Step 7: Review the final diff for contract leaks**
 
@@ -949,8 +932,8 @@ git status --short
 ```
 
 Expected: `git diff --check` is clean. Any remaining search hit is either a deliberate strict
-rejection/migration test or a historical document explicitly marked superseded; no runtime path
-uses an Action as input.
+rejection/discard test or a historical document explicitly marked superseded; no runtime path uses
+an Action as input.
 
 - [ ] **Step 8: Commit Task 3**
 
@@ -976,8 +959,8 @@ git commit -m "docs: release prompt shortcut workspace v4"
 - [ ] Analyze output contains exactly the two comparison columns requested by the user.
 - [ ] Tailor Resume asks for a change plan before generation; later confirmation can create/update CV.
 - [ ] Cover Letter creates and updates a plain-text, copyable Artifact.
-- [ ] Ten canonical user sends work; an eleventh is blocked, pending failures do not consume a turn,
-      fresh v4 history ends at 20, and migrated v2 history may reach at most 31 without data loss.
-- [ ] v2 local Workspace history, Attachments, Artifacts, and page metadata survive v3 migration;
-      Action state is removed and v1 migration is gone.
+- [ ] Ten canonical User/Assistant pairs work; an eleventh send is blocked, pending failures do not
+      consume a turn, and pure-v4 history ends at 20 messages.
+- [ ] v1/v2 local Workspace histories and Artifacts are discarded; a fresh v3 Workspace is created
+      without scanning another owner or resource.
 - [ ] Full Gateway/Extension suites, import check, package check, diff check, and manual smoke test pass.

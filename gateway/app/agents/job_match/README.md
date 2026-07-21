@@ -17,6 +17,9 @@ Agent 不缓存用户 CV、页面正文、histories 或 artifacts。认证用户
 之前从 `AGENT_BRIDGE_CV_PATH` 读取。缺失或不可解析的本地 PDF 因此返回普通 HTTP 错误，
 不会先建立一个必然失败的 Workspace stream。
 
+Agent 只接收 pure-v4 canonical history：完整的 User/Assistant pair，最多 10 个 User turn /
+20 条 Message。旧本地 Workspace schema 由 Extension 丢弃，不进入 Planner 或 Specialist。
+
 ## 结构
 
 ```text

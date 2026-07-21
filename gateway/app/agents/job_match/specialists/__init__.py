@@ -1,1 +1,1 @@
-"""Job-match Specialist strategies added by the next migration task."""
+"""Job-match Specialist strategies used by protocol-v4 Workspace orchestration."""

@@ -122,12 +122,12 @@ def test_api_maps_rate_limit_to_429(monkeypatch):
 
 
 def test_workspace_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
-    """Apply the shared operational quota before each v2 Agent call."""
+    """Apply the shared operational quota before each v4 Agent call."""
 
     repo = _repo(tmp_path)
 
     class Agent(WorkspaceAgent):
-        """Return one deterministic reply while counting v2 calls."""
+        """Return one deterministic reply while counting v4 calls."""
 
         name = AgentName.SUMMARY_PAGE
         requires_resume = False
@@ -138,7 +138,7 @@ def test_workspace_uses_the_existing_per_user_rate_limit(tmp_path) -> None:
             self.calls = 0
 
         def handle_chat(self, ctx: WorkspaceAgentContext) -> AgentExecution[ChatResult]:
-            """Count and return one v2 reply execution."""
+            """Count and return one v4 reply execution."""
 
             self.calls += 1
             return AgentExecution(

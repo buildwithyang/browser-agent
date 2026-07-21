@@ -68,6 +68,7 @@ def _context(*, lang: str = "en", message: str = "What should I emphasize?") -> 
             content="HISTORY ASSISTANT ANSWER",
             attachments=[cv_attachment],
         ),
+        HistoryMessage(role="user", content="HISTORY LETTER QUESTION"),
         HistoryMessage(
             role="assistant",
             content="HISTORY LETTER ANSWER",

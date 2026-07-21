@@ -1,5 +1,11 @@
 # Job Match Workspace Orchestration Implementation Plan
 
+> [!WARNING]
+> 本文是历史 protocol-v2 实施计划。当前实现与验收以
+> [Prompt Shortcuts protocol v4 plan](2026-07-21-prompt-shortcuts.md) 为准；旧本地
+> Workspace schema 直接丢弃并创建 fresh schema-v3 Workspace，不执行本文的 v1-to-v2
+> migration 步骤。
+
 > **For Codex:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to execute this plan task by task. Use `superpowers:test-driven-development` inside every implementation task and `superpowers:verification-before-completion` before the final handoff.
 
 **Goal:** Replace the never-deployed `DocumentContent` Workspace flow with a shared-history chat Orchestrator that returns Markdown replies or versioned CV/Cover Letter Attachments, and strictly gate Gateway/Extension compatibility with protocol version 2.

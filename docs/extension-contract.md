@@ -213,9 +213,10 @@ Extension 不能从它们 append canonical Message 或修改 Artifact。
 }
 ```
 
-- id 为 UUID，`created_at` 为 UTC；全新 v4 response 最多 20 条 histories。
-- 从 local schema v2 迁移的 state 可保留最多 11 条旧 history，因此兼容总上限为 31；
-  无论总数多少，`role=user` 仍最多 10 条。
+- id 为 UUID，`created_at` 为 UTC；pure-v4 histories 只包含完整、按顺序排列的
+  User/Assistant pair，response 最多 10 个 pair / 20 条 histories。
+- 旧本地 Workspace schema 会被丢弃并创建全新的 schema-v3 Workspace；旧 histories 和
+  Artifacts 不转换。
 - User Message 不能带 Attachment；每条 Assistant Message 最多一个 Attachment。
 - Assistant content、Artifact draft 和 Cover Letter Attachment 最多 100,000 字符。
 
@@ -250,8 +251,9 @@ agent-bridge:workspace:v3:<encoded owner>:<encoded resourceUrl>
 Repository 或跨设备恢复。
 
 local schema v3 保存 Quick Insight、Shortcuts、histories 与 Artifacts，不保存 Shortcut
-selection。一次性 v2 → v3 迁移保留页面元数据、历史、Attachments 和 Artifacts，删除旧
-Action state；v1 不再迁移。
+selection。旧 local schema 不转换：精确旧 record 或指向非 v3 record 的 mapping 会被
+丢弃，再创建新的空 v3 Workspace；不保留旧 histories / Artifacts，也不扫描其他
+owner/resource。
 
 - 同一 owner/resource 使用 keyed queue；每次在队列内重读最新 state 并重新采集页面。
 - 发送时 Side Panel 先显示 optimistic User Message 和 transient Assistant，但不持久化。
@@ -286,7 +288,7 @@ reply delta 延迟到终态。
 
 以下变更必须同步修改 Extension，并在不兼容时提升 protocol 版本：顶层或事件字段、事件
 顺序与终态、Prompt Shortcut shape/id、Insight card type、Attachment / Artifact type、
-渲染原语、本地 schema 或迁移规则。
+渲染原语、本地 schema 或旧状态处理规则。
 
 原则：内容和后端编排可以独立演进；wire shape、稳定 id、渲染原语与 local state 必须
 协同发布。

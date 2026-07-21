@@ -44,7 +44,7 @@ def _attachment(
 
 
 def _artifacts(*, cover_letter: dict[str, object] | None = None) -> dict[str, object | None]:
-    """Build the fixed-key Artifact map required by Workspace v2."""
+    """Build the fixed-key Artifact map required by Workspace protocol v4."""
 
     return {"cv": None, "cover_letter": cover_letter}
 
@@ -112,43 +112,35 @@ def test_workspace_allows_tenth_user_turn_but_rejects_eleventh() -> None:
         )
 
 
-def _role_histories(*, users: int, assistants: int) -> list[HistoryMessage]:
-    """Build a canonical-role history collection for migrated-state bounds."""
+def test_workspace_accepts_nine_complete_pairs_before_tenth_send() -> None:
+    """Reserve one complete User/Assistant pair for the tenth protocol-v4 turn."""
 
-    return [
-        *[HistoryMessage(role="user", content=f"user-{index}") for index in range(users)],
-        *[
-            HistoryMessage(role="assistant", content=f"assistant-{index}")
-            for index in range(assistants)
-        ],
-    ]
-
-
-def test_workspace_accepts_maximum_valid_migrated_request_state() -> None:
-    """Reserve two response slots after nine v4 turns and eleven legacy replies."""
-
-    histories = _role_histories(users=9, assistants=20)
+    histories = _paired_histories(turns=9)
 
     request = WorkspaceRequest.model_validate(
         {**_request_payload(), "histories": [item.model_dump() for item in histories]}
     )
 
-    assert len(request.histories) == 29
+    assert len(request.histories) == 18
 
 
 @pytest.mark.parametrize(
-    ("users", "assistants"),
-    [(9, 21), (2, 1), (0, 31)],
+    "histories",
+    [
+        [HistoryMessage(role="user", content="missing reply")],
+        [HistoryMessage(role="assistant", content="reply first")],
+        [
+            HistoryMessage(role="assistant", content="wrong order"),
+            HistoryMessage(role="user", content="wrong order"),
+        ],
+    ],
 )
-def test_workspace_rejects_invalid_migrated_role_balance(
-    users: int,
-    assistants: int,
+def test_workspace_rejects_incomplete_or_misordered_history_pairs(
+    histories: list[HistoryMessage],
 ) -> None:
-    """Reject surplus Assistants, missing replies, and Assistant-only capacity abuse."""
+    """Accept only complete User/Assistant pairs in canonical history."""
 
-    histories = _role_histories(users=users, assistants=assistants)
-
-    with pytest.raises(ValidationError, match="role balance"):
+    with pytest.raises(ValidationError, match="User/Assistant pairs"):
         WorkspaceRequest.model_validate(
             {
                 **_request_payload(),
@@ -210,7 +202,10 @@ def test_workspace_state_enforces_identity_type_and_latest_attachment_invariants
         "attachment": attachment,
     }
     valid_payload = _request_payload(
-        histories=[{"role": "assistant", "content": "Created it", "attachments": [attachment]}],
+        histories=[
+            {"role": "user", "content": "Create it"},
+            {"role": "assistant", "content": "Created it", "attachments": [attachment]},
+        ],
         artifacts=_artifacts(cover_letter=artifact),
     )
 
@@ -252,11 +247,12 @@ def test_workspace_state_rejects_artifact_version_that_differs_from_latest_attac
         REQUEST_ADAPTER.validate_python(
             _request_payload(
                 histories=[
+                    {"role": "user", "content": "Create it"},
                     {
                         "role": "assistant",
                         "content": "Created it",
                         "attachments": [attachment],
-                    }
+                    },
                 ],
                 artifacts=_artifacts(cover_letter=artifact),
             )
@@ -322,5 +318,26 @@ def test_workspace_response_is_markdown_only_full_state() -> None:
         WorkspaceResponse(
             resource_url="https://example.com/jobs/1",
             histories=[],
+            artifacts=_artifacts(),
+        )
+
+
+def test_workspace_response_accepts_twenty_histories_and_rejects_more() -> None:
+    """Keep one pure-v4 ceiling of ten complete User/Assistant pairs."""
+
+    twenty = _paired_histories(turns=10)
+    response = WorkspaceResponse(
+        resource_url="https://example.com/jobs/1",
+        result_type="reply",
+        histories=twenty,
+        artifacts=_artifacts(),
+    )
+
+    assert len(response.histories) == 20
+    with pytest.raises(ValidationError, match="20"):
+        WorkspaceResponse(
+            resource_url="https://example.com/jobs/1",
+            result_type="reply",
+            histories=[*twenty, HistoryMessage(role="user", content="eleventh")],
             artifacts=_artifacts(),
         )

@@ -57,14 +57,14 @@ agent-bridge:workspace:v3:<owner>:<resourceUrl>
 `artifacts.cover_letter`。页面正文、选区和图片文字线索在发送前从当前标签页重新采集，
 不写入 Workspace。当前没有服务端 Thread、Artifact Repository 或跨设备 Workspace 同步。
 
-schema v3 只迁移 schema v2：保留页面元数据、histories、Attachments 与 Artifacts，删除
-旧 Action state 和历史 Action 字段，并等待下一次 Quick Insight 更新 Shortcuts。旧 v2
-历史最多 11 条，迁移后在十次用户发送限制内最多可增长到 31 条；全新的 v4 Workspace
-最多保存 20 条 history。
+schema v3 不转换旧本地 Workspace schema。遇到当前 owner/resource 的精确旧 record，或
+tab mapping 指向非 v3 record 时，扩展会丢弃该 record 与 mapping，再创建全新的 v3
+Workspace；旧 histories 和 Artifacts 不保留，也不会扫描其他 owner 或 resource。
 
-轮数只统计 canonical history 中的 User Message。第 10 次发送允许，第 11 次被前后端
-拒绝；pending 立即计入 `10 / 10`，失败后恢复。达到上限时 Shortcut、输入框与发送按钮
-禁用并隐藏键盘提示，但完整历史、Attachment 和复制控件仍然可用。
+pure v4 canonical history 只包含完整、按顺序排列的 User/Assistant pair，唯一上限为 20 条
+history / 10 个 User turn。第 10 次发送允许，第 11 次被前后端拒绝；pending 立即计入
+`10 / 10`，失败后恢复。达到上限时 Shortcut、输入框与发送按钮禁用并隐藏键盘提示，但
+完整历史、Attachment 和复制控件仍然可用。
 
 ## Streaming 与 canonical commit
 
