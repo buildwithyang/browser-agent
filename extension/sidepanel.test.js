@@ -147,7 +147,6 @@ function settledLocalOperation(overrides = {}) {
 test("submit immediately renders a transient user turn and clears the composer", async () => {
   const setup = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   setup.elements.messageInput.value = "这个岗位最看重什么？";
   const pending = deferred();
@@ -182,7 +181,6 @@ test("successful SEND settlement ignores a same-operation late delta", async () 
   const canonical = workspace({ histories: [message(1, { content: "canonical answer" })] });
   const setup = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   setup.elements.messageInput.value = "local request";
   await sidepanel.submitMessage(setup.elements, setup.model, {
@@ -206,7 +204,6 @@ test("successful SEND settlement ignores same-operation completed without reload
   const canonical = workspace({ histories: [message(1, { content: "canonical answer" })] });
   const setup = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   setup.elements.messageInput.value = "local request";
   await sidepanel.submitMessage(setup.elements, setup.model, {
@@ -303,7 +300,6 @@ test("failed and stale local settlements ignore late runtime resurrection", asyn
   ]) {
     const setup = await renderState(workspace(), {
       tabId: 7,
-      selectedActionId: "analyze",
     });
     setup.elements.messageInput.value = "restore me";
     await sidepanel.submitMessage(setup.elements, setup.model, {
@@ -336,7 +332,6 @@ test("failed and stale local settlements ignore late runtime resurrection", asyn
 test("normal completed-before-response ordering applies canonical state without reload", async () => {
   const setup = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const request = deferred();
   setup.elements.messageInput.value = "local request";
@@ -366,7 +361,6 @@ test("normal completed-before-response ordering applies canonical state without 
 test("cumulative stream snapshots render at most once per 50 ms and reject stale identities", async () => {
   const setup = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
     pendingTurn: {
       operationId: "00000000-0000-4000-8000-000000000001",
       tabId: 7,
@@ -623,7 +617,6 @@ test("failed stream restores text without changing canonical histories", async (
   const canonical = workspace({ histories: [message(0, { content: "canonical" })] });
   const setup = await renderState(canonical, {
     tabId: 7,
-    selectedActionId: "analyze",
     pendingTurn: {
       operationId: "00000000-0000-4000-8000-000000000001",
       tabId: 7,
@@ -656,7 +649,6 @@ test("interrupted SEND restores the exact original input and preserves canonical
   const canonical = workspace({ histories: [message(0, { content: "canonical" })] });
   const setup = await renderState(canonical, {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   setup.elements.messageInput.value = "  preserve my spacing  ";
 
@@ -673,7 +665,6 @@ test("interrupted SEND restores the exact original input and preserves canonical
 test("current stale SEND settlement fails its optimistic turn and restores input", async () => {
   const setup = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const request = deferred();
   setup.elements.messageInput.value = "restore stale input";
@@ -693,7 +684,6 @@ test("current stale SEND settlement fails its optimistic turn and restores input
 test("old stale SEND settlement cannot fail a newer pending operation", async () => {
   const setup = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const request = deferred();
   setup.elements.messageInput.value = "old submission";
@@ -722,7 +712,6 @@ test("old stale SEND settlement cannot fail a newer pending operation", async ()
 test("late SEND failure never overwrites a draft typed after the first failure signal", async () => {
   const setup = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const request = deferred();
   setup.elements.messageInput.value = "original submission";
@@ -794,7 +783,7 @@ test("manifest declares the Side Panel entry point and release version", async (
   );
   assert.ok(manifest.permissions.includes("sidePanel"));
   assert.equal(manifest.side_panel.default_path, "sidepanel.html");
-  assert.equal(manifest.version, "0.2.0");
+  assert.equal(manifest.version, "0.3.0");
 });
 
 test("header contains only page identity, source, and an optional match score", async () => {
@@ -981,7 +970,6 @@ test("Cover Letter copy reports Clipboard absence and rejection before restoring
       state,
       lang: "en",
       uiLanguage: "en-US",
-      selectedActionId: "analyze",
       loading: false,
       error: null,
     };
@@ -1236,7 +1224,6 @@ test("SEND invalidates overlapping GET state and keeps loading until SEND settle
   const initial = workspace({ pageTitle: "Initial" });
   const { elements, model } = await renderState(initial, {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const sendRequest = deferred();
   const getRequest = deferred();
@@ -1362,7 +1349,6 @@ test("workspace boundaries clear drafts while same-tab reload preserves them", a
 test("reset-cleared draft stays empty after an invalidated SEND resolves", async () => {
   const { elements, model } = await renderState(workspace(), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const sendRequest = deferred();
   const resetRequest = deferred();
@@ -1426,7 +1412,6 @@ test("same-tab canonical resource switch clears the old resource draft", async (
 test("same-tab resource B GET supersedes pending resource A SEND", async () => {
   const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const sendRequest = deferred();
   const getRequest = deferred();
@@ -1463,7 +1448,6 @@ test("same-tab resource B GET supersedes pending resource A SEND", async () => {
 test("same-tab resource B GET survives resource A SEND settling first", async () => {
   const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const sendRequest = deferred();
   const getRequest = deferred();
@@ -1500,7 +1484,6 @@ test("same-tab resource B GET survives resource A SEND settling first", async ()
 test("settled resource A SEND keeps a newer resource load exclusive", async () => {
   const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const sendRequest = deferred();
   const getRequest = deferred();
@@ -1543,7 +1526,6 @@ test("settled resource A SEND keeps a newer resource load exclusive", async () =
 test("same-resource tracked load releases loading after an older SEND settles", async () => {
   const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const sendRequest = deferred();
   const getRequest = deferred();
@@ -1578,7 +1560,6 @@ test("same-resource tracked load releases loading after an older SEND settles", 
 test("failed tracked load releases loading after an older SEND settles", async () => {
   const { elements, model } = await renderState(workspace({ pageTitle: "Resource A" }), {
     tabId: 7,
-    selectedActionId: "analyze",
   });
   const sendRequest = deferred();
   const getRequest = deferred();

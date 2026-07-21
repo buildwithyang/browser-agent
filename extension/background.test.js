@@ -502,7 +502,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const failedSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Failure must restore this input",
   });
   await waitFor(() => fetchCalls.length === 2, "Failed Workspace fetch did not start");
@@ -545,7 +544,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const supersededSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Old same-resource operation",
     operationId: replayedOperationId,
   });
@@ -560,7 +558,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const replacementSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "New same-resource operation",
     operationId: replayedOperationId,
   });
@@ -588,7 +585,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const invalidTerminalSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Reject invalid terminal",
   });
   await waitFor(() => fetchCalls.length === 5, "Invalid-terminal fetch did not start");
@@ -609,7 +605,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const rejectedApplySend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Rejected apply",
   });
   await waitFor(() => fetchCalls.length === 6, "Rejected-apply fetch did not start");
@@ -629,7 +624,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const applyRecoverySend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Queue recovers after rejected apply",
   });
   await waitFor(() => fetchCalls.length === 7, "Apply-recovery fetch did not start");
@@ -668,7 +662,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     const timedOutSend = dispatchRuntime(runtimeOnMessage, {
       type: "AGENT_BRIDGE_WORKSPACE_SEND",
       tabId: 7,
-      actionId: "write_cover_letter",
       message: "Timeout must not persist",
     });
     await waitFor(
@@ -699,7 +692,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const timeoutRecoverySend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Queue recovers after pre-fetch timeout",
   });
   await waitFor(() => fetchCalls.length === 8, "Timeout recovery did not reach fetch");
@@ -726,7 +718,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const hungContextSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Hung pre-fetch operation",
   });
   await waitFor(
@@ -736,7 +727,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const replacementAfterHungSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Replacement after hung context",
   });
   const hungContextResult = await hungContextSend;
@@ -769,7 +759,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const abortedSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Do not persist this",
   });
   await waitFor(
@@ -807,7 +796,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const tabRecoverySend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Queue recovers after tab-close pre-fetch abort",
   });
   await waitFor(() => fetchCalls.length === 10, "Tab-close recovery did not reach fetch");
@@ -824,7 +812,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const ownerStaleSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Old owner operation",
   });
   await waitFor(() => fetchCalls.length === 11, "Owner-stale Workspace fetch did not start");
@@ -868,7 +855,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const committingSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Start deferred canonical commit",
   });
   await waitFor(() => fetchCalls.length === fetchesBeforeCommit + 1, "Commit fetch did not start");
@@ -893,7 +879,6 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   const orderedReplacementSend = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
-    actionId: "write_cover_letter",
     message: "Replacement must wait for commit",
   });
   await waitFor(

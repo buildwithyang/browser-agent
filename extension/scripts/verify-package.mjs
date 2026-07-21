@@ -126,6 +126,25 @@ test("production package contains Workspace streaming runtime", async () => {
   assert.ok(entries.includes("workspace-stream.js"));
 });
 
+test("production package publishes Extension 0.3.0 on protocol v4 without Action fields", async () => {
+  await withExtractedArchive(async (root) => {
+    const [manifestSource, configSource, backgroundSource] = await Promise.all([
+      readFile(path.join(root, "manifest.json"), "utf8"),
+      readFile(path.join(root, "config.js"), "utf8"),
+      readFile(path.join(root, "background.js"), "utf8"),
+    ]);
+    const manifest = JSON.parse(manifestSource);
+    const protocolMatch = configSource.match(
+      /EXTENSION_PROTOCOL_VERSION\s*=\s*(\d+)/
+    );
+
+    assert.equal(manifest.version, "0.3.0");
+    assert.ok(protocolMatch, "config.js must publish EXTENSION_PROTOCOL_VERSION");
+    assert.equal(Number(protocolMatch[1]), 4);
+    assert.doesNotMatch(backgroundSource, /quick_insight_action|selectedActionId/);
+  });
+});
+
 test("package contains complete licenses copied from locked dependencies", async () => {
   await withExtractedArchive(async (root) => {
     for (const license of LICENSE_ASSETS) {

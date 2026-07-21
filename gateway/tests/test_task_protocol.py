@@ -400,6 +400,32 @@ def test_task_endpoints_reject_missing_malformed_and_unequal_protocol(
     assert service.calls == []
 
 
+def test_v3_header_is_the_only_failure_boundary_for_valid_v4_workspace_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject v3 before routing while the same valid body reaches v4 handling."""
+
+    service = RecordingService()
+    _wire(monkeypatch, service)
+    client = TestClient(main.app)
+    payload = _workspace_payload()
+
+    outdated = client.post(
+        "/tasks/workspace",
+        json=payload,
+        headers={EXTENSION_PROTOCOL_HEADER: "3"},
+    )
+    current = client.post(
+        "/tasks/workspace",
+        json=payload,
+        headers={EXTENSION_PROTOCOL_HEADER: "4"},
+    )
+
+    _assert_upgrade_required(outdated)
+    assert current.status_code == 200
+    assert [call[0] for call in service.calls] == ["workspace"]
+
+
 @pytest.mark.parametrize(
     ("path", "payload", "operation"),
     [

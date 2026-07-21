@@ -25,7 +25,7 @@ Compose 内网可见，前端通过同源 `/api` 访问 Gateway。
 - Casdoor 应用。
 - 阿里云 OSS bucket 与 AccessKey。
 
-Workspace 使用 Chat Completions streaming 和 protocol v3 NDJSON，不使用 Responses API。
+Workspace 使用 Chat Completions streaming 和 protocol v4 NDJSON，不使用 Responses API。
 自定义模型代理必须兼容 `chat.completions.create(..., stream=True)`。
 
 ## 1. 配置环境变量
@@ -80,7 +80,7 @@ web/frontend/API；这不会让当前 Extension 连接到该 host。
 production ZIP 描述为可连接通用自定义 host；若部署目标不是官方云端，本指南只覆盖
 其 web/frontend/API，不覆盖 Extension 接入。
 
-Extension 与 Gateway 必须都支持 protocol v3。旧扩展访问 Task 接口会收到
+Extension 与 Gateway 必须都支持 protocol v4。旧扩展访问 Task 接口会收到
 `426 Upgrade Required`；此时更新扩展，不要尝试绕过 protocol Header。
 
 ## Workspace streaming 反代边界
@@ -133,7 +133,7 @@ docker compose up -d --build
   `/api/tasks/workspace`，并检查 `proxy_buffering off` / `proxy_cache off` 没有被上层反代
   覆盖。
 - **提示更新扩展 / HTTP 426**：安装最新扩展；Gateway 只接受
-  `X-Agent-Bridge-Protocol-Version: 3`。
+  `X-Agent-Bridge-Protocol-Version: 4`。
 - **Workspace 失败后没有历史**：这是原子状态边界；只有 `completed.response` 会写入
   canonical histories / artifacts。先检查 Gateway 的安全错误码与模型代理 streaming 兼容性。
 - **登录回跳或 `redirect_uri` 不匹配**：Casdoor、`.env` 和真实访问地址必须完全一致。

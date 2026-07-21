@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agent Bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Send the current webpage context to a local Python gateway.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx7dl0PNmsk7ZhzpHW8+28bJzh/eK1yi6wOxtfTGiLb01JyXXdD70nom0zZmnUgRWpAbG661nOOnvDOoUvRIVFoePyROcumqpY9wKj9Nhp+BJYXSF1p13bAOzuc1ao4L48zTWYD4jGXrKtpTYJUegvT/gaD8QgPQnIeRdqkM6VtcLBxPYnzjr0bTvqLRZHRcaLIWu2KAArTSNgoosH23IIZjVXmfgHJ3fGedhj7dBo6PvhMv39lik6qZ+96T1MprnDHtZTGBQoNNBS5+aYngxMVh/DS3mDLCmoOQCupe30vWfzLOoz0pVNJcCOSizY1lLwBf71nU+qFAeldWpY/BiCQIDAQAB",
   "icons": {

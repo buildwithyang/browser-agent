@@ -1,8 +1,15 @@
 # Workspace Streaming Design
 
 **Date:** 2026-07-20  
-**Status:** Approved in conversation; awaiting written-spec review  
+**Status:** Historical protocol-v3 streaming design
+
 **Scope:** Gateway Workspace execution, Extension Background transport, and Side Panel transient UI
+
+> [!WARNING]
+> [Prompt Shortcuts 与十轮 Workspace 设计](2026-07-21-prompt-shortcuts-design.md) 已通过
+> protocol v4 替代本文的 Action 路由、Quick Insight 响应字段、Workspace Action 字段和
+> 按总消息数计算的容量假设。本文仍记录 NDJSON streaming、原子 commit 与失败恢复设计；
+> 任何有冲突的 wire/state 契约都以 protocol v4 设计为准。
 
 ## 1. Goal
 

@@ -1,14 +1,15 @@
 # Job Match Agent
 
 `job_match` 是 LinkedIn / Indeed 岗位场景的无状态执行层。`JobMatchAgent` 作为
-Facade / Mediator 统一协调 Quick Insight、Workspace 计划和 Specialist Strategy；消息、
-Artifact 版本、UUID、时间戳与持久化仍由 `modules/task` 管理。
+Facade / Mediator 协调 Quick Insight、每轮 Workspace planning 与 Specialist Strategy；
+消息、Artifact 版本、UUID、时间戳与持久化仍由 `modules/task` 管理。
 
 ## 公开能力
 
-- `quick_insight()` 返回页面浮层使用的 typed `Insight`，不创建 Message 或 Artifact。
-- `available_actions()` 声明当前岗位可用的 Action。
-- `stream_chat()` 依次产生进度、可见 reply delta 和一个完整终态候选结果。
+- `quick_insight()` 返回页面浮层使用的 typed `Insight` 与本地化 Prompt Shortcuts，不创建
+  Message 或 Artifact。
+- `stream_chat()` 为每条用户消息运行 Planner，依次产生进度、可见 reply delta 和一个
+  完整终态候选结果。
 - `handle_chat()` 只保留给同步调用边界，内部消费同一 stream，不维护第二套生成逻辑。
 
 Agent 不缓存用户 CV、页面正文、histories 或 artifacts。认证用户的生效 CV 由
@@ -23,7 +24,7 @@ job_match/
 ├── agent.py                 # Facade / Mediator；stream orchestration 与结果归一化
 ├── context.py               # 不可变的请求级 JobChatContext
 ├── planner.py               # ChatPlanner；选择 Specialist 与 reply/artifact 输出模式
-├── quick_insight.py         # 岗位 Quick Insight 与 Actions
+├── quick_insight.py         # 岗位 Quick Insight 与 Prompt Shortcuts
 └── specialists/
     ├── base.py              # Strategy 接口与流式 Template Method
     ├── analysis.py          # 岗位分析；只允许 reply
@@ -37,32 +38,55 @@ job_match/
 Markdown，Cover Letter 使用可直接复制的纯文本；不使用 Responses API，也不要求模型
 生成 JSON transport envelope。
 
-## 用户消息与 Quick Action
+## Prompt Shortcut 与 Planner 边界
 
-用户消息路径：
+Quick Insight 只声明本地化、可编辑的 composer draft。Shortcut 点击不会调用 Agent，发送
+时也不会提交 Shortcut id。每一条最终用户消息都经过同一规划路径：
 
 ```text
-current message + selected Action + histories + artifacts
+current message + current artifacts + histories
   -> ChatPlanner selects Specialist + output mode
-  -> exactly one Specialist streams raw Markdown
+  -> exactly one Specialist streams raw text
   -> JobMatchAgent validates the complete result
   -> TaskService atomically builds completed.response
 ```
 
-计划证据优先级为当前用户消息、所选 Action、完整历史和已有 Artifact。Action 是强意图
-提示，不覆盖当前用户的明确要求。例如选择 `tailor_resume` 后问“哪段经历最值得突出？”
-会进入 reply；明确要求生成或重写简历时才进入 Artifact 模式。
+Planner 的证据优先级严格为：
 
-Quick Insight 点击使用确定性计划，不调用 `ChatPlanner`：
+```text
+current message > current Artifacts > histories
+```
 
-| Action | Specialist | 输出模式 |
-| --- | --- | --- |
-| `analyze` | `JobAnalysisAgent` | reply |
-| `tailor_resume` | `ResumeTailoringAgent` | Artifact (`cv`) |
-| `write_cover_letter` | `CoverLetterAgent` | Artifact (`cover_letter`) |
-| `ask_more` | 不调用后端 Agent | 只打开 Workspace |
+Planner 只拥有 Specialist 与 `reply | artifact` 的选择权，不生成正文。具体 Strategy 只拥有
+本场景内容生成权，不决定 HTTP、wire protocol、Message/Attachment identity 或 persistence。
+这是 Facade + Strategy 的边界，避免 UI 控件成为后端隐藏路由参数。
 
-同类型 Artifact 已存在时，Facade 生成 update 候选；否则生成 create 候选。
+- Analyze Prompt 要求分析，因此 Planner 选择 `JobAnalysisAgent + reply`。
+- Tailor Resume Prompt 只要求先给修改计划，因此首轮必须是 `ResumeTailoringAgent + reply`；
+  用户确认生成后，后续消息才进入 CV Artifact create/update。
+- Cover Letter Prompt 明确要求成稿，因此进入 `CoverLetterAgent + artifact`；后续“短一点”
+  等编辑指令结合当前 Artifact 进入 update。
+- 开放问题在没有更强证据时进入 `GeneralQAAgent + reply`。
+
+## Analyze 输出契约
+
+`JobAnalysisAgent` 必须先逐项比较每一条重要 JD 要求。中文 Markdown 表格只能有以下两个
+comparison columns：
+
+```markdown
+| JD 要求 | 匹配情况 |
+| --- | --- |
+```
+
+英文只能使用：
+
+```markdown
+| JD Requirement | Match |
+| --- | --- |
+```
+
+不能增加序号、权重或备注等第三列。表格之后再叙述最强匹配、核心差距、真实 fit、申请风险，
+并给出是否值得申请的明确结论和理由。
 
 ## Streaming 契约
 

@@ -100,7 +100,7 @@ function validateStatusEvent(value) {
   requireStreamSchema(STREAM_STAGES.has(value.stage), "Workspace status stage is invalid");
 }
 
-/** Validate one strict protocol-v3 Workspace stream event without retaining state. */
+/** Validate one strict protocol-v4 Workspace stream event without retaining state. */
 export function validateWorkspaceStreamEvent(value) {
   requireStreamSchema(isObject(value), "Workspace stream event must be an object");
   requireStreamSchema(typeof value.type === "string", "Workspace stream event type is required");
@@ -189,7 +189,7 @@ async function assertGatewayStreamResponse(response) {
   );
 }
 
-/** Validate one response stream using the protocol-v3 lifecycle state machine. */
+/** Validate one response stream using the protocol-v4 lifecycle state machine. */
 class WorkspaceStreamLifecycle {
   constructor() {
     /** Track whether the optional routing stage was already observed. */

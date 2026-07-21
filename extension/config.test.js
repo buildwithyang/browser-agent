@@ -26,7 +26,7 @@ test("wire protocol is independent from the manifest release version", async () 
 
   assert.equal(EXTENSION_PROTOCOL_VERSION, 4);
   assert.equal(EXTENSION_PROTOCOL_HEADER, "X-Agent-Bridge-Protocol-Version");
-  assert.equal(manifest.version, "0.2.0");
+  assert.equal(manifest.version, "0.3.0");
   assert.notEqual(String(EXTENSION_PROTOCOL_VERSION), manifest.version);
 });
 

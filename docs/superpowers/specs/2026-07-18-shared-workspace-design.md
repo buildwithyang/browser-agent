@@ -3,10 +3,10 @@
 日期：2026-07-18
 
 > [!WARNING]
-> 本文是历史设计。[2026-07-19 Job Match Workspace Orchestration Design](2026-07-19-job-match-workspace-orchestration-design.md)
-> 已替代本文中的 Action 执行语义、`currentDocument` / `document` 单产物模型、Workspace
-> 消息/Attachment 契约、旧 `/tasks` 兼容结论和 Workspace 展示方式。本文的 Workspace
-> 身份、URL 规范化、用户隔离与消息数量限制仍然有效。
+> 本文是历史设计。[Prompt Shortcuts 与十轮 Workspace 设计](2026-07-21-prompt-shortcuts-design.md)
+> 已通过 protocol v4 替代本文的 Action 执行/路由语义、Workspace 请求响应字段、
+> `currentDocument` / `document` 单产物模型，以及按总消息数计算的容量假设。本文仅保留为
+> Workspace 身份、URL 规范化和用户隔离的设计背景；当前契约以 Prompt Shortcut 设计为准。
 
 实现状态：本仓库已实现 Quick Insight + Shared Workspace 的网关与扩展代码。本设计不代表云端网关或 Chrome 应用商店版本已经发布；上线仍需分别部署网关并发布扩展。`POST /tasks/current-task` 从未在线上发布，已从代码删除。
 
