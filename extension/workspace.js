@@ -15,6 +15,12 @@ const DOCUMENT_TEXT_MAX_CHARS = 100_000;
 const CV_ATTACHMENT_CONTENT_MAX_CHARS = 4_096;
 const TITLE_MAX_CHARS = 500;
 const ARTIFACT_VERSION_MAX = 2_147_483_647;
+const LEGACY_ACTION_IDS = new Set([
+  "analyze",
+  "tailor_resume",
+  "write_cover_letter",
+  "ask_more",
+]);
 const ARTIFACT_TYPES = new Set(["cv", "cover_letter"]);
 const RESULT_TYPES = new Set(["reply", "create_artifact", "update_artifact"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -250,6 +256,10 @@ export function validateWorkspaceState(histories, artifacts) {
     histories.length <= MAX_WORKSPACE_HISTORIES,
     `Workspace histories must contain at most ${MAX_WORKSPACE_HISTORIES} messages`
   );
+  requireSchema(
+    countUserTurns(histories) <= MAX_WORKSPACE_TURNS,
+    `Workspace histories must contain at most ${MAX_WORKSPACE_TURNS} user messages`
+  );
   requireExactKeys(artifacts, ["cv", "cover_letter"], "Workspace Artifacts");
 
   const messageIds = new Set();
@@ -356,10 +366,22 @@ export function createWorkspace(seed = {}) {
 /** Convert one valid v2 local state while removing its Action-era fields. */
 export function migrateWorkspaceV2(seed = {}) {
   requireSchema(seed.schemaVersion === 2, "Only Workspace schema v2 can be migrated");
-  const histories = Array.isArray(seed.histories)
-    ? seed.histories.map(({ action_id: _removedActionId, ...message }) => ({ ...message }))
-    : [];
-  const artifacts = localArtifacts(seed.artifacts);
+  requireSchema(Array.isArray(seed.histories), "Workspace v2 histories must be an array");
+  requireExactKeys(seed.artifacts, ["cv", "cover_letter"], "Workspace Artifacts");
+  const histories = seed.histories.map((message) => {
+    requireExactKeys(
+      message,
+      ["id", "role", "content", "action_id", "created_at", "attachments"],
+      "Workspace v2 message"
+    );
+    requireSchema(
+      message.action_id === null || LEGACY_ACTION_IDS.has(message.action_id),
+      "Workspace v2 message Action is invalid"
+    );
+    const { action_id: _removedActionId, ...normalized } = message;
+    return normalized;
+  });
+  const artifacts = seed.artifacts;
   validateWorkspaceState(histories, artifacts);
   return createWorkspace({
     resourceUrl: seed.resourceUrl,

@@ -361,6 +361,8 @@ async function seedWorkspace(tabId, message) {
   ];
   if (selectedShortcut) {
     writes.push(storeWorkspacePrefill(tabId, selectedShortcut, chrome.storage.session));
+  } else {
+    writes.push(chrome.storage.session.remove(workspacePrefillKey(tabId)));
   }
   await Promise.all(writes);
   return { state, lang: message.lang || "en" };
@@ -833,6 +835,7 @@ function renderPanel(payload) {
     });
   };
 
+  /** Render server-declared Prompt Shortcuts as stateless Workspace draft buttons. */
   const renderShortcuts = (container, shortcuts) => {
     if (!shortcuts || !shortcuts.length) return;
     const actionsWrap = el("div", "ab-actions");

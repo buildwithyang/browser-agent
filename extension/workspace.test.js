@@ -181,6 +181,90 @@ test("migrates v2 workspace to v3 without losing histories or artifacts", () => 
   assert.equal("selectedActionId" in migrated, false);
 });
 
+test("v2 migration rejects non-array histories", () => {
+  const valid = {
+    schemaVersion: 2,
+    resourceUrl: RESOURCE_URL,
+    pageTitle: "Role",
+    quickInsight: { title: "Job Match", cards: [] },
+    actions: [{ id: "analyze", title: "Analyze" }],
+    selectedActionId: "analyze",
+    histories: [{ ...history(0), action_id: "analyze" }],
+    artifacts: { cv: null, cover_letter: null },
+    updatedAt: "2026-07-21T10:00:00.000Z",
+  };
+
+  assert.throws(() => migrateWorkspaceV2({ ...valid, histories: null }), /histories.*array/i);
+});
+
+test("v2 migration validates legacy action_id before stripping it", () => {
+  const valid = {
+    schemaVersion: 2,
+    histories: [{ ...history(0), action_id: "analyze" }],
+    artifacts: { cv: null, cover_letter: null },
+  };
+
+  assert.throws(
+    () => migrateWorkspaceV2({
+      ...valid,
+      histories: [{ ...valid.histories[0], action_id: 42 }],
+    }),
+    /Action/i
+  );
+});
+
+test("v2 migration rejects a malformed Artifact graph before normalization", () => {
+  const valid = {
+    schemaVersion: 2,
+    histories: [{ ...history(0), action_id: "analyze" }],
+    artifacts: { cv: null, cover_letter: null },
+  };
+
+  assert.throws(
+    () => migrateWorkspaceV2({ ...valid, artifacts: { ...valid.artifacts, extra: null } }),
+    /Artifact.*exactly/i
+  );
+});
+
+test("v2 migration rejects invalid nested history and Artifact state", () => {
+  const invalidHistory = { ...history(0), action_id: "analyze", attachments: "invalid" };
+  assert.throws(
+    () => migrateWorkspaceV2({
+      schemaVersion: 2,
+      histories: [invalidHistory],
+      artifacts: { cv: null, cover_letter: null },
+    }),
+    /attachments/i
+  );
+
+  const nested = artifactState();
+  nested.artifacts.cover_letter.draft = 42;
+  assert.throws(
+    () => migrateWorkspaceV2({
+      schemaVersion: 2,
+      histories: nested.histories.map((message) => ({ ...message, action_id: null })),
+      artifacts: nested.artifacts,
+    }),
+    /draft/i
+  );
+});
+
+test("v2 migration rejects more than ten canonical user turns", () => {
+  const histories = Array.from({ length: 11 }, (_, index) => ({
+    ...history(index, { role: "user", content: `question ${index}` }),
+    action_id: "analyze",
+  }));
+
+  assert.throws(
+    () => migrateWorkspaceV2({
+      schemaVersion: 2,
+      histories,
+      artifacts: { cv: null, cover_letter: null },
+    }),
+    /10 user/i
+  );
+});
+
 test("Prompt Shortcuts require exactly id title prompt and allow empty Ask More", () => {
   const askMore = { id: "ask_more", title: "Ask More", prompt: "" };
   assert.deepEqual(createWorkspace({ shortcuts: [askMore] }).shortcuts, [askMore]);
@@ -195,11 +279,32 @@ test("Prompt Shortcuts require exactly id title prompt and allow empty Ask More"
 });
 
 test("storage validation permits 31 migrated records but rejects a 32nd", () => {
-  const histories = Array.from({ length: 31 }, (_, index) => history(index));
+  const histories = [
+    ...Array.from({ length: 10 }, (_, index) => (
+      history(index, { role: "user", content: `question ${index}` })
+    )),
+    ...Array.from({ length: 21 }, (_, index) => (
+      history(index + 10, { role: "assistant", content: "reply" })
+    )),
+  ];
   assert.equal(validateWorkspaceState(histories, { cv: null, cover_letter: null }), true);
   assert.throws(
-    () => validateWorkspaceState([...histories, history(31)], { cv: null, cover_letter: null }),
+    () => validateWorkspaceState(
+      [...histories, history(31, { role: "assistant", content: "reply" })],
+      { cv: null, cover_letter: null }
+    ),
     /31 messages/
+  );
+});
+
+test("canonical state rejects more than ten user histories", () => {
+  const histories = Array.from({ length: 11 }, (_, index) => (
+    history(index, { role: "user", content: `question ${index}` })
+  ));
+
+  assert.throws(
+    () => validateWorkspaceState(histories, { cv: null, cover_letter: null }),
+    /10 user/i
   );
 });
 
@@ -392,6 +497,24 @@ test("response atomically replaces complete histories and Artifacts", () => {
   assert.equal(next.updatedAt, "2026-07-20T10:00:01+00:00");
   assert.deepEqual(current, before);
   assert.equal("currentDocument" in next, false);
+});
+
+test("completed response rejects more than ten user histories atomically", () => {
+  const current = createWorkspace({ resourceUrl: RESOURCE_URL });
+  const before = copy(current);
+  const histories = Array.from({ length: 11 }, (_, index) => (
+    history(index, { role: "user", content: `question ${index}` })
+  ));
+
+  assert.throws(
+    () => applyWorkspaceResponse(current, workspaceResponse({
+      result_type: "reply",
+      histories,
+      artifacts: { cv: null, cover_letter: null },
+    })),
+    /10 user/i
+  );
+  assert.deepEqual(current, before);
 });
 
 test("invalid complete response leaves the caller's prior object unchanged", () => {

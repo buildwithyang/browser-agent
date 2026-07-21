@@ -394,6 +394,44 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   };
   await import(`./background.js?mv3-behavior=${Date.now()}`);
 
+  const seedGate = deferred();
+  local.nextSetGate = seedGate.promise;
+  const shortcuts = [{ id: "analyze", title: "Analyze", prompt: "Analyze this role." }];
+  const selectedOpen = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_OPEN_WORKSPACE",
+    shortcut: shortcuts[0],
+    shortcuts,
+    workspace: { resource_url: RESOURCE_URL },
+    quickInsight: { title: "Job Match" },
+    pageTitle: "Job",
+    source: RESOURCE_URL,
+    lang: "en",
+  }, { tab: { id: 7 } });
+  await waitFor(() => local.setStartedCalls.length === 1, "Selected OPEN seed did not start");
+  const unselectedOpen = dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_OPEN_WORKSPACE",
+    shortcuts,
+    workspace: { resource_url: RESOURCE_URL },
+    quickInsight: { title: "Job Match" },
+    pageTitle: "Job",
+    source: RESOURCE_URL,
+    lang: "en",
+  }, { tab: { id: 7 } });
+  seedGate.resolve();
+  assert.equal((await selectedOpen).ok, true);
+  assert.equal((await unselectedOpen).ok, true);
+  const reopenedWithoutSelection = await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_GET",
+    tabId: 7,
+  });
+  assert.equal(
+    reopenedWithoutSelection.prefill,
+    null,
+    "a later unselected OPEN must clear the older pending Shortcut"
+  );
+  local.setCalls.length = 0;
+  local.setStartedCalls.length = 0;
+
   const send = dispatchRuntime(runtimeOnMessage, {
     type: "AGENT_BRIDGE_WORKSPACE_SEND",
     tabId: 7,
