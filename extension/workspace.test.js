@@ -265,6 +265,27 @@ test("v2 migration rejects more than ten canonical user turns", () => {
   );
 });
 
+test("v2 migration accepts exactly 11 histories and rejects a 12th", () => {
+  const legacyAssistantHistories = Array.from({ length: 12 }, (_, index) => ({
+    ...history(index, { role: "assistant", content: `legacy status ${index}` }),
+    action_id: "analyze",
+  }));
+  const seed = {
+    schemaVersion: 2,
+    artifacts: { cv: null, cover_letter: null },
+  };
+
+  assert.equal(
+    migrateWorkspaceV2({ ...seed, histories: legacyAssistantHistories.slice(0, 11) })
+      .histories.length,
+    11
+  );
+  assert.throws(
+    () => migrateWorkspaceV2({ ...seed, histories: legacyAssistantHistories }),
+    /11 histories/i
+  );
+});
+
 test("Prompt Shortcuts require exactly id title prompt and allow empty Ask More", () => {
   const askMore = { id: "ask_more", title: "Ask More", prompt: "" };
   assert.deepEqual(createWorkspace({ shortcuts: [askMore] }).shortcuts, [askMore]);

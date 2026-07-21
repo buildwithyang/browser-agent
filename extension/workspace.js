@@ -8,6 +8,7 @@ export const WORKSPACE_SCHEMA_VERSION = 3;
 export const MAX_WORKSPACE_TURNS = 10;
 export const MAX_FRESH_WORKSPACE_HISTORIES = 20;
 export const MAX_WORKSPACE_HISTORIES = 31;
+const MAX_V2_WORKSPACE_HISTORIES = 11;
 
 const WORKSPACE_STORAGE_PREFIX = `agent-bridge:workspace:v${WORKSPACE_SCHEMA_VERSION}`;
 const USER_HISTORY_CONTENT_MAX_CHARS = 10_000;
@@ -367,6 +368,10 @@ export function createWorkspace(seed = {}) {
 export function migrateWorkspaceV2(seed = {}) {
   requireSchema(seed.schemaVersion === 2, "Only Workspace schema v2 can be migrated");
   requireSchema(Array.isArray(seed.histories), "Workspace v2 histories must be an array");
+  requireSchema(
+    seed.histories.length <= MAX_V2_WORKSPACE_HISTORIES,
+    `Workspace v2 must contain at most ${MAX_V2_WORKSPACE_HISTORIES} histories`
+  );
   requireExactKeys(seed.artifacts, ["cv", "cover_letter"], "Workspace Artifacts");
   const histories = seed.histories.map((message) => {
     requireExactKeys(
