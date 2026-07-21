@@ -1052,36 +1052,107 @@ test("Shortcut chips replace the composer and Ask More clears it without selecti
 test("consumed Quick Insight prefill initializes the composer without auto-sending", async () => {
   const setup = await renderState(null, { tabId: 7 });
   const requests = [];
+  const delivery = {
+    token: "50000000-0000-4000-8000-000000000001",
+    shortcut: { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+  };
 
   await sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, {
     sendRuntime: async (request) => {
       requests.push(request);
+      if (request.type === sidepanel.WORKSPACE_PREFILL_ACK) {
+        return { ok: true, acknowledged: true };
+      }
       return {
         ok: true,
         state: workspace(),
         lang: "en",
-        prefill: { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+        prefill: delivery,
       };
     },
   });
 
   assert.equal(setup.elements.messageInput.value, "Analyze this role.");
-  assert.deepEqual(requests, [{ type: sidepanel.WORKSPACE_GET, tabId: 7 }]);
+  assert.deepEqual(requests, [
+    { type: sidepanel.WORKSPACE_GET, tabId: 7 },
+    { type: sidepanel.WORKSPACE_PREFILL_ACK, tabId: 7, token: delivery.token },
+  ]);
+});
+
+test("WORKSPACE_UPDATED overlap applies and ACKs prefill only from the winning load", async () => {
+  const setup = await renderState(null, { tabId: 7 });
+  const initialRequest = deferred();
+  const updatedRequest = deferred();
+  const getRequests = [initialRequest, updatedRequest];
+  const runtimeMessages = [];
+  const delivery = {
+    token: "50000000-0000-4000-8000-000000000002",
+    shortcut: { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+  };
+  const dependencies = {
+    sendRuntime: (request) => {
+      runtimeMessages.push(request);
+      if (request.type === sidepanel.WORKSPACE_PREFILL_ACK) {
+        return Promise.resolve({ ok: true, acknowledged: true });
+      }
+      return getRequests.shift().promise;
+    },
+  };
+
+  const initialLoad = sidepanel.loadWorkspaceForTab(
+    setup.elements,
+    setup.model,
+    7,
+    dependencies
+  );
+  assert.equal(sidepanel.workspaceLifecycleTarget({
+    type: sidepanel.WORKSPACE_UPDATED,
+    tabId: 7,
+  }, 7), 7);
+  const updatedLoad = sidepanel.loadWorkspaceForTab(
+    setup.elements,
+    setup.model,
+    7,
+    dependencies
+  );
+
+  initialRequest.resolve({ ok: true, state: workspace(), lang: "en", prefill: delivery });
+  await initialLoad;
+  assert.equal(setup.elements.messageInput.value, "");
+  assert.equal(
+    runtimeMessages.some((request) => request.type === sidepanel.WORKSPACE_PREFILL_ACK),
+    false
+  );
+
+  updatedRequest.resolve({ ok: true, state: workspace(), lang: "en", prefill: delivery });
+  await updatedLoad;
+  assert.equal(setup.elements.messageInput.value, "Analyze this role.");
+  assert.deepEqual(runtimeMessages.filter(
+    (request) => request.type === sidepanel.WORKSPACE_PREFILL_ACK
+  ), [{ type: sidepanel.WORKSPACE_PREFILL_ACK, tabId: 7, token: delivery.token }]);
 });
 
 test("prefill is ignored after ten canonical user turns", async () => {
   const setup = await renderState(null, { tabId: 7 });
+  const requests = [];
   await sidepanel.loadWorkspaceForTab(setup.elements, setup.model, 7, {
-    sendRuntime: async () => ({
+    sendRuntime: async (request) => {
+      requests.push(request);
+      return {
       ok: true,
       state: workspace({ histories: Array.from({ length: 20 }, (_, index) => message(index)) }),
       lang: "en",
-      prefill: { id: "analyze", title: "Analyze", prompt: "Do not apply" },
-    }),
+        prefill: {
+          token: "50000000-0000-4000-8000-000000000003",
+          shortcut: { id: "analyze", title: "Analyze", prompt: "Do not apply" },
+        },
+      };
+    },
   });
 
   assert.equal(setup.elements.messageInput.value, "");
   assert.equal(setup.elements.messageInput.disabled, true);
+  assert.deepEqual(requests, [{ type: sidepanel.WORKSPACE_GET, tabId: 7 }]);
 });
 
 test("tenth pending send shows 10 / 10 and failure restores 9 / 10", async () => {

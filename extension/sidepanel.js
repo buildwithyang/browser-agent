@@ -6,6 +6,7 @@ export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
 export const WORKSPACE_UPDATED = "AGENT_BRIDGE_WORKSPACE_UPDATED";
 export const WORKSPACE_RESET = "AGENT_BRIDGE_WORKSPACE_RESET";
 export const WORKSPACE_STREAM = "AGENT_BRIDGE_WORKSPACE_STREAM";
+export const WORKSPACE_PREFILL_ACK = "AGENT_BRIDGE_WORKSPACE_PREFILL_ACK";
 
 const COPY = {
   en: {
@@ -1109,8 +1110,17 @@ export async function loadWorkspaceForTab(
       model.state = response.state;
       model.lang = response.lang || "browser";
       const responseView = workspaceView(response.state || {}, model.lang, model.uiLanguage);
-      if (response.prefill && responseView.canSend) {
-        elements.messageInput.value = response.prefill.prompt;
+      if (response.prefill?.shortcut && responseView.canSend) {
+        elements.messageInput.value = response.prefill.shortcut.prompt;
+        try {
+          await sendRuntimeWith(dependencies, {
+            type: WORKSPACE_PREFILL_ACK,
+            tabId,
+            token: response.prefill.token,
+          });
+        } catch {
+          // A failed ACK leaves the tokenized prefill available for a later accepted load.
+        }
       }
       if (
         model.pendingTurn

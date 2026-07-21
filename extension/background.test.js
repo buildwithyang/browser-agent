@@ -6,9 +6,10 @@ import * as auth from "./auth.js";
 import {
   applyWorkspaceResponse,
   createWorkspace,
+  legacyWorkspaceStorageKey,
   workspaceStorageKey,
 } from "./workspace.js";
-import { activeWorkspaceKey } from "./workspace-controller.js";
+import { activeWorkspaceKey, workspacePrefillKey } from "./workspace-controller.js";
 
 const RESOURCE_URL = "https://example.com/jobs/1";
 const ARTIFACT_ID = "10000000-0000-4000-8000-000000000001";
@@ -394,6 +395,44 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
   };
   await import(`./background.js?mv3-behavior=${Date.now()}`);
 
+  const retainedResourceUrl = "https://example.com/jobs/retained";
+  const retainedV2Key = legacyWorkspaceStorageKey("user-a", retainedResourceUrl);
+  local.data[retainedV2Key] = {
+    schemaVersion: 2,
+    resourceUrl: retainedResourceUrl,
+    pageTitle: "Retained role",
+    quickInsight: { title: "Retained insight" },
+    actions: [{ id: "analyze", title: "Analyze" }],
+    selectedActionId: "analyze",
+    histories: [{
+      id: "30000000-0000-4000-8000-000000000099",
+      role: "user",
+      content: "Preserve this retained turn",
+      action_id: "analyze",
+      created_at: "2026-07-20T10:00:00Z",
+      attachments: [],
+    }],
+    artifacts: { cv: null, cover_letter: null },
+    updatedAt: "2026-07-20T10:00:00Z",
+  };
+  const migratedOpen = await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_OPEN_WORKSPACE",
+    shortcuts: [{ id: "analyze", title: "Analyze", prompt: "Analyze this role." }],
+    workspace: { resource_url: retainedResourceUrl },
+    quickInsight: { title: "Fresh insight" },
+    pageTitle: "Fresh retained role",
+    source: retainedResourceUrl,
+    lang: "en",
+  }, { tab: { id: 8 } });
+  const retainedV3Key = workspaceStorageKey("user-a", retainedResourceUrl);
+  assert.equal(migratedOpen.ok, true);
+  assert.equal(migratedOpen.state.histories[0].content, "Preserve this retained turn");
+  assert.equal(local.data[retainedV2Key], undefined);
+  assert.equal(local.data[retainedV3Key].histories[0].content, "Preserve this retained turn");
+  assert.equal(session.data[activeWorkspaceKey(8)].storageKey, retainedV3Key);
+  local.setCalls.length = 0;
+  local.setStartedCalls.length = 0;
+
   const seedGate = deferred();
   local.nextSetGate = seedGate.promise;
   const shortcuts = [{ id: "analyze", title: "Analyze", prompt: "Analyze this role." }];
@@ -429,6 +468,58 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     null,
     "a later unselected OPEN must clear the older pending Shortcut"
   );
+
+  assert.equal((await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_OPEN_WORKSPACE",
+    shortcut: shortcuts[0],
+    shortcuts,
+    workspace: { resource_url: RESOURCE_URL },
+    quickInsight: { title: "Job Match" },
+    pageTitle: "Job",
+    source: RESOURCE_URL,
+    lang: "en",
+  }, { tab: { id: 7 } })).ok, true);
+  const firstDelivery = (await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_GET",
+    tabId: 7,
+  })).prefill;
+  const repeatedDelivery = (await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_GET",
+    tabId: 7,
+  })).prefill;
+  assert.match(firstDelivery.token, /^[0-9a-f-]{36}$/i);
+  assert.deepEqual(repeatedDelivery, firstDelivery);
+  assert.deepEqual(session.data[workspacePrefillKey(7)], firstDelivery);
+
+  assert.equal((await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_OPEN_WORKSPACE",
+    shortcut: shortcuts[0],
+    shortcuts,
+    workspace: { resource_url: RESOURCE_URL },
+    quickInsight: { title: "Job Match" },
+    pageTitle: "Job",
+    source: RESOURCE_URL,
+    lang: "en",
+  }, { tab: { id: 7 } })).ok, true);
+  const newerDelivery = (await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_GET",
+    tabId: 7,
+  })).prefill;
+  assert.notEqual(newerDelivery.token, firstDelivery.token);
+  const staleAck = await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_PREFILL_ACK",
+    tabId: 7,
+    token: firstDelivery.token,
+  });
+  assert.deepEqual(staleAck, { ok: true, acknowledged: false });
+  assert.deepEqual(session.data[workspacePrefillKey(7)], newerDelivery);
+  const currentAck = await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_PREFILL_ACK",
+    tabId: 7,
+    token: newerDelivery.token,
+  });
+  assert.deepEqual(currentAck, { ok: true, acknowledged: true });
+  assert.equal(session.data[workspacePrefillKey(7)], undefined);
   local.setCalls.length = 0;
   local.setStartedCalls.length = 0;
 

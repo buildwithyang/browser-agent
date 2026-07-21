@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import * as controller from "./workspace-controller.js";
-import { createWorkspace, workspaceStorageKey } from "./workspace.js";
+import {
+  createWorkspace,
+  legacyWorkspaceStorageKey,
+  workspaceStorageKey,
+} from "./workspace.js";
 import {
   EXPIRES_KEY,
   TOKEN_KEY,
@@ -85,6 +89,47 @@ function deferred() {
     resolve = next;
   });
   return { promise, resolve };
+}
+
+/** Build one valid schema-v2 Workspace with a linked Cover Letter Artifact. */
+function legacyWorkspaceState(resourceUrl) {
+  const artifactId = "10000000-0000-4000-8000-000000000001";
+  const attachment = {
+    id: "20000000-0000-4000-8000-000000000001",
+    artifact_id: artifactId,
+    version: 1,
+    type: "cover_letter",
+    title: "Cover Letter",
+    content: "Dear Hiring Manager",
+  };
+  return {
+    schemaVersion: 2,
+    resourceUrl,
+    pageTitle: "Legacy role",
+    quickInsight: { title: "Legacy insight" },
+    actions: [{ id: "write_cover_letter", title: "Write cover letter" }],
+    selectedActionId: "write_cover_letter",
+    histories: [{
+      id: "30000000-0000-4000-8000-000000000001",
+      role: "assistant",
+      content: "Created the draft.",
+      action_id: "write_cover_letter",
+      created_at: "2026-07-20T10:00:00Z",
+      attachments: [attachment],
+    }],
+    artifacts: {
+      cv: null,
+      cover_letter: {
+        id: artifactId,
+        type: "cover_letter",
+        version: 1,
+        title: "Cover Letter",
+        draft: "Dear Hiring Manager",
+        attachment,
+      },
+    },
+    updatedAt: "2026-07-20T10:00:00Z",
+  };
 }
 
 test("Workspace GET waits for asynchronous seed before loading session state", async () => {
@@ -390,6 +435,114 @@ test("owner-scoped load migrates valid v2 state to v3 and strips Action fields",
   assert.deepEqual(workspaceStore.removeCalls, [[v2Key]]);
 });
 
+test("seed discovery migrates the exact retained v2 record without a session mapping", async () => {
+  const loadWorkspaceForSeed = requiredExport("loadWorkspaceForSeed");
+  const resourceUrl = "https://x/job/retained";
+  const ownerId = "user-a";
+  const v2Key = legacyWorkspaceStorageKey(ownerId, resourceUrl);
+  const v3Key = workspaceStorageKey(ownerId, resourceUrl);
+  const legacy = legacyWorkspaceState(resourceUrl);
+  const sessionStore = fakeStorageArea();
+  const workspaceStore = fakeStorageArea({ [v2Key]: legacy });
+
+  const active = await loadWorkspaceForSeed(18, {
+    ownerId,
+    resourceUrl,
+    lang: "en",
+    sessionStore,
+    workspaceStore,
+  });
+
+  assert.equal(active.mapping.storageKey, v3Key);
+  assert.equal(active.state.schemaVersion, 3);
+  assert.equal(active.state.histories[0].content, "Created the draft.");
+  assert.deepEqual(active.state.artifacts, legacy.artifacts);
+  assert.equal(workspaceStore.data[v2Key], undefined);
+  assert.deepEqual(workspaceStore.data[v3Key], active.state);
+  assert.deepEqual(sessionStore.data[activeWorkspaceKey(18)], active.mapping);
+});
+
+test("seed discovery never scans or migrates another owner or resource", async () => {
+  const loadWorkspaceForSeed = requiredExport("loadWorkspaceForSeed");
+  const targetResource = "https://x/job/target";
+  const otherOwnerKey = legacyWorkspaceStorageKey("user-b", targetResource);
+  const otherResourceKey = legacyWorkspaceStorageKey("user-a", "https://x/job/other");
+  const sessionStore = fakeStorageArea();
+  const workspaceStore = fakeStorageArea({
+    [otherOwnerKey]: legacyWorkspaceState(targetResource),
+    [otherResourceKey]: legacyWorkspaceState("https://x/job/other"),
+  });
+
+  const active = await loadWorkspaceForSeed(19, {
+    ownerId: "user-a",
+    resourceUrl: targetResource,
+    lang: "en",
+    sessionStore,
+    workspaceStore,
+  });
+
+  assert.equal(active, null);
+  assert.deepEqual(sessionStore.data, {});
+  assert.ok(workspaceStore.data[otherOwnerKey]);
+  assert.ok(workspaceStore.data[otherResourceKey]);
+  assert.equal(workspaceStore.getCalls.includes(null), false);
+  assert.deepEqual(workspaceStore.removeCalls, []);
+});
+
+test("seed discovery preserves exact v2 state when migration persistence fails", async () => {
+  const loadWorkspaceForSeed = requiredExport("loadWorkspaceForSeed");
+  const resourceUrl = "https://x/job/retry";
+  const ownerId = "user-a";
+  const v2Key = legacyWorkspaceStorageKey(ownerId, resourceUrl);
+  const legacy = legacyWorkspaceState(resourceUrl);
+  const sessionStore = fakeStorageArea();
+  const workspaceStore = fakeStorageArea({ [v2Key]: legacy });
+  workspaceStore.set = async () => {
+    throw new Error("simulated quota failure");
+  };
+
+  await assert.rejects(
+    () => loadWorkspaceForSeed(20, {
+      ownerId,
+      resourceUrl,
+      lang: "en",
+      sessionStore,
+      workspaceStore,
+    }),
+    /quota failure/
+  );
+  assert.deepEqual(workspaceStore.data[v2Key], legacy);
+  assert.equal(sessionStore.data[activeWorkspaceKey(20)], undefined);
+  assert.deepEqual(workspaceStore.removeCalls, []);
+});
+
+test("seed discovery restores an absent mapping when legacy removal fails", async () => {
+  const loadWorkspaceForSeed = requiredExport("loadWorkspaceForSeed");
+  const resourceUrl = "https://x/job/remove-retry";
+  const ownerId = "user-a";
+  const mappingKey = activeWorkspaceKey(21);
+  const v2Key = legacyWorkspaceStorageKey(ownerId, resourceUrl);
+  const legacy = legacyWorkspaceState(resourceUrl);
+  const sessionStore = fakeStorageArea();
+  const workspaceStore = fakeStorageArea({ [v2Key]: legacy });
+  workspaceStore.remove = async () => {
+    throw new Error("simulated legacy removal failure");
+  };
+
+  await assert.rejects(
+    () => loadWorkspaceForSeed(21, {
+      ownerId,
+      resourceUrl,
+      lang: "en",
+      sessionStore,
+      workspaceStore,
+    }),
+    /removal failure/
+  );
+  assert.deepEqual(workspaceStore.data[v2Key], legacy);
+  assert.equal(sessionStore.data[mappingKey], undefined);
+});
+
 test("malformed v2 state is discarded rather than partially migrated", async () => {
   const loadOwnerScopedWorkspace = requiredExport("loadOwnerScopedWorkspace");
   const mappingKey = activeWorkspaceKey(9);
@@ -636,33 +789,67 @@ test("session keys isolate active Workspace and initial selection by tab", () =>
   assert.notEqual(initialSelectionKey(3), initialSelectionKey(4));
 });
 
-test("Workspace prefill is isolated per tab and consumed only once", async () => {
+test("Workspace prefill is read repeatedly and removed only by its matching ACK", async () => {
   const workspacePrefillKey = requiredExport("workspacePrefillKey");
   const storeWorkspacePrefill = requiredExport("storeWorkspacePrefill");
-  const consumeWorkspacePrefill = requiredExport("consumeWorkspacePrefill");
+  const readWorkspacePrefill = requiredExport("readWorkspacePrefill");
+  const acknowledgeWorkspacePrefill = requiredExport("acknowledgeWorkspacePrefill");
   const sessionStore = fakeStorageArea();
   const analyze = { id: "analyze", title: "Analyze", prompt: "Analyze this role." };
   const askMore = { id: "ask_more", title: "Ask More", prompt: "" };
 
-  await storeWorkspacePrefill(3, analyze, sessionStore);
-  await storeWorkspacePrefill(4, askMore, sessionStore);
+  const analyzeDelivery = await storeWorkspacePrefill(3, analyze, sessionStore);
+  const askMoreDelivery = await storeWorkspacePrefill(4, askMore, sessionStore);
 
   assert.notEqual(workspacePrefillKey(3), workspacePrefillKey(4));
-  assert.deepEqual(await consumeWorkspacePrefill(3, sessionStore), analyze);
-  assert.equal(await consumeWorkspacePrefill(3, sessionStore), null);
-  assert.deepEqual(await consumeWorkspacePrefill(4, sessionStore), askMore);
+  assert.notEqual(analyzeDelivery.token, askMoreDelivery.token);
+  assert.deepEqual(await readWorkspacePrefill(3, sessionStore), analyzeDelivery);
+  assert.deepEqual(await readWorkspacePrefill(3, sessionStore), analyzeDelivery);
+  assert.equal(
+    await acknowledgeWorkspacePrefill(3, askMoreDelivery.token, sessionStore),
+    false
+  );
+  assert.deepEqual(await readWorkspacePrefill(3, sessionStore), analyzeDelivery);
+  assert.equal(
+    await acknowledgeWorkspacePrefill(3, analyzeDelivery.token, sessionStore),
+    true
+  );
+  assert.equal(await readWorkspacePrefill(3, sessionStore), null);
+  assert.deepEqual(await readWorkspacePrefill(4, sessionStore), askMoreDelivery);
+  assert.equal(await acknowledgeWorkspacePrefill(4, askMoreDelivery.token, sessionStore), true);
   assert.deepEqual(sessionStore.data, {});
+});
+
+test("stale prefill ACK cannot delete a newer delivery", async () => {
+  const storeWorkspacePrefill = requiredExport("storeWorkspacePrefill");
+  const readWorkspacePrefill = requiredExport("readWorkspacePrefill");
+  const acknowledgeWorkspacePrefill = requiredExport("acknowledgeWorkspacePrefill");
+  const sessionStore = fakeStorageArea();
+  const first = await storeWorkspacePrefill(
+    3,
+    { id: "analyze", title: "Analyze", prompt: "Analyze this role." },
+    sessionStore
+  );
+  const second = await storeWorkspacePrefill(
+    3,
+    { id: "ask_more", title: "Ask More", prompt: "" },
+    sessionStore
+  );
+
+  assert.notEqual(first.token, second.token);
+  assert.equal(await acknowledgeWorkspacePrefill(3, first.token, sessionStore), false);
+  assert.deepEqual(await readWorkspacePrefill(3, sessionStore), second);
 });
 
 test("malformed Workspace prefill is discarded after its first read", async () => {
   const workspacePrefillKey = requiredExport("workspacePrefillKey");
-  const consumeWorkspacePrefill = requiredExport("consumeWorkspacePrefill");
+  const readWorkspacePrefill = requiredExport("readWorkspacePrefill");
   const sessionStore = fakeStorageArea({
     [workspacePrefillKey(3)]: { id: "analyze", title: "Analyze" },
   });
 
-  await assert.rejects(() => consumeWorkspacePrefill(3, sessionStore), /exactly/i);
-  assert.equal(await consumeWorkspacePrefill(3, sessionStore), null);
+  await assert.rejects(() => readWorkspacePrefill(3, sessionStore), /delivery|exactly/i);
+  assert.equal(await readWorkspacePrefill(3, sessionStore), null);
 });
 
 test("Workspace session cleanup removes pending prefills", async () => {
@@ -670,7 +857,10 @@ test("Workspace session cleanup removes pending prefills", async () => {
   const clearWorkspaceSessionNamespace = requiredExport("clearWorkspaceSessionNamespace");
   const sessionStore = fakeStorageArea({
     [activeWorkspaceKey(3)]: { storageKey: "workspace" },
-    [workspacePrefillKey(3)]: { id: "ask_more", title: "Ask More", prompt: "" },
+    [workspacePrefillKey(3)]: {
+      token: "50000000-0000-4000-8000-000000000001",
+      shortcut: { id: "ask_more", title: "Ask More", prompt: "" },
+    },
     unrelated: "keep",
   });
 

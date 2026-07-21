@@ -36,16 +36,18 @@ import {
   createActiveWorkspaceStream,
   createAuthSnapshot,
   createKeyedQueue,
-  consumeWorkspacePrefill,
+  acknowledgeWorkspacePrefill,
   initialSelectionKey,
   finishActiveWorkspaceStream,
   isActiveWorkspaceStream,
   loadOwnerScopedWorkspace,
+  loadWorkspaceForSeed,
   mergeWorkspaceSeed,
   pendingWorkspaceStream,
   readGatewayResponse,
   replaceActiveWorkspaceStream,
   restoreInitialSelection,
+  readWorkspacePrefill,
   storeWorkspacePrefill,
   workspacePrefillKey,
   workspaceStreamSnapshot,
@@ -63,6 +65,7 @@ const MENU_ID = "browser-agent";
 const OPEN_WORKSPACE = "AGENT_BRIDGE_OPEN_WORKSPACE";
 const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
+const WORKSPACE_PREFILL_ACK = "AGENT_BRIDGE_WORKSPACE_PREFILL_ACK";
 const workspaceSeedQueue = createKeyedQueue();
 const workspaceOperationQueue = createKeyedQueue();
 const activeWorkspaceStreams = new Map();
@@ -333,7 +336,13 @@ async function seedWorkspace(tabId, message) {
   if (!resourceUrl) throw new Error("Workspace resource is unavailable");
   const authSnapshot = await readAuthSnapshot();
   const storageKey = workspaceStorageKey(authSnapshot.ownerId, resourceUrl);
-  const stored = await chrome.storage.local.get(storageKey);
+  const discovered = await loadWorkspaceForSeed(tabId, {
+    ownerId: authSnapshot.ownerId,
+    resourceUrl,
+    lang: message.lang || "en",
+    sessionStore: chrome.storage.session,
+    workspaceStore: chrome.storage.local,
+  });
   const shortcuts = Array.isArray(message.shortcuts) ? message.shortcuts : [];
   const selectedShortcut = message.shortcut == null
     ? null
@@ -342,7 +351,7 @@ async function seedWorkspace(tabId, message) {
   if (message.shortcut != null && !selectedShortcut) {
     throw new TypeError("Selected Prompt Shortcut is not in the server catalogue");
   }
-  const state = mergeWorkspaceSeed(stored[storageKey], {
+  const state = mergeWorkspaceSeed(discovered?.state, {
     resourceUrl,
     pageTitle: message.pageTitle || "",
     quickInsight: message.quickInsight || null,
@@ -601,7 +610,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     message.tabId,
     async () => ({
       active: await loadActiveWorkspace(message.tabId),
-      prefill: await consumeWorkspacePrefill(message.tabId, chrome.storage.session),
+      prefill: await readWorkspacePrefill(message.tabId, chrome.storage.session),
     })
   )
     .then(({ active, prefill }) => {
@@ -621,6 +630,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         ),
       });
     })
+    .catch((error) => sendResponse({ ok: false, error: error.message }));
+  return true;
+});
+
+/** Acknowledge only the current tokenized prefill inside the tab seed queue. */
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== WORKSPACE_PREFILL_ACK || !message.tabId) return undefined;
+  workspaceSeedQueue.run(
+    message.tabId,
+    () => acknowledgeWorkspacePrefill(
+      message.tabId,
+      message.token,
+      chrome.storage.session
+    )
+  )
+    .then((acknowledged) => sendResponse({ ok: true, acknowledged }))
     .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
 });

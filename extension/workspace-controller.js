@@ -229,29 +229,72 @@ export function workspacePrefillKey(tabId) {
   return `${WORKSPACE_PREFILL_PREFIX}:${tabId}`;
 }
 
-/** Persist one server-declared draft until the Side Panel consumes it. */
+/** Persist one server-declared draft until the Side Panel ACKs its delivery token. */
 export async function storeWorkspacePrefill(
   tabId,
   shortcut,
   sessionStore = chrome.storage.session
 ) {
   validatePromptShortcut(shortcut);
-  await sessionStore.set({ [workspacePrefillKey(tabId)]: { ...shortcut } });
+  const delivery = {
+    token: crypto.randomUUID(),
+    shortcut: { ...shortcut },
+  };
+  validateWorkspacePrefillDelivery(delivery);
+  await sessionStore.set({ [workspacePrefillKey(tabId)]: delivery });
+  return delivery;
 }
 
-/** Atomically read and delete one pending composer draft for a tab. */
-export async function consumeWorkspacePrefill(
+/** Validate one tokenized prefill delivery without interpreting its prompt. */
+function validateWorkspacePrefillDelivery(delivery) {
+  if (!delivery || typeof delivery !== "object" || Array.isArray(delivery)) {
+    throw new TypeError("Workspace prefill delivery must be an object");
+  }
+  const keys = Object.keys(delivery).sort();
+  if (keys.length !== 2 || keys[0] !== "shortcut" || keys[1] !== "token") {
+    throw new TypeError("Workspace prefill delivery must contain exactly shortcut and token");
+  }
+  if (typeof delivery.token !== "string" || !UUID_PATTERN.test(delivery.token)) {
+    throw new TypeError("Workspace prefill delivery token must be a UUID");
+  }
+  validatePromptShortcut(delivery.shortcut);
+  return true;
+}
+
+/** Read one pending prefill without deleting it before Side Panel acceptance. */
+export async function readWorkspacePrefill(
   tabId,
   sessionStore = chrome.storage.session
 ) {
   const key = workspacePrefillKey(tabId);
   const values = await sessionStore.get(key);
-  const shortcut = values[key] ?? null;
-  if (shortcut !== null) {
+  const delivery = values[key] ?? null;
+  if (delivery === null) return null;
+  try {
+    validateWorkspacePrefillDelivery(delivery);
+  } catch (error) {
     await sessionStore.remove(key);
-    validatePromptShortcut(shortcut);
+    throw error;
   }
-  return shortcut;
+  return {
+    token: delivery.token,
+    shortcut: { ...delivery.shortcut },
+  };
+}
+
+/** Delete a prefill only when an accepted Side Panel load ACKs its current token. */
+export async function acknowledgeWorkspacePrefill(
+  tabId,
+  token,
+  sessionStore = chrome.storage.session
+) {
+  if (typeof token !== "string" || !UUID_PATTERN.test(token)) {
+    throw new TypeError("Workspace prefill ACK token must be a UUID");
+  }
+  const delivery = await readWorkspacePrefill(tabId, sessionStore);
+  if (!delivery || delivery.token !== token) return false;
+  await sessionStore.remove(workspacePrefillKey(tabId));
+  return true;
 }
 
 /** Remove every tab-scoped Workspace mapping and saved initial selection. */
@@ -355,6 +398,45 @@ export async function loadOwnerScopedWorkspace(
   });
 }
 
+/** Load exact v3 seed state or migrate the exact owner/resource v2 record without scanning. */
+export async function loadWorkspaceForSeed(
+  tabId,
+  { ownerId, resourceUrl, lang = "en", sessionStore, workspaceStore }
+) {
+  const currentStorageKey = workspaceStorageKey(ownerId, resourceUrl);
+  const currentData = await workspaceStore.get(currentStorageKey);
+  if (currentData[currentStorageKey] !== undefined) {
+    return {
+      mapping: {
+        ownerId,
+        storageKey: currentStorageKey,
+        resourceUrl,
+        lang,
+      },
+      state: currentData[currentStorageKey],
+      lang,
+    };
+  }
+
+  const legacyStorageKey = legacyWorkspaceStorageKey(ownerId, resourceUrl);
+  const legacyData = await workspaceStore.get(legacyStorageKey);
+  const legacyState = legacyData[legacyStorageKey];
+  if (legacyState === undefined) return null;
+  return migrateOwnerScopedWorkspace({
+    mappingKey: activeWorkspaceKey(tabId),
+    mapping: {
+      ownerId,
+      storageKey: legacyStorageKey,
+      resourceUrl,
+      lang,
+    },
+    state: legacyState,
+    sessionStore,
+    workspaceStore,
+    rollbackMapping: null,
+  });
+}
+
 /** Safely migrate an active v2 record before removing its only recoverable copy. */
 async function migrateOwnerScopedWorkspace({
   mappingKey,
@@ -362,6 +444,7 @@ async function migrateOwnerScopedWorkspace({
   state,
   sessionStore,
   workspaceStore,
+  rollbackMapping = mapping,
 }) {
   const resourceUrl = mapping.resourceUrl || state.resourceUrl;
   let nextState;
@@ -400,7 +483,11 @@ async function migrateOwnerScopedWorkspace({
     // If the mapping write or final removal fails, restore the old active pointer.
     if (mappingWriteAttempted) {
       try {
-        await sessionStore.set({ [mappingKey]: mapping });
+        if (rollbackMapping) {
+          await sessionStore.set({ [mappingKey]: rollbackMapping });
+        } else {
+          await sessionStore.remove(mappingKey);
+        }
       } catch (rollbackError) {
         throw new AggregateError(
           [error, rollbackError],

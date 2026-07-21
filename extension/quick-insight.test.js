@@ -225,7 +225,8 @@ test("Quick Insight shortcut opens and prefills without executing Workspace", as
   assert.match(source, /type:\s*"AGENT_BRIDGE_WORKSPACE_UPDATED",\s*tabId/s);
   assert.match(source, /workspaceSeedQueue\.run\(tabId/);
   assert.match(source, /workspaceSeedQueue\.run\(\s*message\.tabId/);
-  assert.match(source, /consumeWorkspacePrefill\(message\.tabId/);
+  assert.match(source, /readWorkspacePrefill\(message\.tabId/);
+  assert.match(source, /acknowledgeWorkspacePrefill/);
   assert.match(source, /workspaceOperationQueue/);
   assert.match(source, /AGENT_BRIDGE_WORKSPACE_RESET/);
   assert.equal(source.includes(["AGENT_BRIDGE", "CONTINUE"].join("_")), false);
