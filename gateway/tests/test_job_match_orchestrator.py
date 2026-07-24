@@ -1,4 +1,4 @@
-"""Streaming Facade/Mediator tests for Job Match Workspace orchestration."""
+"""Streaming Facade/Orchestrator tests for Job Match Workspace orchestration."""
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping
@@ -12,7 +12,11 @@ import app.agents.job_match.agent as job_match_agent_module
 from app.agents.base import WorkspaceAgentContext
 from app.agents.job_match import JobMatchAgent
 from app.agents.job_match.context import JobChatContext
-from app.agents.job_match.planner import ChatPlan, OutputMode, SpecialistId
+from app.agents.job_match.intent_router import (
+    OutputMode,
+    RoutingDecision,
+    SpecialistId,
+)
 from app.agents.stream import AgentCompleted, AgentDelta, AgentStatus, AgentStreamEvent
 from app.modules.task.schema import (
     Artifact,
@@ -34,20 +38,30 @@ LONG_JD = (
 ) * 12
 
 
-class SpyPlanner:
-    """Record planning calls while returning one deterministic plan."""
+class SpyIntentRouter:
+    """Record routing calls while returning one deterministic handoff."""
 
-    def __init__(self, plan: ChatPlan) -> None:
-        """Configure the fixed plan selected for each invocation."""
+    def __init__(
+        self,
+        decision: RoutingDecision,
+        specialists: Mapping[str, "SpySpecialist"],
+    ) -> None:
+        """Configure the fixed decision selected for each invocation."""
 
-        self.result = plan
+        self.result = decision
+        self.specialists = dict(specialists)
         self.calls: list[JobChatContext] = []
 
-    async def plan(self, context: JobChatContext) -> ChatPlan:
-        """Record one immutable context and return the configured plan."""
+    async def route(self, context: JobChatContext) -> RoutingDecision:
+        """Record one immutable context and return the configured decision."""
 
         self.calls.append(context)
         return self.result
+
+    def resolve_specialist(self, specialist_id: str) -> "SpySpecialist":
+        """Resolve one Specialist from the Router-owned test map."""
+
+        return self.specialists[specialist_id]
 
 
 class TrackingChunkStream:
@@ -117,17 +131,17 @@ class SpySpecialist:
         self.name = name
         self.model = model or f"{name}-model"
         self.closeable = closeable
-        self.calls: list[tuple[JobChatContext, OutputMode]] = []
+        self.calls: list[tuple[JobChatContext, RoutingDecision]] = []
         self.streams: list[TrackingChunkStream | PlainChunkStream] = []
 
     async def open_stream(
         self,
         context: JobChatContext,
-        output_mode: OutputMode,
+        decision: RoutingDecision,
     ) -> object:
         """Record one request and expose the configured raw Markdown stream."""
 
-        self.calls.append((context, output_mode))
+        self.calls.append((context, decision))
 
         stream = (
             TrackingChunkStream(self.chunks)
@@ -200,7 +214,10 @@ class LoopBoundAsyncClient:
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(
-                        content='{"specialist":"general_qa","output_mode":"reply"}'
+                        content=(
+                            '{"specialist":"general_qa","output_mode":"reply",'
+                            '"instruction":"Answer the current question."}'
+                        )
                     )
                 )
             ]
@@ -289,18 +306,18 @@ def _context(
 def _specialists(
     *,
     chunks: list[str],
-    selected: SpecialistId,
+    selected: str,
     model: str | None = None,
     closeable: bool = True,
-) -> Mapping[SpecialistId, SpySpecialist]:
+) -> Mapping[str, SpySpecialist]:
     """Build a complete injectable Strategy registry with one selected output."""
 
     return {
         specialist_id: SpySpecialist(
-            chunks if specialist_id is selected else ["unexpected"],
+            chunks if specialist_id == selected else ["unexpected"],
             name=specialist_id.value,
-            model=model if specialist_id is selected else None,
-            closeable=closeable if specialist_id is selected else True,
+            model=model if specialist_id == selected else None,
+            closeable=closeable if specialist_id == selected else True,
         )
         for specialist_id in SpecialistId
     }
@@ -308,24 +325,38 @@ def _specialists(
 
 def _job_agent(
     *,
-    plan: ChatPlan,
+    decision: RoutingDecision,
     chunks: list[str],
     model: str | None = None,
     closeable: bool = True,
-) -> tuple[JobMatchAgent, SpyPlanner, Mapping[SpecialistId, SpySpecialist]]:
+) -> tuple[JobMatchAgent, SpyIntentRouter, Mapping[str, SpySpecialist]]:
     """Build one streaming Facade and its observable collaborators."""
 
-    planner = SpyPlanner(plan)
     specialists = _specialists(
         chunks=chunks,
-        selected=plan.specialist,
+        selected=decision.specialist,
         model=model,
         closeable=closeable,
     )
+    intent_router = SpyIntentRouter(decision, specialists)
     return (
-        JobMatchAgent(planner=planner, specialists=specialists),
-        planner,
+        JobMatchAgent(intent_router=intent_router),
+        intent_router,
         specialists,
+    )
+
+
+def decision(
+    specialist: SpecialistId,
+    output_mode: OutputMode,
+    instruction: str = "Fulfill the current user request exactly.",
+) -> RoutingDecision:
+    """Build one deterministic Specialist handoff for orchestration tests."""
+
+    return RoutingDecision(
+        specialist=specialist,
+        output_mode=output_mode,
+        instruction=instruction,
     )
 
 
@@ -335,11 +366,25 @@ async def _collect_events(stream: AsyncIterator[AgentStreamEvent]) -> list[Agent
     return [event async for event in stream]
 
 
+def test_intent_router_is_the_only_specialist_map_owner() -> None:
+    """Prevent JobMatchAgent from keeping a second registration map."""
+
+    agent, _intent_router, _specialists_map = _job_agent(
+        decision=decision(
+            specialist=SpecialistId.GENERAL_QA,
+            output_mode=OutputMode.REPLY,
+        ),
+        chunks=["answer"],
+    )
+
+    assert not hasattr(agent, "_specialists")
+
+
 def test_resume_reply_streams_markdown_deltas() -> None:
     """Expose reply chunks while accumulating the same terminal Markdown."""
 
     agent, planner, specialists = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
+        decision=decision(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
         chunks=["## Advice", "\n\nHighlight Go."],
     )
 
@@ -367,7 +412,7 @@ def test_job_agent_completes_with_plain_async_iterator_without_aclose() -> None:
     """Complete normally when the declared async iterator has no cleanup hook."""
 
     agent, _planner, _specialists_map = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
+        decision=decision(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
         chunks=["Plain reply."],
         closeable=False,
     )
@@ -390,7 +435,7 @@ def test_closing_job_agent_stream_closes_specialist_chunks() -> None:
     """Propagate consumer cancellation to the opened Specialist iterator."""
 
     agent, _planner, specialists = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
+        decision=decision(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
         chunks=["first", "second"],
     )
 
@@ -412,7 +457,7 @@ def test_cover_letter_artifact_exposes_status_but_no_delta() -> None:
     """Hide Artifact chunks while returning one complete validated draft."""
 
     agent, _planner, _specialists_map = _job_agent(
-        plan=ChatPlan(
+        decision=decision(
             specialist=SpecialistId.COVER_LETTER,
             output_mode=OutputMode.ARTIFACT,
         ),
@@ -468,7 +513,7 @@ def test_artifact_stream_uses_only_same_type_existing_artifact(
     """Preserve create/update normalization from the same Artifact slot only."""
 
     agent, _planner, _specialists_map = _job_agent(
-        plan=ChatPlan(specialist=specialist_id, output_mode=OutputMode.ARTIFACT),
+        decision=decision(specialist=specialist_id, output_mode=OutputMode.ARTIFACT),
         chunks=["# Complete draft"],
     )
 
@@ -482,11 +527,15 @@ def test_artifact_stream_uses_only_same_type_existing_artifact(
     assert result.draft == "# Complete draft"
 
 
-def test_every_workspace_message_uses_chat_planner() -> None:
-    """Route every v4 message through the conversational planner."""
+def test_every_workspace_message_uses_intent_router_handoff() -> None:
+    """Route every message and pass the explicit handoff to one Specialist."""
 
-    agent, planner, specialists = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.JOB_ANALYSIS, output_mode=OutputMode.REPLY),
+    agent, intent_router, specialists = _job_agent(
+        decision=decision(
+            specialist=SpecialistId.JOB_ANALYSIS,
+            output_mode=OutputMode.REPLY,
+            instruction="Compare the JD requirements with the candidate evidence.",
+        ),
         chunks=["# Analysis"],
     )
 
@@ -494,8 +543,10 @@ def test_every_workspace_message_uses_chat_planner() -> None:
         _collect_events(agent.stream_chat(_context(message="Analyze this role.")))
     )
 
-    assert planner.calls[0].current_message == "Analyze this role."
-    assert specialists[SpecialistId.JOB_ANALYSIS].calls
+    assert intent_router.calls[0].current_message == "Analyze this role."
+    specialist_context, handoff = specialists[SpecialistId.JOB_ANALYSIS].calls[0]
+    assert specialist_context.current_message == "Analyze this role."
+    assert handoff.instruction == "Compare the JD requirements with the candidate evidence."
     assert any(isinstance(event, AgentDelta) for event in events)
 
 
@@ -510,7 +561,7 @@ def test_stream_rejects_empty_content_without_terminal_event(
     """Reject an empty reply before constructing an invalid terminal result."""
 
     agent, _planner, _specialists_map = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.GENERAL_QA, output_mode=OutputMode.REPLY),
+        decision=decision(specialist=SpecialistId.GENERAL_QA, output_mode=OutputMode.REPLY),
         chunks=chunks,
     )
 
@@ -524,7 +575,7 @@ def test_stream_rejects_content_over_document_limit(mode: OutputMode) -> None:
 
     specialist = SpecialistId.RESUME if mode is OutputMode.ARTIFACT else SpecialistId.GENERAL_QA
     agent, _planner, specialists = _job_agent(
-        plan=ChatPlan(specialist=specialist, output_mode=mode),
+        decision=decision(specialist=specialist, output_mode=mode),
         chunks=["x" * DOCUMENT_TEXT_MAX_CHARS, "y"],
     )
 
@@ -578,7 +629,7 @@ def test_artifact_titles_and_completion_notes_are_deterministic(
     """Own localized Artifact metadata outside the model stream."""
 
     agent, _planner, _specialists_map = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.RESUME, output_mode=OutputMode.ARTIFACT),
+        decision=decision(specialist=SpecialistId.RESUME, output_mode=OutputMode.ARTIFACT),
         chunks=["# Candidate"],
     )
 
@@ -602,7 +653,7 @@ def test_terminal_execution_reports_specialist_model_prompt_and_raw_payload() ->
     """Keep final streamed model metadata on the sole terminal execution."""
 
     agent, _planner, _specialists_map = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
+        decision=decision(specialist=SpecialistId.RESUME, output_mode=OutputMode.REPLY),
         chunks=["first", " second"],
         model="final-specialist-model",
     )
@@ -623,7 +674,7 @@ def test_anonymous_workspace_resolves_local_cv_per_request(
     """Keep anonymous streaming Specialists aligned with Quick Insight CV fallback."""
 
     agent, _planner, specialists = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.GENERAL_QA, output_mode=OutputMode.REPLY),
+        decision=decision(specialist=SpecialistId.GENERAL_QA, output_mode=OutputMode.REPLY),
         chunks=["answer"],
     )
     monkeypatch.setattr(agent, "_read_cv", lambda: "# Anonymous Local CV")
@@ -639,7 +690,7 @@ def test_orchestrator_does_not_cache_request_state() -> None:
     """Retain only injected collaborators across independent streams."""
 
     agent, _planner, _specialists_map = _job_agent(
-        plan=ChatPlan(specialist=SpecialistId.GENERAL_QA, output_mode=OutputMode.REPLY),
+        decision=decision(specialist=SpecialistId.GENERAL_QA, output_mode=OutputMode.REPLY),
         chunks=["answer"],
     )
 

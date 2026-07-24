@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from app.agents.base import AgentContext, WorkspaceAgentContext
-from app.agents.job_match.planner import OutputMode
+from app.agents.base import AgentContext, WorkspaceAgentContext, language_directive
+from app.agents.job_match.intent_router import OutputMode
 from app.agents.job_match.specialists.analysis import JobAnalysisAgent
 from app.agents.summary_page import SummaryPageAgent
 from app.modules.task.schema import QuickInsightRequest, WorkspaceRequest
@@ -28,15 +28,15 @@ def run_with_lang(lang: str) -> str:
 
 
 def test_lang_zh_directive():
-    assert "简体中文" in run_with_lang("zh")
+    assert run_with_lang("zh").endswith("请使用简体中文回答。")
 
 
 def test_lang_en_directive():
-    assert "Respond entirely in English" in run_with_lang("en")
+    assert run_with_lang("en").endswith("Please answer in English.")
 
 
 def test_lang_auto_directive():
-    assert "same language as the page" in run_with_lang("auto")
+    assert language_directive("auto") == ""
 
 
 def test_default_lang_is_auto():

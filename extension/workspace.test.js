@@ -10,6 +10,7 @@ const {
   canSendUserMessage,
   countUserTurns,
   createWorkspace,
+  resetWorkspaceConversation,
   validateWorkspaceState,
   workspaceStorageKey,
 } = workspace;
@@ -157,6 +158,27 @@ test("createWorkspace persists only whitelisted schema-v3 fields", () => {
     updatedAt: "2026-07-19T00:00:00Z",
   });
   assert.equal("currentDocument" in state, false);
+});
+
+test("resetWorkspaceConversation clears messages and Artifacts but preserves page metadata", () => {
+  const current = artifactState();
+  current.resourceUrl = RESOURCE_URL;
+  current.pageTitle = "Platform Engineer";
+  current.quickInsight = { title: "Strong match" };
+  current.shortcuts = [{ id: "ask_more", title: "Ask More", prompt: "" }];
+  current.updatedAt = "2026-07-20T10:00:00Z";
+
+  const reset = resetWorkspaceConversation(current);
+
+  assert.equal(reset.resourceUrl, RESOURCE_URL);
+  assert.equal(reset.pageTitle, "Platform Engineer");
+  assert.deepEqual(reset.quickInsight, { title: "Strong match" });
+  assert.deepEqual(reset.shortcuts, current.shortcuts);
+  assert.deepEqual(reset.histories, []);
+  assert.deepEqual(reset.artifacts, { cv: null, cover_letter: null });
+  assert.equal(reset.updatedAt, null);
+  assert.equal(validateWorkspaceState(reset.histories, reset.artifacts), true);
+  assert.notDeepEqual(current.histories, []);
 });
 
 test("Prompt Shortcuts require exactly id title prompt and allow empty Ask More", () => {

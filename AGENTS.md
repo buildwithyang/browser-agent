@@ -5,7 +5,7 @@
 - 修改前先看相关模块的 `README.md`。
 - 保持 `README.md` / `README.zh-CN.md` / `extension/README.md` 面向用户；工程约束放在这里。
 - 面向云端、多租户
-- 新的feature 开发使用 superpowers 技能开发,局部代码优化不用使用此技能。
+- 只有新的大 feature 开发才使用 superpowers 技能开发,局部代码优化不用使用此技能。
 - 面向 Senior Developer.
   - 讨论设计的方案的时候，尽可能的使用设计模式，和用户沟通
   - 每个 Interface, Abstract, Function 增加注释，复杂的函数主体主流程增加适当的注释

@@ -786,7 +786,7 @@ test("manifest declares the Side Panel entry point and release version", async (
   assert.equal(manifest.version, "0.3.0");
 });
 
-test("header contains only page identity, source, and an optional match score", async () => {
+test("header contains page identity, source, optional score, and scoped clear control", async () => {
   const { dom } = await renderState(workspace());
   const { document } = dom.window;
   const header = document.querySelector(".workspace-header");
@@ -794,6 +794,7 @@ test("header contains only page identity, source, and an optional match score", 
   assert.equal(header?.querySelector("h1")?.textContent, "Platform Engineer");
   assert.match(header?.querySelector(".source-link")?.textContent || "", /linkedin\.com/);
   assert.equal(header?.querySelector(".match-score")?.textContent, "87 / 100");
+  assert.equal(header?.querySelector(".clear-history-button")?.disabled, true);
   assert.equal(header?.querySelector(".connection-status"), null);
   assert.equal(document.querySelector(".insight-card"), null);
   assert.equal(document.querySelector(".artifact-card"), null);
@@ -805,6 +806,69 @@ test("header contains only page identity, source, and an optional match score", 
     withoutScore.dom.window.document.querySelector(".match-score:not([hidden])"),
     null
   );
+});
+
+test("clear history confirms the destructive scope and applies the returned empty Workspace", async () => {
+  const initial = workspace({ histories: [message(0), message(1)] });
+  const setup = await renderState(initial, { tabId: 7 });
+  const confirmations = [];
+  const requests = [];
+
+  assert.equal(setup.elements.clearHistoryButton.disabled, false);
+  const cleared = await sidepanel.clearCurrentWorkspaceHistory(
+    setup.elements,
+    setup.model,
+    {
+      confirm: (messageText) => {
+        confirmations.push(messageText);
+        return true;
+      },
+      sendRuntime: async (request) => {
+        requests.push(request);
+        return {
+          ok: true,
+          state: workspace({ histories: [], artifacts: { cv: null, cover_letter: null } }),
+          lang: "en",
+        };
+      },
+    }
+  );
+
+  assert.equal(cleared, true);
+  assert.match(confirmations[0], /CV or Cover Letter attachments/i);
+  assert.deepEqual(requests, [{
+    type: sidepanel.WORKSPACE_CLEAR_HISTORY,
+    tabId: 7,
+  }]);
+  assert.deepEqual(setup.model.state.histories, []);
+  assert.equal(setup.elements.clearHistoryButton.disabled, true);
+  assert.equal(
+    setup.dom.window.document.querySelector(".timeline-empty-state")?.dataset.state,
+    "connected-empty"
+  );
+});
+
+test("clear history does nothing when confirmation is declined", async () => {
+  const setup = await renderState(workspace({ histories: [message(0), message(1)] }), {
+    tabId: 7,
+  });
+  let requests = 0;
+
+  const cleared = await sidepanel.clearCurrentWorkspaceHistory(
+    setup.elements,
+    setup.model,
+    {
+      confirm: () => false,
+      sendRuntime: async () => {
+        requests += 1;
+        return { ok: true };
+      },
+    }
+  );
+
+  assert.equal(cleared, false);
+  assert.equal(requests, 0);
+  assert.equal(setup.model.state.histories.length, 2);
 });
 
 test("timeline distinguishes connected empty, disconnected, and initial loading", async () => {

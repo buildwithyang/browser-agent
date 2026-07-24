@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -17,7 +17,13 @@ from app.agents.base import (
     WorkspaceAgentContext,
 )
 from app.agents.job_match.context import JobChatContext
-from app.agents.job_match.planner import ChatPlan, ChatPlanner, OutputMode, SpecialistId
+from app.agents.job_match.intent_router import (
+    IntentRouter,
+    IntentRoutingError,
+    OutputMode,
+    RoutingDecision,
+    SpecialistId,
+)
 from app.agents.job_match.quick_insight import (
     MIN_JOB_CONTENT_CHARS,
     PROMPT_SHORTCUT_CATALOGUES,
@@ -95,7 +101,7 @@ class JobMatchAgent(
     WorkspaceAgent,
     StreamingWorkspaceAgent,
 ):
-    """Stateless Facade/Mediator for all job-match execution paths."""
+    """Stateless Facade/Orchestrator for all job-match execution paths."""
 
     name = AgentName.JOB_MATCH
     requires_resume = True
@@ -104,8 +110,7 @@ class JobMatchAgent(
         self,
         *args: object,
         cv_path: str | Path | None = None,
-        planner: ChatPlanner | None = None,
-        specialists: Mapping[SpecialistId, JobMatchSpecialist] | None = None,
+        intent_router: IntentRouter | None = None,
         **kwargs: object,
     ) -> None:
         """Build stateless delegates around shared model and CV-loading dependencies."""
@@ -116,12 +121,15 @@ class JobMatchAgent(
             complete_prompt=self.complete_prompt,
             resolve_resume_text=self._resolve_resume_text,
         )
-        self._planner = planner or ChatPlanner(complete_prompt=self.acomplete_prompt)
-        self._specialists = (
-            dict(specialists) if specialists is not None else self._build_specialists()
-        )
+        if intent_router is not None:
+            self._intent_router = intent_router
+        else:
+            self._intent_router = IntentRouter(
+                complete_prompt=self.acomplete_prompt,
+                specialists=self._build_specialists(),
+            )
 
-    def _build_specialists(self) -> dict[SpecialistId, JobMatchSpecialist]:
+    def _build_specialists(self) -> dict[str, JobMatchSpecialist]:
         """Build the production Strategy registry over the shared stream boundary."""
 
         return {
@@ -167,34 +175,34 @@ class JobMatchAgent(
             resume_text=self._resolve_resume_text(context.resume_text),
         )
 
-    async def _select_plan(self, context: JobChatContext) -> ChatPlan:
-        """Plan every message from current request-scoped Workspace evidence."""
+    async def _route_intent(self, context: JobChatContext) -> RoutingDecision:
+        """Route every message and produce an explicit Specialist handoff."""
 
-        return await self._planner.plan(context)
+        return await self._intent_router.route(context)
 
     async def _open_specialist_stream(
         self,
-        plan: ChatPlan,
+        decision: RoutingDecision,
         context: JobChatContext,
     ) -> SpecialistTextStream:
-        """Open exactly one registered Strategy stream for the validated plan."""
+        """Open exactly one registered Strategy stream for the validated handoff."""
 
         try:
-            specialist = self._specialists[plan.specialist]
-        except KeyError as exc:
+            specialist = self._intent_router.resolve_specialist(decision.specialist)
+        except IntentRoutingError as exc:
             raise JobMatchOrchestrationError(
-                f"no Specialist registered for {plan.specialist.value}"
+                f"no Specialist registered for {decision.specialist}"
             ) from exc
-        return await specialist.open_stream(context, plan.output_mode)
+        return await specialist.open_stream(context, decision)
 
-    def _artifact_type(self, plan: ChatPlan) -> ArtifactType:
-        """Resolve the deterministic Artifact type for one Artifact plan."""
+    def _artifact_type(self, decision: RoutingDecision) -> ArtifactType:
+        """Resolve the deterministic Artifact type for one routed handoff."""
 
         try:
-            return ARTIFACT_BY_SPECIALIST[plan.specialist]
+            return ARTIFACT_BY_SPECIALIST[decision.specialist]
         except KeyError as exc:
             raise JobMatchOrchestrationError(
-                f"Specialist cannot create an Artifact: {plan.specialist.value}"
+                f"Specialist cannot create an Artifact: {decision.specialist}"
             ) from exc
 
     def _existing_artifact(
@@ -211,12 +219,12 @@ class JobMatchAgent(
     def _artifact_result(
         self,
         context: JobChatContext,
-        plan: ChatPlan,
+        decision: RoutingDecision,
         draft: str,
     ) -> ChatResult:
         """Build deterministic create/update metadata around one complete draft."""
 
-        artifact_type = self._artifact_type(plan)
+        artifact_type = self._artifact_type(decision)
         exists = self._existing_artifact(context, artifact_type) is not None
         result_class: type[CreateArtifactResult] | type[UpdateArtifactResult]
         result_type: WorkspaceResultType
@@ -254,21 +262,21 @@ class JobMatchAgent(
 
         job_context = self._to_job_chat_context(context)
         yield AgentStatus(stage="routing")
-        plan = await self._select_plan(job_context)
+        decision = await self._route_intent(job_context)
         artifact_type = (
-            self._artifact_type(plan)
-            if plan.output_mode is OutputMode.ARTIFACT
+            self._artifact_type(decision)
+            if decision.output_mode is OutputMode.ARTIFACT
             else None
         )
         yield AgentStatus(
             stage=(
                 "generating_artifact"
-                if plan.output_mode is OutputMode.ARTIFACT
+                if decision.output_mode is OutputMode.ARTIFACT
                 else "generating_reply"
             ),
             artifact_type=artifact_type,
         )
-        opened = await self._open_specialist_stream(plan, job_context)
+        opened = await self._open_specialist_stream(decision, job_context)
 
         # Accumulate all raw chunks for atomic terminal validation. Artifact chunks never
         # cross the Agent event boundary; reply chunks remain visible as Markdown deltas.
@@ -284,14 +292,14 @@ class JobMatchAgent(
                         f"Specialist Markdown exceeds {DOCUMENT_TEXT_MAX_CHARS} characters"
                     )
                 chunks.append(chunk)
-                if plan.output_mode is OutputMode.REPLY:
+                if decision.output_mode is OutputMode.REPLY:
                     yield AgentDelta(text=chunk)
 
         raw_result = self._validate_complete_markdown("".join(chunks))
         result = (
             ReplyResult(type=WorkspaceResultType.REPLY, markdown=raw_result)
-            if plan.output_mode is OutputMode.REPLY
-            else self._artifact_result(job_context, plan, raw_result)
+            if decision.output_mode is OutputMode.REPLY
+            else self._artifact_result(job_context, decision, raw_result)
         )
         yield AgentStatus(stage="finalizing")
         yield AgentCompleted(

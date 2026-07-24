@@ -238,7 +238,7 @@ def test_summary_workspace_streams_reply_only_markdown() -> None:
     assert "When does it ship?" in completed.execution.prompt
     assert "# Current user message" in completed.execution.prompt
     assert "Version 2.0 ships Friday." in completed.execution.prompt
-    assert "Respond entirely in English" in cast(
+    assert "Please answer in English." in cast(
         list[dict[str, str]], client.calls[0]["messages"]
     )[0]["content"]
 

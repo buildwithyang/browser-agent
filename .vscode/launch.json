@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Gateway",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "cwd": "${workspaceFolder}/gateway",
+      "python": "${workspaceFolder}/gateway/.venv/bin/python",
+      "envFile": "${workspaceFolder}/gateway/.env",
+      "args": [
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "17321"
+      ],
+      "justMyCode": true
+    }
+  ]
+}

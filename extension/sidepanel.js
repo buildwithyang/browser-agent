@@ -3,6 +3,7 @@ import { canSendUserMessage, countUserTurns } from "./workspace.js";
 
 export const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 export const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
+export const WORKSPACE_CLEAR_HISTORY = "AGENT_BRIDGE_WORKSPACE_CLEAR_HISTORY";
 export const WORKSPACE_UPDATED = "AGENT_BRIDGE_WORKSPACE_UPDATED";
 export const WORKSPACE_RESET = "AGENT_BRIDGE_WORKSPACE_RESET";
 export const WORKSPACE_STREAM = "AGENT_BRIDGE_WORKSPACE_STREAM";
@@ -25,6 +26,9 @@ const COPY = {
     limitPlaceholder: "This Workspace supports up to 10 turns.",
     hint: "Enter to send · Shift + Enter for a new line",
     send: "Send",
+    clearHistory: "Clear",
+    clearHistoryLabel: "Clear this chat history",
+    clearHistoryConfirm: "Clear this chat history and its CV or Cover Letter attachments? This cannot be undone.",
     limit: "Message limit reached. Start a new Workspace from Quick Insight.",
     retryFallback: "The request failed. Your input is preserved.",
     retry: "Retry",
@@ -55,6 +59,9 @@ const COPY = {
     limitPlaceholder: "当前最多支持10轮聊天",
     hint: "Enter 发送 · Shift + Enter 换行",
     send: "发送",
+    clearHistory: "清空",
+    clearHistoryLabel: "清空此聊天历史",
+    clearHistoryConfirm: "确定清空此聊天历史及其中的简历、求职信附件吗？此操作无法撤销。",
     limit: "已达到消息上限。请从 Quick Insight 开始新的 Workspace。",
     retryFallback: "请求失败，输入已保留。",
     retry: "重试",
@@ -595,7 +602,7 @@ function renderTimeline(elements, model, view, dependencies) {
 }
 
 /** Render compact page identity metadata without exposing Workspace lifecycle chrome. */
-function renderHeader(elements, view) {
+function renderHeader(elements, model, view) {
   elements.title.textContent = view.pageTitle;
   elements.sourceHost.textContent = sourceLabel(view.resourceUrl) || view.strings.noPage;
   if (!configureNewTabLink(elements.sourceLink, view.resourceUrl)) {
@@ -605,6 +612,16 @@ function renderHeader(elements, view) {
   const hasScore = Number.isInteger(view.matchScore);
   elements.matchScore.hidden = !hasScore;
   elements.matchScore.textContent = hasScore ? `${view.matchScore} / 100` : "";
+  const hasConversation = view.histories.length > 0
+    || !!model.state?.artifacts?.cv
+    || !!model.state?.artifacts?.cover_letter;
+  elements.clearHistoryButton.textContent = view.strings.clearHistory;
+  elements.clearHistoryButton.title = view.strings.clearHistoryLabel;
+  elements.clearHistoryButton.setAttribute("aria-label", view.strings.clearHistoryLabel);
+  elements.clearHistoryButton.disabled = !model.state
+    || !hasConversation
+    || model.loading
+    || model.pendingTurn?.status === "pending";
 }
 
 /** Return whether the current composer error requires an Extension update. */
@@ -721,7 +738,7 @@ function updateComposer(elements, model, view) {
 function render(elements, model, dependencies = {}) {
   const view = workspaceView(model.state || {}, model.lang, model.uiLanguage);
   elements.documentRef.documentElement.lang = view.lang;
-  renderHeader(elements, view);
+  renderHeader(elements, model, view);
   renderTimeline(elements, model, view, dependencies);
   renderShortcuts(elements, model, view);
   updateComposer(elements, model, view);
@@ -743,6 +760,7 @@ function sidePanelElements(documentRef) {
     documentRef,
     title: documentRef.getElementById("workspace-title"),
     matchScore: documentRef.getElementById("match-score"),
+    clearHistoryButton: documentRef.getElementById("clear-history-button"),
     sourceLink: documentRef.getElementById("source-link"),
     sourceHost: documentRef.getElementById("source-host"),
     timeline: documentRef.getElementById("timeline"),
@@ -756,6 +774,55 @@ function sidePanelElements(documentRef) {
     sendButton: documentRef.getElementById("send-button"),
     sendLabel: documentRef.getElementById("send-label"),
   };
+}
+
+/** Confirm and clear the current owner/resource conversation without deleting page metadata. */
+export async function clearCurrentWorkspaceHistory(elements, model, dependencies = {}) {
+  const view = workspaceView(model.state || {}, model.lang, model.uiLanguage);
+  const hasConversation = view.histories.length > 0
+    || !!model.state?.artifacts?.cv
+    || !!model.state?.artifacts?.cover_letter;
+  if (!model.tabId || model.loading || model.pendingTurn?.status === "pending" || !hasConversation) {
+    return false;
+  }
+  const confirmClear = typeof dependencies.confirm === "function"
+    ? dependencies.confirm
+    : globalThis.confirm;
+  if (!confirmClear(view.strings.clearHistoryConfirm)) return false;
+
+  advanceOperationGeneration(model, true);
+  model.clearingHistory = true;
+  model.loading = true;
+  model.error = null;
+  model.retry = () => clearCurrentWorkspaceHistory(elements, model, dependencies).catch(() => {});
+  render(elements, model, dependencies);
+  try {
+    const response = await sendRuntimeWith(dependencies, {
+      type: WORKSPACE_CLEAR_HISTORY,
+      tabId: model.tabId,
+    });
+    if (!response?.ok) {
+      model.error = workspaceResponseError(response, view.strings.retryFallback);
+      return false;
+    }
+    cancelStreamRender(model, dependencies);
+    model.pendingTurn = null;
+    model.settledLocalOperation = null;
+    model.state = response.state;
+    model.lang = response.lang || model.lang;
+    model.renderedHistoryCount = -1;
+    return true;
+  } catch (error) {
+    model.error = workspaceResponseError(
+      { error: error?.message || view.strings.retryFallback },
+      view.strings.retryFallback
+    );
+    return false;
+  } finally {
+    model.clearingHistory = false;
+    model.loading = false;
+    render(elements, model, dependencies);
+  }
 }
 
 /** Clear unscoped UI/model state at one owner, tab, or canonical resource boundary. */
@@ -1223,6 +1290,7 @@ async function initSidePanel() {
     appliedWorkspacePrefill: null,
     streamRenderTimer: null,
     streamEpoch: 0,
+    clearingHistory: false,
     loading: false,
     error: null,
     retry: null,
@@ -1243,6 +1311,9 @@ async function initSidePanel() {
     event.preventDefault();
     submitMessage(elements, model, dependencies);
   });
+  elements.clearHistoryButton.addEventListener("click", () => {
+    clearCurrentWorkspaceHistory(elements, model, dependencies).catch(() => {});
+  });
   render(elements, model, dependencies);
 
   /** Reload lifecycle changes and surface operation errors for the active tab. */
@@ -1253,6 +1324,7 @@ async function initSidePanel() {
     }
     const targetTabId = workspaceLifecycleTarget(message, model.tabId);
     if (targetTabId !== null) {
+      if (message.type === WORKSPACE_UPDATED && model.clearingHistory) return;
       const reset = message.type === WORKSPACE_RESET;
       loadWorkspaceForTab(elements, model, targetTabId, dependencies, {
         cancelPendingSend: reset,

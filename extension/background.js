@@ -23,6 +23,7 @@ import {
   ANONYMOUS_WORKSPACE_OWNER,
   applyWorkspaceResponse,
   canSendUserMessage,
+  resetWorkspaceConversation,
   workspaceStorageKey,
 } from "./workspace.js";
 import {
@@ -65,6 +66,7 @@ const MENU_ID = "browser-agent";
 const OPEN_WORKSPACE = "AGENT_BRIDGE_OPEN_WORKSPACE";
 const WORKSPACE_GET = "AGENT_BRIDGE_WORKSPACE_GET";
 const WORKSPACE_SEND = "AGENT_BRIDGE_WORKSPACE_SEND";
+const WORKSPACE_CLEAR_HISTORY = "AGENT_BRIDGE_WORKSPACE_CLEAR_HISTORY";
 const WORKSPACE_PREFILL_ACK = "AGENT_BRIDGE_WORKSPACE_PREFILL_ACK";
 const workspaceSeedQueue = createKeyedQueue();
 const workspaceOperationQueue = createKeyedQueue();
@@ -674,6 +676,44 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   dispatchWorkspaceSend(message.tabId, message, sendResponse).catch((error) => {
     sendResponse({ ok: false, error: error.message, recoverable: true });
   });
+  return true;
+});
+
+/** Clear one exact owner/resource conversation through the shared per-resource mutation queue. */
+async function clearWorkspaceHistory(tabId) {
+  const authSnapshot = await readAuthSnapshot();
+  const active = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
+  if (!active) throw new Error("Open Quick Insight to start this Workspace.");
+  const key = active.mapping.storageKey;
+
+  // Clearing is authoritative: any in-flight generation for this Workspace becomes stale.
+  abortWorkspaceStreams(activeWorkspaceStreams, (_stream, streamKey) => streamKey === key, "cleared");
+  return workspaceOperationQueue.run(key, async () => applyForCurrentOwner({
+    snapshot: authSnapshot,
+    readCurrentSnapshot: readAuthSnapshot,
+    onOwnerMismatch: () => notifyWorkspaceReset(tabId),
+    apply: async () => {
+      const latest = await loadActiveWorkspace(tabId, authSnapshot.ownerId);
+      if (!latest || latest.mapping.storageKey !== key) {
+        throw new WorkspaceOperationStaleError();
+      }
+      const state = resetWorkspaceConversation(latest.state);
+      await Promise.all([
+        chrome.storage.local.set({ [key]: state }),
+        chrome.storage.session.remove(workspacePrefillKey(tabId)),
+      ]);
+      notifyWorkspaceUpdated(tabId);
+      return { state, lang: latest.lang };
+    },
+  }));
+}
+
+/** Handle an explicit, confirmed request to reset the current tab's conversation. */
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== WORKSPACE_CLEAR_HISTORY || !message.tabId) return undefined;
+  clearWorkspaceHistory(message.tabId)
+    .then(({ state, lang }) => sendResponse({ ok: true, state, lang }))
+    .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
 });
 

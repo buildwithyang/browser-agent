@@ -350,6 +350,17 @@ export function createWorkspace(seed = {}) {
   };
 }
 
+/** Reset conversation-owned messages and Artifacts while preserving page discovery metadata. */
+export function resetWorkspaceConversation(state) {
+  const current = createWorkspace(state);
+  return createWorkspace({
+    ...current,
+    histories: [],
+    artifacts: { cv: null, cover_letter: null },
+    updatedAt: null,
+  });
+}
+
 /** Validate and atomically replace canonical Workspace fields from one complete response. */
 export function applyWorkspaceResponse(state, response) {
   const current = createWorkspace(state);

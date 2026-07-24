@@ -127,16 +127,16 @@ X-Agent-Bridge-Protocol-Version: 4
 是唯一失败终态，包含稳定 `code`、用户安全的 `message` 和 `recoverable`，不会携带部分
 next state。
 
-## Planner 与 Specialist 边界
+## Intent Router 与 Specialist 边界
 
-每条 Workspace 消息都由 `ChatPlanner` 根据以下证据重新规划：
+每条 Workspace 消息都由 `IntentRouter` 根据以下证据重新路由：
 
 ```text
 current message > current Artifacts > histories
 ```
 
-公开请求不能指定 Agent、Specialist 或输出模式。Planner 只选择 Specialist Strategy 与
-`reply | artifact`；具体 Specialist 才生成内容。Tailor Resume 的 Shortcut 首先要求修改
+公开请求不能指定 Agent、Specialist 或输出模式。Router 选择 Specialist Strategy、
+`reply | artifact` 与执行指令；具体 Specialist 才生成内容。Tailor Resume 的 Shortcut 首先要求修改
 计划，因此必须先返回 reply，用户确认后才可生成或更新 CV。Cover Letter 的 Shortcut
 明确请求成稿，因此可直接生成纯文本、可复制的 Artifact；后续“短一点”等消息会更新它。
 

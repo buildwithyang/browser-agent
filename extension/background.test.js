@@ -1032,5 +1032,23 @@ test("MV3 Background coordinates completion, failure, replacement, timeout, tab,
     "replacement must load the ordered committed state"
   );
   assert.equal(local.data[storageKey].histories[1].content, "Ordered replacement wins");
+
+  const fetchesBeforeClear = fetchCalls.length;
+  const cleared = await dispatchRuntime(runtimeOnMessage, {
+    type: "AGENT_BRIDGE_WORKSPACE_CLEAR_HISTORY",
+    tabId: 7,
+  });
+  assert.equal(cleared.ok, true);
+  assert.deepEqual(cleared.state.histories, []);
+  assert.deepEqual(cleared.state.artifacts, { cv: null, cover_letter: null });
+  assert.equal(cleared.state.quickInsight.title, "Job Match");
+  assert.deepEqual(local.data[storageKey].histories, []);
+  assert.deepEqual(local.data[storageKey].artifacts, { cv: null, cover_letter: null });
+  assert.equal(fetchCalls.length, fetchesBeforeClear, "local clear must not call the Gateway");
+  assert.equal(
+    runtimeMessages.at(-1)?.type,
+    "AGENT_BRIDGE_WORKSPACE_UPDATED",
+    "successful clear must refresh any other open panel"
+  );
   assert.ok(lastErrorReads > 0, "no-receiver runtime callbacks must consume chrome.runtime.lastError");
 });

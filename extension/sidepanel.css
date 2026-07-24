@@ -136,6 +136,30 @@ a {
   display: none;
 }
 
+.clear-history-button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  margin-top: 1px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  font: 650 11px/1 var(--body-font);
+  cursor: pointer;
+}
+
+.clear-history-button:hover:not(:disabled) {
+  border-color: #d6aaa4;
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.clear-history-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .source-link {
   display: inline-flex;
   max-width: 100%;

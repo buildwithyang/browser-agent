@@ -17,13 +17,12 @@ from app.modules.task.schema import (
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
-# Output-language directives, appended last to the system prompt so they win
-# regardless of the language the prompt body is written in.
+# Keep output-language guidance minimal so it does not compete with the user's
+# concrete wording or encourage translation of explicitly supplied values.
 LANGUAGE_DIRECTIVES = {
-    "zh": "无论页面或材料是什么语言,都请用简体中文回复(包括所有小标题)。",
-    "en": "Respond entirely in English (including all section headings), "
-    "regardless of the language of the page or materials.",
-    "auto": "Respond in the same language as the page content.",
+    "zh": "请使用简体中文回答。",
+    "en": "Please answer in English.",
+    "auto": "",
 }
 
 
